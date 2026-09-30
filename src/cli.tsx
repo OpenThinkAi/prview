@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { all, build, checkHead, exportDocument, Fail, filesOf, home, importDocument, load, remove, reopen, repoFor, writeup, type BuildOpts, type Review } from "./build.ts";
 import { ConfigError, configPath, loadConfig, realLookups, resolveModel, ROLES } from "./config.ts";
 import { probe } from "./llm.ts";
+import { besideIn, editor, editorArgs } from "./editor.ts";
 import { show } from "./tui.tsx";
 
 const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [--context N] [--ai MODEL | --no-ai] [--samples N] [--fresh]
@@ -24,7 +25,9 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
 
   Keys:  j/k line   h/l hunk   J/K chapter   123G go to file line   gg/G first/last   ]f [f next/previous finding
          ? why this chapter matters   f finding under the cursor   d dismiss it   a ask about this hunk
-         e open the file here in your editor   n comment on this line   N summary comment
+         e open the file here in your editor (inside tmux: in a split pane, this screen stays up)
+         n comment on this line   N summary comment   w wrap long lines   H/L pan them sideways
+         PgUp/PgDn (ctrl-u/ctrl-d) page an open box   below 100 columns the rail shows chapter numbers only
          s submit: pick a verdict, preview the review, Enter (saved as <slug>.review.md; posting comes with
          the platform adapters)   q quit (everything is kept)
 
@@ -39,24 +42,11 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   prview show <file | ->      import a document, then open it
   prview done <name>          remove it (worktree, fetched refs, state)`;
 
-function editor(): string[] {
-  const e = process.env.PRVIEW_EDITOR ?? process.env.EDITOR ?? "hx";
-  return e.split(/\s+/).filter(Boolean);
-}
-
-/** `hx +12 file`, `vim +12 file`, `code -g file:12`, `zed file:12`: the common ways to say "open here". */
-function editorArgs(cmd: string[], path: string, line: number): string[] {
-  const bin = cmd[0]!.split("/").pop()!;
-  if (/^(code|cursor|codium)$/.test(bin)) return [...cmd, "-g", `${path}:${line}`, "--wait"];
-  if (/^(zed|subl)$/.test(bin)) return [...cmd, `${path}:${line}`];
-  return [...cmd, `+${line}`, path];
-}
-
 async function review(r: Review): Promise<void> {
   checkHead(r);
   const files = filesOf(r);
   for (;;) {
-    const o = await show(r, files);
+    const o = await show(r, files, besideIn(r.worktree));
     if (o.kind === "edit") {
       const cmd = editor();
       const p = Bun.spawnSync(editorArgs(cmd, o.path, o.line), { cwd: r.worktree, stdio: ["inherit", "inherit", "inherit"] });
