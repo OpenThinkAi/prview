@@ -140,6 +140,23 @@ the model for real, one guide call per change, so run it before and after touchi
 or the limits. When the parser has to cut an intent (over 12 words) or the summary (over two
 sentences), prview asks the guide once more for just those lines; the eval shows when that happened.
 
+## The offline embedder
+
+Searching the docs needs text turned into vectors without a network or a download. `src/embed.ts`
+does it with [model2vec](https://github.com/MinishLab/model2vec)'s potion-base-8M (MIT): a static table
+of token vectors, so a sentence's vector is the normalised mean of its WordPiece tokens' rows, in plain
+TypeScript with no neural runtime. The table ships in `models/potion-base-8M/` as int8 with a scale
+per row (about 8 MB) and loads in a few milliseconds.
+
+`scripts/build-embedder.ts` is the only thing that downloads anything. It fetches the pinned revision,
+converts it, and writes `reference.json`: token ids and vectors from the Python `model2vec` itself
+(run through `uv`), which `test/embed.test.ts` holds the TypeScript tokenizer and vectors to.
+
+```sh
+bun scripts/build-embedder.ts                 # download, convert, rewrite the reference (needs uv)
+bun scripts/build-embedder.ts --no-reference  # convert only
+```
+
 ## Development
 
 ```sh

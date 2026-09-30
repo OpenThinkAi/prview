@@ -1,0 +1,19 @@
+{
+  "source": "https://huggingface.co/minishlab/potion-base-8M",
+  "revision": "bf8b056651a2c21b8d2565580b8569da283cab23",
+  "license": "MIT",
+  "dim": 256,
+  "vocab_size": 29528,
+  "unk_id": 1,
+  "max_input_chars_per_word": 100,
+  "special_tokens": [
+    "[PAD]",
+    "[UNK]",
+    "[CLS]",
+    "[SEP]",
+    "[MASK]"
+  ],
+  "median_token_length": 6,
+  "max_length": 512,
+  "normalize": true
+}
