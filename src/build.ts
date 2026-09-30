@@ -1,34 +1,29 @@
 // Building a review: what to read (a PR or a base..head range), a worktree at its head so an editor
-// can open the real files, the model passes (guide, critic, refute), and the state the reader adds
-// (notes, what they've read, findings they dismissed), all kept under one slug.
+// can open the real files, and the review document for it. The guide, critic and refute passes are
+// the default producer: they write a document like any other producer would, and it is merged into
+// the review the same way `prview import` merges one.
 //
 // Store: ~/.cache/prview (or $PRVIEW_HOME)
 //   <slug>/        worktree at the head: the editor runs here
-//   <slug>.json    everything else
+//   <slug>.json    the document, plus what only this machine needs (where the clone and worktree
+//                  are, the cursor, which model ran)
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseDiff, type FileDiff } from "./diff.ts";
+import { blank, Fail, fit, merge, parseDocument, SCHEMA, type Comment, type Doc, type Target } from "./document.ts";
 import {
   applyRefute, classify, CRITIC_SYSTEM, criticPrompt, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, numbered,
   parseCritic, parseGuide, REFUTE_SYSTEM, refutePrompt, type Finding, type Plan,
 } from "./guide.ts";
 import { complete, pool, type Provider } from "./llm.ts";
 
-/** A mistake by the caller: printed without a stack trace. */
-export class Fail extends Error {}
-
-export type Note = { hunk: string | null; side: "new" | "old"; line: number | null; text: string; at: string };
+export { Fail };
 export type Ai = { provider: Provider; at: string; errors: string[] };
 export type Pos = { item: number; line: number };
-export type Verdict = "approve" | "request_changes" | "comment";
-export type Review = {
-  slug: string; repo: string; target?: string; worktree: string; baseSha: string; headSha: string;
-  title: string; body: string; url?: string; label: string; created: string; context: number;
-  plan: Plan; findings: Finding[]; ai?: Ai;
-  notes: Note[]; visited: string[]; dismissed: number[]; pos: Pos; verdict?: Verdict;
-};
+/** `ref` is what was asked for (a PR number or a range), so the review can be rebuilt at a newer head. */
+export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; ai?: Ai; doc: Doc };
 
 export const home = () => process.env.PRVIEW_HOME ?? join(homedir(), ".cache", "prview");
 const metaOf = (slug: string) => join(home(), `${slug}.json`);
@@ -58,18 +53,29 @@ function githubRemote(repo: string, nwo: string): string {
   return `https://github.com/${nwo}.git`;
 }
 
-type Source = { slug: string; baseSha: string; headSha: string; title: string; body: string; url?: string; label: string };
+type Source = { slug: string; target: Target };
+
+const nwoOf = (url: string | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+const prSlug = (repo: string, n: string | number) => `${basename(repo)}-pr-${n}`;
+/** A branch name as a slug part; a full commit id is cut to twelve characters. */
+const slugPart = (s: string) => s.replace(/^([0-9a-f]{12})[0-9a-f]{28}$/, "$1").replace(/[^\w.-]+/g, "-");
+
+/** Fetch a PR's head into refs/prview so a clone that never saw it (or whose origin is not GitHub) has it. */
+function fetchPR(repo: string, nwo: string, n: string | number, base?: string): string {
+  const ns = `refs/prview/pr-${n}`;
+  git(["fetch", "-q", githubRemote(repo, nwo), `+refs/pull/${n}/head:${ns}/head`, ...(base ? [`+refs/heads/${base}:${ns}/base`] : [])], repo);
+  return ns;
+}
 
 function fromPR(repo: string, ref: string): Source {
   const j = JSON.parse(run(["gh", "pr", "view", ref, "--json", "number,title,body,url,headRefOid,baseRefName"], repo));
-  const nwo = (j.url as string).match(/github\.com\/([^/]+\/[^/]+)\/pull\//)![1]!;
-  const ns = `refs/prview/pr-${j.number}`;
-  git(["fetch", "-q", githubRemote(repo, nwo), `+refs/pull/${j.number}/head:${ns}/head`, `+refs/heads/${j.baseRefName}:${ns}/base`], repo);
+  const nwo = nwoOf(j.url)![1]!;
+  const ns = fetchPR(repo, nwo, j.number, j.baseRefName);
   const headSha = git(["rev-parse", `${ns}/head`], repo);
   if (headSha !== j.headRefOid) throw new Fail(`fetched head ${headSha.slice(0, 8)} is not the PR head ${j.headRefOid.slice(0, 8)}; try again`);
   return {
-    slug: `${basename(repo)}-pr-${j.number}`, headSha, baseSha: git(["merge-base", `${ns}/base`, headSha], repo),
-    title: j.title, body: j.body ?? "", url: j.url, label: `${nwo}#${j.number}`,
+    slug: prSlug(repo, j.number),
+    target: { repo: nwo, base: git(["merge-base", `${ns}/base`, headSha], repo), head: headSha, url: j.url, platform: "github", title: j.title, body: j.body ?? "", label: `${nwo}#${j.number}` },
   };
 }
 
@@ -81,8 +87,8 @@ function fromRange(repo: string, spec: string | undefined): Source {
   const baseSha = git(["merge-base", base, headSha], repo);
   const title = git(["log", "-1", "--format=%s", headSha], repo);
   const body = git(["log", "--reverse", "--format=%s%n%n%b", `${baseSha}..${headSha}`], repo);
-  const slug = `${basename(repo)}-${(head === "HEAD" ? git(["rev-parse", "--abbrev-ref", "HEAD"], repo) : head).replace(/[^\w.-]+/g, "-")}`;
-  return { slug, baseSha, headSha, title, body, label: `${base}..${head}` };
+  const slug = `${basename(repo)}-${slugPart(head === "HEAD" ? git(["rev-parse", "--abbrev-ref", "HEAD"], repo) : head)}`;
+  return { slug, target: { repo: basename(repo), base: baseSha, head: headSha, title, body, label: `${base}..${head}` } };
 }
 
 export const isPR = (target: string | undefined) => !!target && (/^#?\d+$/.test(target) || /github\.com\/.+\/pull\/\d+/.test(target));
@@ -91,7 +97,8 @@ export const isPR = (target: string | undefined) => !!target && (/^#?\d+$/.test(
 
 export type Progress = (s: string) => void;
 
-async function guideAndCritic(src: Source, files: FileDiff[], worktree: string, provider: Provider, say: Progress): Promise<{ plan: Plan; findings: Finding[]; errors: string[] }> {
+/** The default producer: the guide orders the hunks, the critic raises findings, refute re-checks them. */
+async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, provider: Provider, say: Progress): Promise<{ doc: Doc; errors: string[] }> {
   const errors: string[] = [];
   const mechanical = classify(files);
   const hunks = hunksOf(files);
@@ -119,12 +126,12 @@ async function guideAndCritic(src: Source, files: FileDiff[], worktree: string, 
     const text = f.side === "new" && existsSync(file) ? readFileSync(file, "utf8") : null;
     return applyRefute(f, await complete(provider, REFUTE_SYSTEM, refutePrompt(f, h.hunk!, text)));
   }));
-  const settled = new Map<number, Finding>();
+  const settled = new Map<string, Finding>();
   verdicts.forEach((v, i) => { if (v instanceof Error) errors.push(`refute: ${v.message}`); else settled.set(contested[i]!.id, v); });
   findings = findings.map((f) => settled.get(f.id) ?? f);
   const kept = findings.filter((f) => f.status !== "withdrawn").length;
   say(`findings: ${kept} kept, ${findings.length - kept} withdrawn`);
-  return { plan, findings, errors };
+  return { doc: { ...blank(src), plan, findings }, errors };
 }
 
 const ASK_SYSTEM = `You help a human reviewer understand one hunk of a code change. You know the change's summary and what the reviewer is meant to verify in this chapter. Answer their question about the hunk; with no question, explain what the hunk does, why it is probably written this way, and what could go wrong. Ground everything in the code shown; say so when you would need to see more. Plain text, short paragraphs, no markdown headers, under 180 words.`;
@@ -132,41 +139,71 @@ const ASK_SYSTEM = `You help a human reviewer understand one hunk of a code chan
 export async function ask(r: Review, files: FileDiff[], hunkId: string, question: string): Promise<string> {
   const h = hunksOf(files).find((x) => x.id === hunkId);
   if (!h?.hunk) throw new Fail("that hunk is not in the diff any more");
-  const chapter = r.plan.chapters.find((c) => c.hunks.includes(h.id));
+  const d = r.doc;
+  const chapter = d.plan.chapters.find((c) => c.hunks.includes(h.id));
   const file = join(r.worktree, h.file.path);
   const around = existsSync(file) ? readFileSync(file, "utf8").split("\n").slice(Math.max(0, h.hunk.newStart - 30), h.hunk.newStart + h.hunk.newCount + 30).join("\n") : "";
-  const prompt = `# ${r.title}\n${r.plan.summary}\n\n## Chapter: ${chapter?.title ?? "?"}\n${chapter?.intent ?? ""}. ${chapter?.why ?? ""}\n\n## Hunk ${h.id}\n${numbered(h.hunk)}\n\n## The file after the change, around it\n${around}\n\n## Question\n${question.trim() || "(none: explain the hunk)"}`;
+  const prompt = `# ${d.target.title}\n${d.plan.summary}\n\n## Chapter: ${chapter?.title ?? "?"}\n${chapter?.intent ?? ""}. ${chapter?.why ?? ""}\n\n## Hunk ${h.id}\n${numbered(h.hunk)}\n\n## The file after the change, around it\n${around}\n\n## Question\n${question.trim() || "(none: explain the hunk)"}`;
   return (await complete(r.ai?.provider ?? "claude", ASK_SYSTEM, prompt)).trim();
 }
 
 // ---------------------------------------------------------------- the store
 
-export const filesOf = (r: Pick<Review, "repo" | "baseSha" | "headSha" | "context">) =>
-  parseDiff(run(["git", "diff", "-M", "--no-color", "--no-ext-diff", `-U${r.context}`, r.baseSha, r.headSha], r.repo));
+export const filesOf = (r: Pick<Review, "repo" | "context" | "doc">) =>
+  parseDiff(run(["git", "diff", "-M", "--no-color", "--no-ext-diff", `-U${r.context}`, r.doc.target.base, r.doc.target.head], r.repo));
+
+/** The worktree has to be at the document's head: the diff, the editor and every anchor assume it. */
+export function checkHead(r: Review): void {
+  const at = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: r.worktree }).stdout.toString().trim();
+  if (at !== r.doc.target.head) throw new Fail(`${r.slug}'s worktree is at ${at.slice(0, 8) || "nothing"}, the document at ${r.doc.target.head.slice(0, 8)}: prview open ${r.slug} rebuilds it`);
+}
 
 export function save(r: Review): void {
   mkdirSync(home(), { recursive: true });
   writeFileSync(metaOf(r.slug), JSON.stringify(r));
 }
 
+/** A stored review, re-read through the document parser; one kept by an older prview (no document yet) is upgraded. */
+function revive(j: any): Review | undefined {
+  if (typeof j?.slug !== "string" || typeof j?.worktree !== "string") return undefined;
+  const raw = j.doc ?? (typeof j.headSha === "string" ? {
+    schema: SCHEMA, plan: j.plan,
+    target: { repo: basename(String(j.repo)), base: j.baseSha, head: j.headSha, url: j.url, platform: j.url ? "github" : undefined, title: j.title, body: j.body, label: j.label },
+    findings: (j.findings ?? []).map((f: any) => ({ ...f, source: "critic" })),
+    human: { comments: j.notes, dismissals: j.dismissed, visited: j.visited, verdict: j.verdict },
+  } : undefined);
+  try {
+    return { slug: j.slug, repo: j.repo, ref: j.ref ?? j.target, worktree: j.worktree, context: j.context ?? 3, created: j.created, pos: j.pos ?? { item: 0, line: 0 }, ai: j.ai, doc: parseDocument(raw) };
+  } catch { return undefined; }
+}
+
 export function load(slug: string): Review {
   if (!existsSync(metaOf(slug))) throw new Fail(`no review named ${slug} (prview list shows the built ones)`);
-  return JSON.parse(readFileSync(metaOf(slug), "utf8"));
+  const r = revive(JSON.parse(readFileSync(metaOf(slug), "utf8")));
+  if (!r) throw new Fail(`${metaOf(slug)} is not a review prview can read; prview done ${slug} removes it`);
+  return r;
 }
 
 export function all(): Review[] {
   if (!existsSync(home())) return [];
-  return readdirSync(home()).filter((f) => f.endsWith(".json")).map((f) => JSON.parse(readFileSync(join(home(), f), "utf8")));
+  return readdirSync(home()).filter((f) => f.endsWith(".json")).flatMap((f) => {
+    try { return revive(JSON.parse(readFileSync(join(home(), f), "utf8"))) ?? []; } catch { return []; }
+  });
 }
 
-export function remove(r: Review): string {
-  Bun.spawnSync(["git", "worktree", "remove", "--force", r.worktree], { cwd: r.repo });
-  rmSync(r.worktree, { recursive: true, force: true });
-  const pr = r.slug.match(/-pr-(\d+)$/);
-  if (pr) for (const end of ["head", "base"]) Bun.spawnSync(["git", "update-ref", "-d", `refs/prview/pr-${pr[1]}/${end}`], { cwd: r.repo });
-  Bun.spawnSync(["git", "worktree", "prune"], { cwd: r.repo });
-  rmSync(metaOf(r.slug), { force: true });
-  return `removed ${r.slug}`;
+export function remove(slug: string): string {
+  if (!existsSync(metaOf(slug))) throw new Fail(`no review named ${slug} (prview list shows the built ones)`);
+  // An unreadable state file is still removed; only its worktree, which it would have named, is left.
+  const r = revive(JSON.parse(readFileSync(metaOf(slug), "utf8")));
+  if (r) {
+    Bun.spawnSync(["git", "worktree", "remove", "--force", r.worktree], { cwd: r.repo });
+    rmSync(r.worktree, { recursive: true, force: true });
+    const pr = r.slug.match(/-pr-(\d+)$/);
+    if (pr) for (const end of ["head", "base"]) Bun.spawnSync(["git", "update-ref", "-d", `refs/prview/pr-${pr[1]}/${end}`], { cwd: r.repo });
+    Bun.spawnSync(["git", "worktree", "prune"], { cwd: r.repo });
+  }
+  rmSync(metaOf(slug), { force: true });
+  return `removed ${slug}`;
 }
 
 const isRepo = (dir: string) => Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: dir }).exitCode === 0;
@@ -175,7 +212,7 @@ const knownRepos = () => [...new Set(all().map((r) => r.repo))].filter((d) => ex
 /** Which clone to build from: --repo, else a known clone of the PR's repo, else here, else the only clone we know. */
 export function repoFor(target: string | undefined, explicit: string | undefined): string {
   if (explicit) return explicit;
-  const nwo = target?.match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1];
+  const nwo = nwoOf(target)?.[1];
   if (nwo) {
     const clone = knownRepos().find((d) => git(["remote", "-v"], d).toLowerCase().includes(nwo.toLowerCase()));
     if (clone) return clone;
@@ -186,6 +223,18 @@ export function repoFor(target: string | undefined, explicit: string | undefined
   throw new Fail(known.length ? `which repo? run it inside one, or pass --repo: ${known.join(", ")}` : "run it inside the repo the first time (or pass --repo DIR); after that it works from anywhere");
 }
 
+function worktreeAt(repo: string, slug: string, head: string): string {
+  mkdirSync(home(), { recursive: true });
+  const worktree = join(home(), slug);
+  if (existsSync(join(worktree, ".git"))) git(["checkout", "-q", "--detach", "-f", head], worktree);
+  else {
+    Bun.spawnSync(["git", "worktree", "prune"], { cwd: repo });
+    rmSync(worktree, { recursive: true, force: true });
+    git(["worktree", "add", "-q", "--detach", worktree, head], repo);
+  }
+  return worktree;
+}
+
 // ---------------------------------------------------------------- building
 
 export type BuildOpts = { context?: number; ai?: Provider | null; fresh?: boolean; say?: Progress };
@@ -193,30 +242,26 @@ export type BuildOpts = { context?: number; ai?: Provider | null; fresh?: boolea
 export async function build(repo: string, target: string | undefined, opts: BuildOpts = {}): Promise<Review> {
   const context = opts.context ?? 3, say = opts.say ?? (() => {});
   repo = git(["rev-parse", "--show-toplevel"], repo);
-  const src = isPR(target) ? fromPR(repo, target!.replace(/^#/, "")) : fromRange(repo, target);
-  if (src.baseSha === src.headSha) throw new Fail(`${src.label} has no changes`);
-  mkdirSync(home(), { recursive: true });
-  const worktree = join(home(), src.slug);
-  if (existsSync(join(worktree, ".git"))) git(["checkout", "-q", "--detach", "-f", src.headSha], worktree);
-  else {
-    Bun.spawnSync(["git", "worktree", "prune"], { cwd: repo });
-    rmSync(worktree, { recursive: true, force: true });
-    git(["worktree", "add", "-q", "--detach", worktree, src.headSha], repo);
-  }
-  const files = filesOf({ repo, context, ...src });
-  const prior = existsSync(metaOf(src.slug)) ? load(src.slug) : undefined;
-  // What the reader added always carries over; the model's work only while the head it read is still the head.
-  const same = !!prior && prior.headSha === src.headSha && !opts.fresh;
-  let r: Review = {
-    ...src, repo, target: isPR(target) ? target!.replace(/^#/, "") : target, worktree, created: new Date().toISOString(), context,
-    plan: filePlan(files, classify(files)), findings: [],
-    notes: prior?.notes ?? [], visited: same ? prior.visited : [], dismissed: same ? prior.dismissed : [], pos: same ? prior.pos : { item: 0, line: 0 },
-  };
-  if (same) { r.plan = prior.plan; r.findings = prior.findings; r.ai = prior.ai; say(`reusing the guide and findings from ${prior.ai?.at.slice(0, 16).replace("T", " ") ?? "before"} (--fresh redoes them)`); }
-  else if (opts.ai) {
-    const { plan, findings, errors } = await guideAndCritic(src, files, worktree, opts.ai, say);
-    r = { ...r, plan, findings, ai: { provider: opts.ai, at: new Date().toISOString(), errors } };
-    for (const e of errors) say(`warning: ${e}`);
+  const { slug, target: t } = isPR(target) ? fromPR(repo, target!.replace(/^#/, "")) : fromRange(repo, target);
+  if (t.base === t.head) throw new Fail(`${t.label} has no changes`);
+  const worktree = worktreeAt(repo, slug, t.head);
+  const files = filesOf({ repo, context, doc: blank(t) });
+  const prior = existsSync(metaOf(slug)) ? revive(JSON.parse(readFileSync(metaOf(slug), "utf8"))) : undefined;
+  // The document is anchored on its head: while the head is the same it is reused whole (whoever
+  // produced it); once the head moves only the reader's own comments carry over.
+  const same = !!prior && prior.doc.target.head === t.head && !opts.fresh;
+  const r: Review = { slug, repo, ref: isPR(target) ? target!.replace(/^#/, "") : target, worktree, context, created: new Date().toISOString(), pos: { item: 0, line: 0 }, doc: fit(blank(t), files) };
+  if (same) {
+    Object.assign(r, { pos: prior.pos, ai: prior.ai, doc: fit(prior.doc, files) });
+    say(`reusing the review document from ${prior.ai?.at.slice(0, 16).replace("T", " ") ?? "before"} (--fresh redoes it)`);
+  } else {
+    if (prior) r.doc.human.comments = prior.doc.human.comments;
+    if (opts.ai) {
+      const { doc, errors } = await guideAndCritic(t, files, worktree, opts.ai, say);
+      r.doc = merge(r.doc, fit(doc, files));
+      r.ai = { provider: opts.ai, at: new Date().toISOString(), errors };
+      for (const e of errors) say(`warning: ${e}`);
+    }
   }
   save(r);
   return r;
@@ -225,28 +270,72 @@ export async function build(repo: string, target: string | undefined, opts: Buil
 /** A review by name, rebuilt at the PR's current head. */
 export async function reopen(slug: string, opts: BuildOpts): Promise<Review> {
   const r = load(slug);
-  return build(r.repo, r.target ?? r.slug.match(/-pr-(\d+)$/)?.[1], opts);
+  return build(r.repo, r.ref ?? r.slug.match(/-pr-(\d+)$/)?.[1], opts);
 }
+
+// ---------------------------------------------------------------- importing a document
+
+/** Make sure the clone has the document's commits; a GitHub PR's head can be fetched, anything else has to be there. */
+function haveCommits(repo: string, t: Target): void {
+  const has = (c: string) => Bun.spawnSync(["git", "cat-file", "-e", `${c}^{commit}`], { cwd: repo }).exitCode === 0;
+  const pr = nwoOf(t.url);
+  if (!has(t.head) && pr) fetchPR(repo, pr[1]!, pr[2]!);
+  for (const c of [t.base, t.head]) if (!has(c)) throw new Fail(`commit ${c.slice(0, 8)} is not in ${repo}: fetch it, then import again`);
+}
+
+/**
+ * A document from anywhere, folded into the review at its head: merged into the one already there,
+ * or opened as a new review in this clone. A review of the same change at another head refuses it.
+ */
+export function importDocument(text: string, explicitRepo?: string): Review {
+  const doc = parseDocument(text);
+  const existing = all().find((r) => r.doc.target.head === doc.target.head);
+  if (existing) {
+    checkHead(existing);
+    existing.doc = merge(existing.doc, fit(doc, filesOf(existing)));
+    save(existing);
+    return existing;
+  }
+  const repo = git(["rev-parse", "--show-toplevel"], repoFor(doc.target.url, explicitRepo));
+  const pr = nwoOf(doc.target.url);
+  const slug = pr ? prSlug(repo, pr[2]!) : `${basename(repo)}-${slugPart(doc.target.head)}`;
+  if (existsSync(metaOf(slug))) {
+    const at = load(slug).doc.target.head;
+    throw new Fail(`the document is for ${doc.target.head.slice(0, 8)} but ${slug} is at ${at.slice(0, 8)}: a document only opens against its own head`);
+  }
+  haveCommits(repo, doc.target);
+  const r: Review = {
+    slug, repo, ref: pr ? pr[2]! : `${doc.target.base}..${doc.target.head}`, worktree: worktreeAt(repo, slug, doc.target.head),
+    context: 3, created: new Date().toISOString(), pos: { item: 0, line: 0 }, doc,
+  };
+  r.doc = fit(doc, filesOf(r));
+  save(r);
+  return r;
+}
+
+/** The document as a producer or another clone would read it: nothing about this machine. */
+export const exportDocument = (r: Review) => JSON.stringify(r.doc, null, 2) + "\n";
 
 // ---------------------------------------------------------------- the write-up
 
 export const VERDICT = { approve: "Approve", request_changes: "Request changes", comment: "Comment" } as const;
 
 /** The compiled review as markdown: verdict, summary, comments with file and line, coverage, findings kept. */
-export function writeup(r: Review, files: FileDiff[]): string {
+export function writeup(d: Doc, files: FileDiff[]): string {
   const hunks = hunksOf(files);
-  const total = hunks.filter((h) => h.hunk).length, seen = r.visited.length;
-  const place = (n: Note) => {
-    if (!n.hunk) return "General";
-    const h = hunks.find((x) => x.id === n.hunk);
-    return `${h?.file.path ?? n.hunk}${n.line !== null ? `:${n.line}` : ""}`;
+  const { target: t, human: h } = d;
+  const total = hunks.filter((x) => x.hunk).length, seen = h.visited.length;
+  const place = (c: Comment) => {
+    if (!c.hunk) return "General";
+    const x = hunks.find((y) => y.id === c.hunk);
+    return `${x?.file.path ?? c.hunk}${c.line !== null ? `:${c.line}` : ""}`;
   };
-  const out = [`# ${r.title}`, ``, `${r.verdict ? `**${VERDICT[r.verdict]}** · ` : ""}${r.url ?? r.label} · read ${seen} of ${total} hunks`, ``];
-  const general = r.notes.filter((n) => !n.hunk), placed = r.notes.filter((n) => n.hunk);
-  for (const n of general) out.push(n.text, ``);
+  const out = [`# ${t.title}`, ``, `${h.verdict ? `**${VERDICT[h.verdict]}** · ` : ""}${t.url ?? t.label} · read ${seen} of ${total} hunks`, ``];
+  const general = h.comments.filter((c) => !c.hunk), placed = h.comments.filter((c) => c.hunk);
+  for (const c of general) out.push(c.text, ``);
   if (placed.length) out.push(`## Comments`, ``);
-  for (const n of placed) out.push(`**${place(n)}**`, n.text, ``);
-  const kept = r.findings.filter((f) => f.status !== "withdrawn" && !r.dismissed.includes(f.id));
+  for (const c of placed) out.push(`**${place(c)}**`, c.text, ``);
+  const kept = d.findings.filter((f) => f.status !== "withdrawn" && !h.dismissals.includes(f.id));
   if (kept.length) {
     out.push(`## Findings you kept`, ``);
     for (const f of kept) out.push(`- ${f.hunk.split("@")[0]} ${f.side} ${f.line} · ${f.severity} · ${f.claim}`);

@@ -5,24 +5,28 @@
 // The app owns the terminal; an editor is something it launches. `e` hands back an `edit` outcome
 // with the file and line under the cursor, the CLI runs the editor in the head worktree, then renders
 // the app again with the same state.
+//
+// Everything shown comes from the review document (`review.doc`), whoever produced it; the rest of
+// the review is only where the cursor was and where the worktree is.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput, useStdout } from "ink";
 import { where, type DiffLine, type FileDiff } from "./diff.ts";
 import { hunksOf, type Finding, type HunkAt } from "./guide.ts";
-import { ask, save, VERDICT, writeup, type Pos, type Review, type Verdict } from "./build.ts";
+import { ask, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
+import type { Doc, Verdict } from "./document.ts";
 import { gotoLine, nextFinding, type NavItem } from "./nav.ts";
 
 export type Outcome = { kind: "quit" } | { kind: "submit" } | { kind: "edit"; path: string; line: number };
 
 /** Everything the rail steps through, in reading order: each chapter's hunks, then the mechanical ones. */
 type Item = NavItem & { at: HunkAt; mechanical?: string };
-function itemsOf(r: Review, files: FileDiff[]): Item[] {
+function itemsOf(d: Doc, files: FileDiff[]): Item[] {
   const at = new Map(hunksOf(files).map((h) => [h.id, h]));
   const out: Item[] = [];
   const add = (id: string, chapter: number, mechanical?: string) => { const h = at.get(id); if (h?.hunk) out.push({ id, path: h.file.path, hunk: h.hunk, chapter, at: h, mechanical }); };
-  r.plan.chapters.forEach((c, i) => c.hunks.forEach((id) => add(id, i)));
-  r.plan.mechanical.forEach((m) => add(m.id, r.plan.chapters.length, m.why));
+  d.plan.chapters.forEach((c, i) => c.hunks.forEach((id) => add(id, i)));
+  d.plan.mechanical.forEach((m) => add(m.id, d.plan.chapters.length, m.why));
   return out;
 }
 
@@ -36,12 +40,13 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
   const { stdout } = useStdout();
   const cols = stdout.columns || 100, rows = (stdout.rows || 40) - 1;
   const r = useRef(review).current;
-  const items = useMemo(() => itemsOf(r, files), [r, files]);
+  const d = r.doc, h = d.human;
+  const items = useMemo(() => itemsOf(d, files), [d, files]);
   const [, bump] = useState(0);
   const redraw = () => { save(r); bump((n) => n + 1); };
   const [pos, setPosRaw] = useState<Pos>(() => ({ item: Math.min(r.pos.item, Math.max(0, items.length - 1)), line: r.pos.line }));
   const setPos = (p: Pos) => { r.pos = p; setPosRaw(p); };
-  const [float, setFloatRaw] = useState<Float | null>(() => r.plan.summary ? { title: "What this change is", body: `${r.plan.summary}\n\n? why this chapter · f finding · ]f next finding · a ask · e editor · n comment · N summary · s submit · q quit` } : null);
+  const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary ? { title: "What this change is", body: `${d.plan.summary}\n\n? why this chapter · f finding · ]f next finding · a ask · e editor · n comment · N summary · s submit · q quit` } : null);
   const [scroll, setScroll] = useState(0);
   const setFloat = (f: Float | null) => { setScroll(0); setFloatRaw(f); };
   const [mode, setMode] = useState<Mode>({ kind: "nav" });
@@ -57,17 +62,17 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
   const hunk = item?.hunk ?? null;
   const lines = hunk?.lines ?? [];
   const line = Math.min(pos.line, Math.max(0, lines.length - 1));
-  const chapter = item ? r.plan.chapters[item.chapter] : undefined;
+  const chapter = item ? d.plan.chapters[item.chapter] : undefined;
   const chapterTitle = item ? chapter?.title ?? "Mechanical" : "";
 
   const live = (f: Finding) => f.status !== "withdrawn";
-  const kept = (f: Finding) => live(f) && !r.dismissed.includes(f.id);
-  const findingsHere = item ? r.findings.filter((f) => f.hunk === item.id && live(f)) : [];
+  const kept = (f: Finding) => live(f) && !h.dismissals.includes(f.id);
+  const findingsHere = item ? d.findings.filter((f) => f.hunk === item.id && live(f)) : [];
   const findingsAt = (l: DiffLine) => findingsHere.filter((f) => f.side === "new" ? l.n !== null && f.line === l.n : l.o !== null && f.line === l.o);
-  const notesAt = (l: DiffLine) => r.notes.filter((n) => n.hunk === item?.id && n.line !== null && (n.side === "new" ? n.line === l.n : n.line === l.o));
+  const notesAt = (l: DiffLine) => h.comments.filter((n) => n.hunk === item?.id && n.line !== null && (n.side === "new" ? n.line === l.n : n.line === l.o));
 
   // Seeing a hunk is reading it.
-  useEffect(() => { if (item && !r.visited.includes(item.id)) { r.visited.push(item.id); redraw(); } }, [item?.id]);
+  useEffect(() => { if (item && !h.visited.includes(item.id)) { h.visited.push(item.id); redraw(); } }, [item?.id]);
 
   const goItem = (i: number) => { const n = Math.max(0, Math.min(items.length - 1, i)); if (n !== pos.item) { setPos({ item: n, line: 0 }); setFloat(null); } };
   const goChapter = (dir: 1 | -1) => {
@@ -82,16 +87,16 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
     return l.n !== null ? { side: "new", line: l.n } : { side: "old", line: l.o };
   };
   const showFinding = (f: Finding) => {
-    const gone = r.dismissed.includes(f.id);
-    setFloat({ title: `${f.severity} · ${f.kind}${gone ? " · dismissed" : ""}`, color: SEV[f.severity], body: `${f.claim}\n\n${f.evidence}${f.refute ? `\n\nSecond look: ${f.refute}` : ""}\n\nd to ${gone ? "restore" : "dismiss"}.` });
+    const gone = h.dismissals.includes(f.id);
+    setFloat({ title: `▲ ${f.source} · ${f.kind} · ${f.severity}${gone ? " · dismissed" : ""}`, color: SEV[f.severity], body: `${f.claim}\n\n${f.evidence}${f.refute ? `\n\nSecond look: ${f.refute}` : ""}\n\nd to ${gone ? "restore" : "dismiss"}.` });
   };
   const jumpFinding = (dir: 1 | -1) => {
-    const hit = nextFinding(items, r.findings.filter(live), { item: pos.item, line }, dir);
+    const hit = nextFinding(items, d.findings.filter(live), { item: pos.item, line }, dir);
     if (!hit) { setFloat({ title: "Findings", body: dir > 0 ? "No more findings after this point." : "No findings before this point." }); return; }
     setPos({ item: hit.item, line: hit.line });
     showFinding(hit.finding);
   };
-  const preview = () => setFloat({ title: `${VERDICT[r.verdict!]} · Enter submits, Esc goes back, j/k scroll`, color: "green", tall: true, body: writeup(r, files) });
+  const preview = () => setFloat({ title: `${VERDICT[h.verdict!]} · Enter submits, Esc goes back, j/k scroll`, color: "green", tall: true, body: writeup(d, files) });
 
   // Fast typing or a paste can deliver several plain characters in one chunk ("781G"): take them one at a time.
   useInput((input, key) => { if (input.length > 1 && !key.ctrl && !key.meta) for (const c of input) handle(c, key); else handle(input, key); });
@@ -100,7 +105,7 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
     if (mode.kind === "verdict") {
       const v: Verdict | undefined = ch === "a" ? "approve" : ch === "r" ? "request_changes" : ch === "c" ? "comment" : undefined;
       if (key.escape) { setMode({ kind: "nav" }); return; }
-      if (v) { r.verdict = v; save(r); setMode({ kind: "preview" }); preview(); }
+      if (v) { h.verdict = v; save(r); setMode({ kind: "preview" }); preview(); }
       return;
     }
     if (mode.kind === "preview") {
@@ -116,7 +121,7 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
         const text = input.trim();
         setMode({ kind: "nav" }); setInput("");
         if (mode.kind === "comment" && text) {
-          r.notes.push({ hunk: mode.general ? null : item?.id ?? null, ...(mode.general ? { side: "new", line: null } : anchor()), text, at: new Date().toISOString() });
+          h.comments.push({ hunk: mode.general ? null : item?.id ?? null, ...(mode.general ? { side: "new", line: null } : anchor()), text, at: new Date().toISOString() });
           redraw();
         }
         if (mode.kind === "ask" && item) {
@@ -170,7 +175,7 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
     else if (ch === "d") {
       const f = findingsAt(lines[line]!)[0] ?? findingsHere[0];
       if (!f) return;
-      r.dismissed = r.dismissed.includes(f.id) ? r.dismissed.filter((x) => x !== f.id) : [...r.dismissed, f.id];
+      h.dismissals = h.dismissals.includes(f.id) ? h.dismissals.filter((x) => x !== f.id) : [...h.dismissals, f.id];
       redraw(); setFloat(null);
     }
     else if (ch === "e") {
@@ -189,8 +194,8 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
   // ---- layout
   const railW = Math.min(34, Math.max(24, Math.floor(cols * 0.28)));
   const mainW = cols - railW - 1;
-  const total = items.filter((i) => !i.mechanical).length, seen = items.filter((i) => !i.mechanical && r.visited.includes(i.id)).length;
-  const liveFindings = r.findings.filter(kept).length;
+  const total = items.filter((i) => !i.mechanical).length, seen = items.filter((i) => !i.mechanical && h.visited.includes(i.id)).length;
+  const liveFindings = d.findings.filter(kept).length;
   const gutterW = 5;
   const codeW = mainW - gutterW - 5; // paddingLeft, number, space, mark, space, and one to spare
 
@@ -218,17 +223,17 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
   return (
     <Box flexDirection="column" width={cols} height={rows}>
       <Box justifyContent="space-between">
-        <Box width={cols - 34}><Text wrap="truncate"><Text bold> {r.title}</Text><Text dimColor>  {r.url ?? r.label}</Text></Text></Box>
-        <Box width={32} justifyContent="flex-end"><Text>{seen}/{total} read · <Text color="yellow">{liveFindings} ▲</Text> · {r.notes.length} comment{r.notes.length === 1 ? "" : "s"} </Text></Box>
+        <Box width={cols - 34}><Text wrap="truncate"><Text bold> {d.target.title}</Text><Text dimColor>  {d.target.url ?? d.target.label}</Text></Text></Box>
+        <Box width={32} justifyContent="flex-end"><Text>{seen}/{total} read · <Text color="yellow">{liveFindings} ▲</Text> · {h.comments.length} comment{h.comments.length === 1 ? "" : "s"} </Text></Box>
       </Box>
       <Box flexGrow={1}>
         <Box width={railW} flexDirection="column" borderStyle="single" borderRight borderTop={false} borderBottom={false} borderLeft={false} borderColor="gray" paddingRight={1}>
           <Text dimColor> READ IN ORDER</Text>
-          {[...r.plan.chapters.map((c, i) => ({ i, title: c.title })), ...(r.plan.mechanical.length ? [{ i: r.plan.chapters.length, title: `Mechanical (${r.plan.mechanical.length})` }] : [])].map(({ i, title }) => {
+          {[...d.plan.chapters.map((c, i) => ({ i, title: c.title })), ...(d.plan.mechanical.length ? [{ i: d.plan.chapters.length, title: `Mechanical (${d.plan.mechanical.length})` }] : [])].map(({ i, title }) => {
             const mine = items.filter((x) => x.chapter === i);
-            const done = mine.length > 0 && mine.every((x) => r.visited.includes(x.id));
+            const done = mine.length > 0 && mine.every((x) => h.visited.includes(x.id));
             const here = item?.chapter === i;
-            const fs = r.findings.filter((f) => kept(f) && mine.some((x) => x.id === f.hunk)).length;
+            const fs = d.findings.filter((f) => kept(f) && mine.some((x) => x.id === f.hunk)).length;
             return (
               <Box key={i} flexDirection="column">
                 <Text color={here ? "cyan" : done ? "green" : undefined} bold={here} wrap="truncate">
@@ -236,7 +241,7 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
                 </Text>
                 {here && mine.map((x) => {
                   const cur = x === item;
-                  return <Text key={x.id} color={cur ? "cyan" : undefined} dimColor={!cur && r.visited.includes(x.id)} wrap="truncate">   {cur ? "›" : " "} {x.path.split("/").pop()}:{x.hunk.newStart}{r.findings.some((f) => f.hunk === x.id && kept(f)) ? " ▲" : ""}</Text>;
+                  return <Text key={x.id} color={cur ? "cyan" : undefined} dimColor={!cur && h.visited.includes(x.id)} wrap="truncate">   {cur ? "›" : " "} {x.path.split("/").pop()}:{x.hunk.newStart}{d.findings.some((f) => f.hunk === x.id && kept(f)) ? " ▲" : ""}</Text>;
                 })}
               </Box>
             );
