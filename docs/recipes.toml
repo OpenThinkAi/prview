@@ -1,0 +1,153 @@
+# What a reviewer asks, mapped to the actions that answer it. Docs search embeds each phrasing; the hits are these actions.
+# q       = phrasings of the question (2-4 each); each is indexed separately
+# actions = action ids from src/keys.ts, in the order you would use them
+# why     = one line: how it works, or the nearest alternative
+# Name actions, never keys: bindings are remappable, so a key written here would go stale. No question marks or
+# brackets either; those are keys too. A test checks every action is covered and every id exists.
+
+# ---- moving around
+
+[[recipe]]
+q = ["how do I move down a line", "scroll down the diff", "go to the next line"]
+actions = ["nav.line_down"]
+why = "Moves the cursor down one line; a count in front moves that many."
+
+[[recipe]]
+q = ["how do I move up a line", "scroll back up the diff", "go to the previous line"]
+actions = ["nav.line_up"]
+why = "Moves the cursor up one line; a count in front moves that many."
+
+[[recipe]]
+q = ["how do I jump to the next hunk", "skip to the next change", "go on to the following hunk"]
+actions = ["nav.next_hunk"]
+why = "Hunks go in reading order, not file order; the space bar does the same."
+
+[[recipe]]
+q = ["how do I go back a hunk", "return to the previous change", "step back to the hunk before"]
+actions = ["nav.prev_hunk"]
+why = "Moves to the previous hunk in reading order."
+
+[[recipe]]
+q = ["how do I skip to the next chapter", "jump past this group of hunks", "move on to the next topic in the review"]
+actions = ["nav.next_chapter"]
+why = "Lands on the first hunk of the next chapter; the rest of this one stays unread."
+
+[[recipe]]
+q = ["how do I go back to the previous chapter", "return to the last group of hunks", "step back a chapter"]
+actions = ["nav.prev_chapter"]
+why = "Lands on the first hunk of the previous chapter."
+
+[[recipe]]
+q = ["how do I jump to the next finding", "find the next problem in the review", "go to the next issue the model raised", "show me the next finding"]
+actions = ["nav.next_finding", "finding.next", "info.next_finding"]
+why = "Goes to the next finding anywhere in the review and opens it, from the diff or from inside a box."
+
+[[recipe]]
+q = ["how do I go back to the previous finding", "return to the last finding", "show me the finding before this one"]
+actions = ["nav.prev_finding", "finding.prev", "info.prev_finding"]
+why = "The hidden twin of next finding; it works from the diff and from any open box."
+
+[[recipe]]
+q = ["how do I open the finding on this hunk", "is there a finding where I am", "look at the problem under my cursor"]
+actions = ["nav.finding_here"]
+why = "Opens the next finding in this hunk from the cursor, wrapping round; it says so when there is none."
+
+[[recipe]]
+q = ["how do I scroll long lines sideways", "read code that runs off the screen", "pan left to see the start of a line"]
+actions = ["nav.pan_left", "nav.pan_right"]
+why = "Pans unwrapped code left or right; turn wrapping off first, or wrapped lines never need it."
+
+[[recipe]]
+q = ["how do I wrap long lines", "stop lines running off the edge", "turn line wrapping on or off"]
+actions = ["nav.wrap"]
+why = "Toggles wrapping; unwrapped code pans sideways instead."
+
+# ---- understanding the change
+
+[[recipe]]
+q = ["why is this chapter here", "what should I check in this chapter", "what is this group of hunks for"]
+actions = ["nav.why"]
+why = "Explains why the chapter sits where it does and what to look for in it."
+
+[[recipe]]
+q = ["how do I ask a question about this code", "ask the model about the hunk I am on", "what does this change do"]
+actions = ["nav.ask"]
+why = "Sends your question about the hunk under the cursor and shows the answer in a box."
+
+[[recipe]]
+q = ["how do I see the findings before reading the chapter", "reveal hidden findings", "I am in blind mode and want the answers"]
+actions = ["nav.reveal"]
+why = "Blind mode hides a chapter's findings until you have been through it; this lifts that for one chapter."
+
+# ---- deciding on a finding
+
+[[recipe]]
+q = ["how do I say this finding is wrong", "dismiss a finding that is not a real problem", "mark a finding as a false alarm", "reject the model's finding"]
+actions = ["finding.not_an_issue"]
+why = "Dismisses the finding with a reason you type; nothing is posted for a dismissal."
+
+[[recipe]]
+q = ["how do I block the pull request on a finding", "request changes over this problem", "say this must be fixed before merge"]
+actions = ["finding.block"]
+why = "Turns the finding into a comment that requests changes; the verdict follows at submit."
+
+[[recipe]]
+q = ["how do I post a finding as a comment", "reply to a finding without blocking", "leave a comment on the pull request about this finding", "turn a finding into a review comment"]
+actions = ["nav.next_finding", "finding.comment", "nav.submit"]
+why = "Open the finding, choose comment and word it yourself; it is posted under your name when you submit."
+
+[[recipe]]
+q = ["how do I undo a decision", "take back what I decided on a finding", "I dismissed the wrong finding"]
+actions = ["finding.undo"]
+why = "Clears the decision on this finding so it reads as undecided again."
+
+[[recipe]]
+q = ["how do I close a finding without deciding", "put a finding away for later", "leave the box without recording anything"]
+actions = ["finding.hide", "info.hide"]
+why = "Closes the box and records nothing; Esc does the same."
+
+# ---- copying
+
+[[recipe]]
+q = ["how do I copy a finding", "put a finding on the clipboard", "copy the text of a problem to paste elsewhere"]
+actions = ["nav.finding_here", "finding.copy"]
+why = "Open the finding, then copy: its text goes to the clipboard."
+
+[[recipe]]
+q = ["how do I copy the text of a notice", "copy what this box says", "grab the summary text"]
+actions = ["info.copy"]
+why = "Copies the box's own text; a hint or an error has none, so it offers no copy."
+
+[[recipe]]
+q = ["how do I copy the file and line I am on", "get a path and line number to share", "copy a reference to this line"]
+actions = ["nav.copy"]
+why = "Copies the cursor line as path:line, ready for a chat message or a ticket."
+
+# ---- comments and the editor
+
+[[recipe]]
+q = ["how do I open the file in my editor", "edit the file I am reviewing", "jump from the diff into the source", "see more of the file than the diff shows"]
+actions = ["nav.line_down", "nav.edit"]
+why = "Move to the line, then edit: the editor opens on the file at that line; quitting it brings you back here."
+
+[[recipe]]
+q = ["how do I leave a comment on a line", "write my own note on this code", "comment on the line under my cursor"]
+actions = ["nav.note"]
+why = "Opens a note on the cursor line; it is posted as your own words at submit."
+
+[[recipe]]
+q = ["how do I comment on the whole pull request", "leave a general comment", "write an overall remark rather than a line note"]
+actions = ["nav.general_note"]
+why = "A comment on the pull request as a whole, not tied to any line."
+
+# ---- finishing
+
+[[recipe]]
+q = ["how do I submit a review", "send my review to GitHub", "approve the pull request", "request changes on the pull request"]
+actions = ["nav.submit"]
+why = "Choose approve, request changes or comment, read the preview, then confirm; the review file is written first."
+
+[[recipe]]
+q = ["how do I quit", "leave the review for now", "stop reviewing without losing my work"]
+actions = ["nav.quit"]
+why = "Leaves prview; every decision so far is saved, so opening the same review later picks up where you stopped."
