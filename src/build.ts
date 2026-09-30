@@ -22,11 +22,12 @@ export class Fail extends Error {}
 export type Note = { hunk: string | null; side: "new" | "old"; line: number | null; text: string; at: string };
 export type Ai = { provider: Provider; at: string; errors: string[] };
 export type Pos = { item: number; line: number };
+export type Verdict = "approve" | "request_changes" | "comment";
 export type Review = {
   slug: string; repo: string; target?: string; worktree: string; baseSha: string; headSha: string;
   title: string; body: string; url?: string; label: string; created: string; context: number;
   plan: Plan; findings: Finding[]; ai?: Ai;
-  notes: Note[]; visited: string[]; dismissed: number[]; pos: Pos;
+  notes: Note[]; visited: string[]; dismissed: number[]; pos: Pos; verdict?: Verdict;
 };
 
 export const home = () => process.env.PRVIEW_HOME ?? join(homedir(), ".cache", "prview");
@@ -134,7 +135,7 @@ export async function ask(r: Review, files: FileDiff[], hunkId: string, question
   const chapter = r.plan.chapters.find((c) => c.hunks.includes(h.id));
   const file = join(r.worktree, h.file.path);
   const around = existsSync(file) ? readFileSync(file, "utf8").split("\n").slice(Math.max(0, h.hunk.newStart - 30), h.hunk.newStart + h.hunk.newCount + 30).join("\n") : "";
-  const prompt = `# ${r.title}\n${r.plan.summary}\n\n## Chapter: ${chapter?.title ?? "?"}\n${chapter?.intent ?? ""}\n\n## Hunk ${h.id}\n${numbered(h.hunk)}\n\n## The file after the change, around it\n${around}\n\n## Question\n${question.trim() || "(none: explain the hunk)"}`;
+  const prompt = `# ${r.title}\n${r.plan.summary}\n\n## Chapter: ${chapter?.title ?? "?"}\n${chapter?.intent ?? ""}. ${chapter?.why ?? ""}\n\n## Hunk ${h.id}\n${numbered(h.hunk)}\n\n## The file after the change, around it\n${around}\n\n## Question\n${question.trim() || "(none: explain the hunk)"}`;
   return (await complete(r.ai?.provider ?? "claude", ASK_SYSTEM, prompt)).trim();
 }
 
@@ -229,7 +230,9 @@ export async function reopen(slug: string, opts: BuildOpts): Promise<Review> {
 
 // ---------------------------------------------------------------- the write-up
 
-/** Notes and coverage as markdown: what you would paste into a review. */
+export const VERDICT = { approve: "Approve", request_changes: "Request changes", comment: "Comment" } as const;
+
+/** The compiled review as markdown: verdict, summary, comments with file and line, coverage, findings kept. */
 export function writeup(r: Review, files: FileDiff[]): string {
   const hunks = hunksOf(files);
   const total = hunks.filter((h) => h.hunk).length, seen = r.visited.length;
@@ -238,9 +241,10 @@ export function writeup(r: Review, files: FileDiff[]): string {
     const h = hunks.find((x) => x.id === n.hunk);
     return `${h?.file.path ?? n.hunk}${n.line !== null ? `:${n.line}` : ""}`;
   };
-  const out = [`# ${r.title}`, ``, `${r.url ?? r.label} · read ${seen} of ${total} hunks`, ``];
+  const out = [`# ${r.title}`, ``, `${r.verdict ? `**${VERDICT[r.verdict]}** · ` : ""}${r.url ?? r.label} · read ${seen} of ${total} hunks`, ``];
   const general = r.notes.filter((n) => !n.hunk), placed = r.notes.filter((n) => n.hunk);
   for (const n of general) out.push(n.text, ``);
+  if (placed.length) out.push(`## Comments`, ``);
   for (const n of placed) out.push(`**${place(n)}**`, n.text, ``);
   const kept = r.findings.filter((f) => f.status !== "withdrawn" && !r.dismissed.includes(f.id));
   if (kept.length) {

@@ -9,7 +9,8 @@
 
 import type { FileDiff, Hunk } from "./diff.ts";
 
-export type Chapter = { title: string; intent: string; hunks: string[] };
+/** `intent` is the one line shown with every hunk of the chapter; `why` is the paragraph behind `?`. */
+export type Chapter = { title: string; intent: string; why: string; hunks: string[] };
 export type Mechanical = { id: string; why: string };
 export type Plan = { summary: string; chapters: Chapter[]; mechanical: Mechanical[]; by: "guide" | "files" };
 export type Severity = "blocking" | "warn" | "nit";
@@ -72,8 +73,12 @@ export const GUIDE_SYSTEM = `You prepare a code change so a human can review it 
 You are given a pull request and its hunks, each with an id. Arrange the hunks into chapters in the order a careful reader should take them: the heart of the change first (the new type, the changed rule, the fix), then what depends on it (callers, wiring, config), then the tests last, in a chapter called "Proof". A chapter may mix files. Aim for 2 to 6 chapters; a small change may be one.
 Every hunk id you were given must appear in exactly one chapter. Never invent ids.
 Reply with JSON only, no prose around it:
-{"summary": "2-4 plain sentences: what this change does, and the one thing the reviewer should keep in mind while reading",
- "chapters": [{"title": "at most 5 words", "intent": "one sentence: what the reader should verify here", "hunks": ["id", ...]}]}`;
+{"summary": "two plain sentences, at most 50 words: what this change does, and the one thing to keep in mind while reading",
+ "chapters": [{"title": "at most 5 words",
+               "check": "at most 12 words, imperative, the one thing to verify here",
+               "why": "one or two sentences: what goes wrong if that check fails, or what makes it subtle",
+               "hunks": ["id", ...]}]}
+Good "check" values: "Seeding happens once per millisecond, dated intents only" · "Every caller passes the new floor" · "The test would fail on the old code". Bad: anything with "verify that", a list, or a second clause.`;
 
 export function guidePrompt(src: { title: string; body: string }, hunks: HunkAt[], mechanical: Mechanical[]): string {
   const skip = new Set(mechanical.map((m) => m.id));
@@ -100,12 +105,20 @@ export function parseGuide(reply: string, hunks: HunkAt[], mechanical: Mechanica
   const chapters: Chapter[] = [];
   for (const c of Array.isArray(j.chapters) ? j.chapters as any[] : []) {
     const ids = (Array.isArray(c?.hunks) ? c.hunks as unknown[] : []).filter((x): x is string => typeof x === "string" && want.has(x) && !seen.has(x) && !!seen.add(x));
-    if (ids.length) chapters.push({ title: clip(String(c.title ?? "Untitled").trim(), 60), intent: clip(String(c.intent ?? "").trim(), 300), hunks: ids });
+    if (ids.length) chapters.push({ title: clip(String(c.title ?? "Untitled").trim(), 60), intent: oneLine(String(c.check ?? c.intent ?? "")), why: clip(String(c.why ?? "").trim(), 400), hunks: ids });
   }
   const strays = [...want].filter((id) => !seen.has(id));
-  if (strays.length) chapters.push({ title: chapters.length ? "Also changed" : "The change", intent: chapters.length ? "Hunks the guide did not place; read them too." : "", hunks: strays });
+  if (strays.length) chapters.push({ title: chapters.length ? "Also changed" : "The change", intent: chapters.length ? "Hunks the guide did not place" : "", why: chapters.length ? "The guide left these out of every chapter; read them too." : "", hunks: strays });
   if (!chapters.length) throw new Error("the guide placed no hunks");
-  return { summary: clip(String(j.summary ?? "").trim(), 800), chapters, mechanical, by: "guide" };
+  return { summary: clip(String(j.summary ?? "").trim(), 400), chapters, mechanical, by: "guide" };
+}
+
+/** The guide's one-liner, held to one line: no "verify that", no trailing period, at most 12 words. */
+export function oneLine(s: string): string {
+  const t = s.trim().replace(/^(please )?(verify|check|confirm|ensure|make sure)( that)?\s+/i, "").replace(/[.\s]+$/, "");
+  const words = t.split(/\s+/).filter(Boolean);
+  const out = words.length > 12 ? words.slice(0, 12).join(" ") + "…" : words.join(" ");
+  return out ? out[0]!.toUpperCase() + out.slice(1) : out;
 }
 
 /** With no guide (or a failed one): a chapter per file, in git's order. */
@@ -113,7 +126,7 @@ export function filePlan(files: FileDiff[], mechanical: Mechanical[]): Plan {
   const skip = new Set(mechanical.map((m) => m.id));
   const chapters = files.flatMap((f) => {
     const ids = f.hunks.map((h) => hunkId(f, h)).filter((id) => !skip.has(id));
-    return ids.length ? [{ title: f.path, intent: "", hunks: ids }] : [];
+    return ids.length ? [{ title: f.path, intent: "", why: "", hunks: ids }] : [];
   });
   return { summary: "", chapters, mechanical, by: "files" };
 }
@@ -136,7 +149,7 @@ export function criticPrompt(src: { title: string }, chapter: Chapter, hunks: Hu
     const h = at.get(id); if (!h?.hunk) return [];
     return [`### ${id}\n${h.file.path}${h.hunk.context ? ` · ${h.hunk.context.trim()}` : ""}\n${numbered(h.hunk)}`];
   });
-  return `# ${src.title}\n\n## Chapter: ${chapter.title}\n${chapter.intent}\n\n${parts.join("\n\n")}`;
+  return `# ${src.title}\n\n## Chapter: ${chapter.title}\n${chapter.intent}. ${chapter.why}\n\n${parts.join("\n\n")}`;
 }
 
 const SEV = new Set<Severity>(["blocking", "warn", "nit"]);

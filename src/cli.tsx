@@ -18,14 +18,16 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   head; the guide and findings are redone only when the head moved (or with --fresh).
   --ai picks the model (claude, the default, is claude -p on your subscription); --no-ai skips the models.
 
-  Keys:  j/k line   h/l hunk   J/K chapter   ? what to verify here   f next finding   d dismiss it
-         a ask about this hunk   e open in the editor   n note on this line   N general note
-         s write-up (notes + coverage, to stdout and <slug>.review.md)   q quit (everything is kept)
+  Keys:  j/k line   h/l hunk   J/K chapter   123G go to file line   gg/G first/last   ]f [f next/previous finding
+         ? why this chapter matters   f finding under the cursor   d dismiss it   a ask about this hunk
+         e open the file here in your editor   n comment on this line   N summary comment
+         s submit: pick a verdict, preview the review, Enter (saved as <slug>.review.md; posting comes with
+         the platform adapters)   q quit (everything is kept)
 
   prview prepare <target>     build it (fetch, guide, critic) without opening the screen; open it later
   prview list                 reviews that still exist
   prview open <name>          reopen one (e.g. pm-pr-12), rebuilt at the PR's current head
-  prview writeup <name>       print the write-up without opening the screen
+  prview writeup <name>       print the compiled review without opening the screen
   prview done <name>          remove it (worktree, fetched refs, state)`;
 
 function editor(): string[] {
@@ -55,7 +57,7 @@ async function review(r: Review): Promise<void> {
       const md = writeup(r, files);
       const out = join(home(), `${r.slug}.review.md`);
       writeFileSync(out, md);
-      process.stdout.write(md + `\n(written to ${out})\n`);
+      process.stdout.write(md + `\nSaved to ${out}. Posting to the PR's platform is not built yet; the markdown above is the review.\n`);
     }
     return;
   }

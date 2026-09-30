@@ -3,7 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDiff } from "../src/diff.ts";
-import { applyRefute, classify, filePlan, hunksOf, parseCritic, parseGuide } from "../src/guide.ts";
+import { applyRefute, classify, filePlan, hunksOf, oneLine, parseCritic, parseGuide } from "../src/guide.ts";
+import { gotoLine, nextFinding } from "../src/nav.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "prview-"));
 process.env.PRVIEW_HOME = join(tmp, "store");
@@ -96,8 +97,8 @@ test("mechanical hunks are classified by rule: lock files, whitespace, moves; a 
 
 test("the guide's chapters are checked: unknown ids dropped, repeats kept once, strays collected; a bad reply falls back by file", () => {
   const files = parseDiff(MECH), hunks = hunksOf(files), mech = classify(files);
-  const plan = parseGuide('```json\n{"summary":"Bumps n.","chapters":[{"title":"The bump","intent":"Check n.","hunks":["src/real.rs@1:1","nope@1:1","src/real.rs@1:1","Cargo.lock@1:1"]}]}\n```', hunks, mech);
-  expect(plan.chapters).toEqual([{ title: "The bump", intent: "Check n.", hunks: ["src/real.rs@1:1"] }]);
+  const plan = parseGuide('```json\n{"summary":"Bumps n.","chapters":[{"title":"The bump","check":"Verify that n is two.","why":"Off by one.","hunks":["src/real.rs@1:1","nope@1:1","src/real.rs@1:1","Cargo.lock@1:1"]}]}\n```', hunks, mech);
+  expect(plan.chapters).toEqual([{ title: "The bump", intent: "N is two", why: "Off by one.", hunks: ["src/real.rs@1:1"] }]);
   expect(plan.summary).toBe("Bumps n.");
   const strays = parseGuide('{"chapters":[]}', hunks, mech);
   expect(strays.chapters[0]!.hunks).toEqual(["src/real.rs@1:1"]);
@@ -107,7 +108,7 @@ test("the guide's chapters are checked: unknown ids dropped, repeats kept once, 
 
 test("findings are anchored to a real line of their hunk, or to the hunk's start; a refute can withdraw or downgrade", () => {
   const files = parseDiff(MECH), hunks = hunksOf(files);
-  const chapter = { title: "The bump", intent: "", hunks: ["src/real.rs@1:1"] };
+  const chapter = { title: "The bump", intent: "", why: "", hunks: ["src/real.rs@1:1"] };
   const fs = parseCritic(JSON.stringify([
     { hunk: "src/real.rs@1:1", side: "new", line: 1, severity: "blocking", kind: "bug", claim: "n is wrong", evidence: "because" },
     { hunk: "src/real.rs@1:1", side: "old", line: 99, severity: "silly", claim: "off the hunk" },
@@ -133,7 +134,7 @@ test("a review builds from a local range: worktree at the head, state on disk, n
   const r = await build(repo, "main..feature", { ai: null });
   expect(Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: r.worktree }).stdout.toString().trim()).toBe(git("rev-parse", "feature"));
   expect(r.plan.by).toBe("files");
-  expect(r.plan.chapters).toEqual([{ title: "keep.txt", intent: "", hunks: ["keep.txt@1:1"] }]);
+  expect(r.plan.chapters).toEqual([{ title: "keep.txt", intent: "", why: "", hunks: ["keep.txt@1:1"] }]);
   expect(JSON.parse(readFileSync(join(tmp, "store", `${r.slug}.json`), "utf8")).slug).toBe(r.slug);
 
   // The reader's state survives a rebuild at the same head; the write-up reports it.
@@ -147,4 +148,28 @@ test("a review builds from a local range: worktree at the head, state on disk, n
   const md = writeup(load(r.slug), filesOf(again));
   expect(md).toContain("read 1 of 1 hunks");
   expect(md).toContain("**keep.txt:2**\nwhy shout?");
+});
+
+test("the guide's one-liner is held to one line", () => {
+  expect(oneLine("Verify that seeding happens once per millisecond.")).toBe("Seeding happens once per millisecond");
+  expect(oneLine("make sure every caller passes the new floor")).toBe("Every caller passes the new floor");
+  expect(oneLine("one two three four five six seven eight nine ten eleven twelve thirteen fourteen")).toBe("One two three four five six seven eight nine ten eleven twelve…");
+  expect(oneLine("  ")).toBe("");
+});
+
+test("123G finds the hunk holding that file line, or the nearest one; ]f walks findings in reading order", () => {
+  const files = parseDiff(DIFF);
+  const items = hunksOf(files).filter((h) => h.hunk).map((h, i) => ({ id: h.id, path: h.file.path, hunk: h.hunk!, chapter: 0 }));
+  // src/a.rs has hunks at 10–13 and at 41 (a deletion); src/new.rs at 1–2
+  expect(gotoLine(items, 0, 12)).toEqual({ item: 0, line: 3 });
+  expect(gotoLine(items, 1, 11)).toEqual({ item: 0, line: 2 });
+  expect(gotoLine(items, 0, 30)).toEqual({ item: 1, line: 0 }); // the closest hunk of the file (the deletion at 41), at its near edge
+  expect(gotoLine(items, 2, 99)).toEqual({ item: 2, line: 1 });
+  const f = (id: number, hunk: string, line: number) => ({ id, hunk, side: "new" as const, line, severity: "warn" as const, kind: "bug", claim: "", evidence: "", status: "upheld" as const });
+  const fs = [f(1, "src/a.rs@10:10", 12), f(2, "src/new.rs@0:1", 2), f(3, "src/a.rs@10:10", 10)];
+  expect(nextFinding(items, fs, { item: 0, line: -1 }, 1)?.finding.id).toBe(3);
+  expect(nextFinding(items, fs, { item: 0, line: 0 }, 1)?.finding.id).toBe(1);
+  expect(nextFinding(items, fs, { item: 0, line: 3 }, 1)?.finding.id).toBe(2);
+  expect(nextFinding(items, fs, { item: 2, line: 1 }, 1)).toBeUndefined();
+  expect(nextFinding(items, fs, { item: 2, line: 1 }, -1)?.finding.id).toBe(1);
 });
