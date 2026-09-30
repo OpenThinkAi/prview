@@ -33,6 +33,12 @@ What you get is a full-screen review, not a diff dump:
 - **Notes and coverage.** `n` notes the line, `N` the whole change. `s` prints the write-up:
   notes with file and line, how much of the change you actually read, and the findings you kept.
   Everything is saved as you go; `q` and come back later.
+- **Blind first pass.** With `blind = true` in the config (or `--blind` for a run, `--no-blind` to turn
+  it off) findings stay hidden in a chapter until you have visited every hunk in it, so you read the
+  code before you read the critic. The gutter shows no `▲`, `f`, `d` and `]f` do nothing there, and the
+  rail marks the chapter `▲?`. `F` reveals the chapter early: a box lists what the model found next to
+  the comments you already left, the reveal is kept in the document (`human.revealed`), and the
+  write-up notes which chapters you looked at early.
 
 Models: named in `~/.config/prview/config.toml` (or `$PRVIEW_CONFIG`) and assigned per role. With no
 config every role is `claude -p` on your subscription. `--ai NAME` uses one named model for all four
@@ -43,6 +49,7 @@ only when the PR head moves, or with `--fresh`. The critic reads each chapter `-
 the worst by severity, then votes. Each run's time and cost are kept in the review's JSON.
 
 ```toml
+blind = true                 # top level, before any [table]: hide findings until a chapter is read
 [models.claude]              # kinds: claude-cli | anthropic | openai-compatible
 kind = "claude-cli"
 [models.sonnet]
@@ -81,8 +88,7 @@ prview show review.json                 # import, then open
 A document is anchored on its head commit and is refused by a review at any other head.
 [`schema/`](./schema/) has the JSON Schema and what a producer needs to emit.
 
-Not yet: posting the verdict anywhere, a blind first pass (findings hidden until you have read
-the chapter).
+Not yet: posting the verdict anywhere.
 
 ## Checking the guide's intents
 

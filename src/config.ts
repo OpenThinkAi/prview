@@ -13,7 +13,7 @@ export const KINDS = ["claude-cli", "anthropic", "openai-compatible"] as const;
 export type Kind = (typeof KINDS)[number];
 
 export type ModelDef = { name: string; kind: Kind; endpoint?: string; model?: string; keyEnv?: string; keyKeychain?: string };
-export type Config = { models: Record<string, ModelDef>; roles: Partial<Record<Role, string>>; path: string | null };
+export type Config = { models: Record<string, ModelDef>; roles: Partial<Record<Role, string>>; /** Blind first pass: findings stay hidden in a chapter until it has been read. */ blind: boolean; path: string | null };
 /** A model whose credential has been looked up and is ready to call. */
 export type Resolved = { def: ModelDef; key?: string };
 export type Lookups = { env: Record<string, string | undefined>; keychain: (service: string) => string | undefined };
@@ -136,7 +136,8 @@ export function parseConfig(text: string, path: string | null = null): Config {
     if (!models[n]) throw new ConfigError(`[roles]: ${role} names ${n}, which is not a [models.${n}]`);
     roles[role] = n;
   }
-  return { models, roles, path };
+  if (t.blind !== undefined && typeof t.blind !== "boolean") throw new ConfigError("blind must be true or false");
+  return { models, roles, blind: t.blind === true, path };
 }
 
 /** The user's config, or the built-in (claude -p for everything) when there is no file. */

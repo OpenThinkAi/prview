@@ -18,7 +18,8 @@ export class Fail extends Error {}
 export type Verdict = "approve" | "request_changes" | "comment";
 export type Target = { repo: string; base: string; head: string; url?: string; platform?: string; title: string; body: string; label: string };
 export type Comment = { hunk: string | null; side: "new" | "old"; line: number | null; text: string; at: string };
-export type Human = { comments: Comment[]; dismissals: string[]; visited: string[]; verdict?: Verdict };
+/** `revealed` is optional so a document from before the blind pass loads unchanged: chapters (by first hunk) whose findings were shown before being read. */
+export type Human = { comments: Comment[]; dismissals: string[]; visited: string[]; revealed?: string[]; verdict?: Verdict };
 /**
  * Reserved: a producer's command to run after submit. A document can come from anyone, so a command
  * it names is never kept silently; it is dropped on read until submission can show it and ask first.
@@ -92,6 +93,8 @@ export function parseDocument(input: unknown): Doc {
     dismissals: arr(h.dismissals).map(String).filter((d) => ids.has(d)),
     visited: arr(h.visited).filter((v): v is string => typeof v === "string"),
   };
+  const revealed = arr(h.revealed).filter((v): v is string => typeof v === "string");
+  if (revealed.length) human.revealed = [...new Set(revealed)];
   if (VERDICTS.has(h.verdict as Verdict)) human.verdict = h.verdict as Verdict;
 
   // `on_submit` is deliberately not read (see OnSubmit).
@@ -118,6 +121,7 @@ export function fit(doc: Doc, files: FileDiff[]): Doc {
   });
   const ids = new Set(findings.map((f) => f.id));
   const human = { ...doc.human, dismissals: doc.human.dismissals.filter((d) => ids.has(d)), visited: doc.human.visited.filter((v) => at.has(v)) };
+  if (doc.human.revealed) human.revealed = doc.human.revealed.filter((v) => at.has(v));
   return { ...doc, plan, findings, human };
 }
 
@@ -158,6 +162,8 @@ export function merge(into: Doc, incoming: Doc): Doc {
     dismissals: [...new Set([...into.human.dismissals, ...incoming.human.dismissals.map((d) => renamed.get(d) ?? d)])],
     visited: [...new Set([...into.human.visited, ...incoming.human.visited])],
   };
+  const revealed = [...new Set([...(into.human.revealed ?? []), ...(incoming.human.revealed ?? [])])];
+  if (revealed.length) human.revealed = revealed;
   const verdict = into.human.verdict ?? incoming.human.verdict;
   if (verdict) human.verdict = verdict;
   const plan = into.plan.by === "files" && incoming.plan.by !== "files" && incoming.plan.chapters.length ? incoming.plan : into.plan;

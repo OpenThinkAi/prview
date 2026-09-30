@@ -89,6 +89,7 @@
         },
         "dismissals": { "type": "array", "items": { "type": "string" }, "description": "finding ids" },
         "visited": { "type": "array", "items": { "$ref": "#/$defs/hunk" } },
+        "revealed": { "type": "array", "items": { "$ref": "#/$defs/hunk" }, "description": "chapters whose findings were shown before the reader had been through them (blind first pass), each named by its first hunk" },
         "verdict": { "enum": ["approve", "request_changes", "comment"] }
       }
     },
