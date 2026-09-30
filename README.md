@@ -24,7 +24,12 @@ What you get is a full-screen review, not a diff dump:
   `a` a question about the hunk in front of you.
 - **Your editor for the real code.** `e` opens the file at the line under the cursor in a
   worktree at the PR head (`$EDITOR`, default `hx`; VS Code, Zed and vim forms are handled).
-  Quit the editor and you are back where you were.
+  Quit the editor and you are back where you were. Inside tmux the editor opens in a split pane
+  to the right and prview stays on screen.
+- **Colour and width.** Code is coloured by token (keywords, strings, comments, numbers, types); on
+  added and removed lines the green or red stays and tokens differ by weight, so the diff still reads
+  first. Below 100 columns the rail shrinks to chapter numbers. A long line is cut with `…`: `H`/`L`
+  pan sideways, `w` wraps it instead. In an open box `PgUp`/`PgDn` (or `ctrl-u`/`ctrl-d`) page.
 - **Notes and coverage.** `n` notes the line, `N` the whole change. `s` prints the write-up:
   notes with file and line, how much of the change you actually read, and the findings you kept.
   Everything is saved as you go; `q` and come back later.
@@ -77,7 +82,7 @@ A document is anchored on its head commit and is refused by a review at any othe
 [`schema/`](./schema/) has the JSON Schema and what a producer needs to emit.
 
 Not yet: posting the verdict anywhere, a blind first pass (findings hidden until you have read
-the chapter), syntax colouring inside hunks.
+the chapter).
 
 ## Checking the guide's intents
 

@@ -4,7 +4,8 @@
 //
 // The app owns the terminal; an editor is something it launches. `e` hands back an `edit` outcome
 // with the file and line under the cursor, the CLI runs the editor in the head worktree, then renders
-// the app again with the same state.
+// the app again with the same state. Inside tmux the CLI passes `beside` instead, and the editor opens in
+// a split pane while this screen stays up.
 //
 // Everything shown comes from the review document (`review.doc`), whoever produced it; the rest of
 // the review is only where the cursor was and where the worktree is.
@@ -16,6 +17,9 @@ import { hunksOf, MECHANICAL_INTENT, worstFirst, type Finding, type HunkAt } fro
 import { ask, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
 import type { Doc, Verdict } from "./document.ts";
 import { gotoLine, nextFinding, type NavItem } from "./nav.ts";
+import { highlightLines, langOf, lengthOf, sliceSpans, styleOf, type Span } from "./highlight.ts";
+import { clampScroll, clampX, floatHeight, floatRows, layoutOf, pageStep, rowsFor, windowOf, wrapText } from "./layout.ts";
+import type { Beside } from "./editor.ts";
 
 export type Outcome = { kind: "quit" } | { kind: "submit" } | { kind: "edit"; path: string; line: number };
 
@@ -30,14 +34,24 @@ function itemsOf(d: Doc, files: FileDiff[]): Item[] {
   return out;
 }
 
+/** Columns a press of H or L moves the code sideways. */
+const PAN = 8;
 const SEV = { blocking: "red", warn: "yellow", nit: "blue" } as const;
 type Float = { title: string; body: string; color?: string; tall?: boolean };
 type Mode = { kind: "nav" } | { kind: "comment"; general: boolean } | { kind: "ask" } | { kind: "verdict" } | { kind: "preview" };
 
-function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onDone: (o: Outcome) => void }) {
+export type AppProps = {
+  review: Review; files: FileDiff[]; onDone: (o: Outcome) => void;
+  /** Open the editor in a pane beside this screen instead of taking the terminal over. */
+  beside?: Beside;
+  /** Override the terminal size (tests, mostly: there is no real terminal to measure). */
+  size?: { cols: number; rows: number };
+};
+
+export function App({ review, files, onDone, beside, size }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
-  const cols = stdout.columns || 100, rows = (stdout.rows || 40) - 1;
+  const cols = size?.cols ?? (stdout.columns || 100), rows = (size?.rows ?? (stdout.rows || 40)) - 1;
   const r = useRef(review).current;
   const d = r.doc, h = d.human;
   const items = useMemo(() => itemsOf(d, files), [d, files]);
@@ -45,7 +59,7 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
   const redraw = () => { save(r); bump((n) => n + 1); };
   const [pos, setPosRaw] = useState<Pos>(() => ({ item: Math.min(r.pos.item, Math.max(0, items.length - 1)), line: r.pos.line }));
   const setPos = (p: Pos) => { r.pos = p; setPosRaw(p); };
-  const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary ? { title: "What this change is", body: `${d.plan.summary}\n\n? why this chapter · f finding · ]f next finding · a ask · e editor · n comment · N summary · s submit · q quit` } : null);
+  const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary ? { title: "What this change is", body: `${d.plan.summary}\n\n? why this chapter · f finding · ]f next finding · w wrap · a ask · e editor · n comment · N summary · s submit · q quit` } : null);
   const [scroll, setScroll] = useState(0);
   const setFloat = (f: Float | null) => { setScroll(0); setFloatRaw(f); };
   const [mode, setMode] = useState<Mode>({ kind: "nav" });
@@ -56,11 +70,17 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
   const setCount = (c: string) => { countRef.current = c; tick((n) => n + 1); };
   const setPending = (p: "g" | "]" | "[" | null) => { pendingRef.current = p; tick((n) => n + 1); };
   const [busy, setBusy] = useState<string | null>(null);
+  // Long lines either scroll sideways (H/L) or wrap onto more rows (w).
+  const [wrap, setWrap] = useState(false);
+  const [panX, setPanX] = useState(0);
 
   const item = items[pos.item];
   const hunk = item?.hunk ?? null;
   const lines = hunk?.lines ?? [];
   const line = Math.min(pos.line, Math.max(0, lines.length - 1));
+  // Tabs become spaces before colouring so a token's columns are the columns it is drawn in.
+  const shape = useMemo(() => lines.map((l) => l.text.replace(/\t/g, "    ")), [item?.id]);
+  const spans = useMemo(() => highlightLines(shape, item ? langOf(item.path) : undefined), [shape, item?.path]);
   const chapter = item ? d.plan.chapters[item.chapter] : undefined;
   const chapterTitle = item ? chapter?.title ?? "Mechanical" : "";
 
@@ -73,7 +93,7 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
   // Seeing a hunk is reading it.
   useEffect(() => { if (item && !h.visited.includes(item.id)) { h.visited.push(item.id); redraw(); } }, [item?.id]);
 
-  const goItem = (i: number) => { const n = Math.max(0, Math.min(items.length - 1, i)); if (n !== pos.item) { setPos({ item: n, line: 0 }); setFloat(null); } };
+  const goItem = (i: number) => { const n = Math.max(0, Math.min(items.length - 1, i)); if (n !== pos.item) { setPos({ item: n, line: 0 }); setFloat(null); setPanX(0); } };
   const goChapter = (dir: 1 | -1) => {
     if (!item) return;
     const target = item.chapter + dir;
@@ -95,10 +115,17 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
     setPos({ item: hit.item, line: hit.line });
     showFinding(hit.finding);
   };
-  const preview = () => setFloat({ title: `${VERDICT[h.verdict!]} · Enter submits, Esc goes back, j/k scroll`, color: "green", tall: true, body: writeup(d, files) });
+  const preview = () => setFloat({ title: `${VERDICT[h.verdict!]} · Enter submits, Esc goes back, j/k or PgUp/PgDn scroll`, color: "green", tall: true, body: writeup(d, files) });
 
   // Fast typing or a paste can deliver several plain characters in one chunk ("781G"): take them one at a time.
   useInput((input, key) => { if (input.length > 1 && !key.ctrl && !key.meta) for (const c of input) handle(c, key); else handle(input, key); });
+  const scrollFloat = (ch: string, key: Parameters<Parameters<typeof useInput>[0]>[1]): boolean => {
+    const by = key.pageDown || key.ctrl && ch === "d" ? pageStep(floatH) : key.pageUp || key.ctrl && ch === "u" ? -pageStep(floatH)
+      : mode.kind === "preview" && (ch === "j" || key.downArrow) ? 1 : mode.kind === "preview" && (ch === "k" || key.upArrow) ? -1 : 0;
+    if (!by) return false;
+    setScroll((s) => clampScroll(s + by, floatLines.length, floatH));
+    return true;
+  };
   const handle = (ch: string, key: Parameters<Parameters<typeof useInput>[0]>[1]) => {
     if (busy) return;
     if (mode.kind === "verdict") {
@@ -110,8 +137,7 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
     if (mode.kind === "preview") {
       if (key.escape) { setMode({ kind: "verdict" }); setFloat(null); return; }
       if (key.return) { onDone({ kind: "submit" }); exit(); return; }
-      if (ch === "j" || key.downArrow) setScroll((s) => s + 1);
-      if (ch === "k" || key.upArrow) setScroll((s) => Math.max(0, s - 1));
+      scrollFloat(ch, key);
       return;
     }
     if (mode.kind !== "nav") {
@@ -144,6 +170,7 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
       else if ((p === "]" || p === "[") && ch === "c") goChapter(p === "]" ? 1 : -1);
       return;
     }
+    if (key.ctrl || key.pageDown || key.pageUp) { scrollFloat(ch, key); return; } // before the letters: ctrl-d is a page, not "dismiss"
     if (/^[0-9]$/.test(ch) && (count || ch !== "0")) { setCount(count + ch); return; }
     const n = count ? parseInt(count, 10) : undefined;
     setCount("");
@@ -181,40 +208,53 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
       if (!item) return;
       const l = lines[line];
       const at = l?.n ?? lines.slice(line).find((x) => x.n !== null)?.n ?? hunk?.newStart ?? 1;
+      if (beside) { const err = beside(item.path, at); if (err) setFloat({ title: "editor", body: err, color: "red" }); return; }
       onDone({ kind: "edit", path: item.path, line: at }); exit();
     }
     else if (ch === "n") setMode({ kind: "comment", general: false });
     else if (ch === "N") setMode({ kind: "comment", general: true });
     else if (ch === "a") setMode({ kind: "ask" });
-    else if (key.pageDown) setScroll((s) => s + 5);
-    else if (key.pageUp) setScroll((s) => Math.max(0, s - 5));
+    else if (ch === "w") { setWrap(!wrap); setPanX(0); }
+    else if (ch === "H" || ch === "L") { if (!wrap) setPanX(clampX(panX + (ch === "L" ? PAN : -PAN), longest, codeCols)); }
+    else scrollFloat(ch, key);
   };
 
   // ---- layout
-  const railW = Math.min(34, Math.max(24, Math.floor(cols * 0.28)));
-  const mainW = cols - railW - 1;
+  const L = layoutOf(cols);
+  const { railW, mainW, gutterW, codeW, floatW, floatInner } = L;
+  const codeCols = codeW - 1; // the +/- sign takes the first column
   const total = items.filter((i) => !i.mechanical).length, seen = items.filter((i) => !i.mechanical && h.visited.includes(i.id)).length;
   const liveFindings = d.findings.filter(kept).length;
-  const gutterW = 5;
-  const codeW = mainW - gutterW - 5; // paddingLeft, number, space, mark, space, and one to spare
 
   // The float sits right under the cursor line, so the window keeps that many rows free below it.
-  const floatW = mainW - gutterW - 4, floatInner = floatW - 4; // border and padding on each side
   const floatLines = float ? wrapText(float.body, floatInner) : [];
-  const floatMax = float?.tall ? rows - 8 : Math.max(5, Math.floor(rows / 2));
-  const floatH = float ? Math.min(floatLines.length + 3, floatMax) : 0; // border, title, border
-  const shownFloat = floatLines.slice(scroll, scroll + floatH - 3);
+  const floatH = float ? floatHeight(floatLines.length, rows, !!float.tall) : 0;
+  const sc = float ? clampScroll(scroll, floatLines.length, floatH) : 0;
+  const shownFloat = floatLines.slice(sc, sc + floatRows(floatH));
   const bodyRows = rows - 5; // header, hunk header, intent, footer, spare
-  const visible = Math.max(3, bodyRows - floatH);
-  const start = Math.max(0, Math.min(line - Math.floor(visible / 2), lines.length - visible));
-  const shown = lines.slice(start, start + visible);
+  const longest = Math.max(0, ...spans.map(lengthOf));
+  const x = wrap ? 0 : clampX(panX, longest, codeCols);
+  const heights = lines.map((l, i) => (wrap ? rowsFor(lengthOf(spans[i] ?? []), codeCols) : 1) + notesAt(l).length);
+  const { start, end } = windowOf(heights, line, Math.max(3, bodyRows - floatH));
+  const shown = lines.slice(start, end);
   const fit = (t: string) => t.length > codeW ? t.slice(0, codeW - 1) + "…" : t;
+
+  /** The code of line `i` as rows of spans: one row scrolled by `x`, or every row it wraps to. */
+  const rowsOf = (i: number): Span[][] => {
+    const sp = spans[i] ?? [], len = lengthOf(sp);
+    if (wrap) return Array.from({ length: rowsFor(len, codeCols) }, (_, k) => sliceSpans(sp, k * codeCols, (k + 1) * codeCols));
+    const cut = len > x + codeCols;
+    const vis = sliceSpans(sp, x, x + codeCols - (cut ? 1 : 0));
+    return [cut ? [...vis, { text: "…", kind: "comment" }] : vis];
+  };
 
   const footer = () => {
     switch (mode.kind) {
       case "verdict": return <Text><Text color="green" bold> verdict › </Text>a approve   r request changes   c comment   <Text dimColor>Esc cancel</Text></Text>;
-      case "preview": return <Text dimColor> Enter submits · Esc back to the verdict · j/k scroll the preview</Text>;
-      case "nav": return <Text dimColor> j/k line  h/l hunk  J/K chapter  123G line  ]f finding  ? why  f finding  d dismiss  a ask  e editor  n comment  N summary  s submit  q quit{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
+      case "preview": return <Text wrap="truncate" dimColor> Enter submits · Esc back to the verdict · j/k PgUp/PgDn scroll</Text>;
+      case "nav": return <Text wrap="truncate" dimColor> {L.narrow
+        ? "j/k h/l hunk  ]f find  ? why  a ask  e edit  n note  w wrap  s send  q quit"
+        : "j/k line  h/l hunk  J/K chapter  ]f finding  ? why  f/d finding  a ask  e edit  n/N note  w wrap  H/L pan  s submit  q quit"}{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
       default: return <Text><Text color="cyan" bold> {mode.kind === "ask" ? "ask" : mode.general ? "summary comment" : "comment"} › </Text>{input}<Text inverse> </Text><Text dimColor>  (Enter to send, Esc to cancel)</Text></Text>;
     }
   };
@@ -227,7 +267,7 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
       </Box>
       <Box flexGrow={1}>
         <Box width={railW} flexDirection="column" borderStyle="single" borderRight borderTop={false} borderBottom={false} borderLeft={false} borderColor="gray" paddingRight={1}>
-          <Text dimColor> READ IN ORDER</Text>
+          <Text dimColor>{L.narrow ? " #" : " READ IN ORDER"}</Text>
           {[...d.plan.chapters.map((c, i) => ({ i, title: c.title })), ...(d.plan.mechanical.length ? [{ i: d.plan.chapters.length, title: `Mechanical (${d.plan.mechanical.length})` }] : [])].map(({ i, title }) => {
             const mine = items.filter((x) => x.chapter === i);
             const done = mine.length > 0 && mine.every((x) => h.visited.includes(x.id));
@@ -236,9 +276,9 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
             return (
               <Box key={i} flexDirection="column">
                 <Text color={here ? "cyan" : done ? "green" : undefined} bold={here} wrap="truncate">
-                  {here ? "▸" : done ? "✓" : " "} {i + 1} {title}{fs ? <Text color="yellow"> ▲{fs}</Text> : null}
+                  {here ? "▸" : done ? "✓" : " "}{L.narrow ? "" : " "}{i + 1}{L.narrow ? "" : ` ${title}`}{fs ? <Text color="yellow">{L.narrow ? "" : " "}▲{fs}</Text> : null}
                 </Text>
-                {here && mine.map((x) => {
+                {here && !L.narrow && mine.map((x) => {
                   const cur = x === item;
                   return <Text key={x.id} color={cur ? "cyan" : undefined} dimColor={!cur && h.visited.includes(x.id)} wrap="truncate">   {cur ? "›" : " "} {x.path.split("/").pop()}:{x.hunk.newStart}{d.findings.some((f) => f.hunk === x.id && kept(f)) ? " ▲" : ""}</Text>;
                 })}
@@ -251,7 +291,7 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
             <>
               <Text wrap="truncate">
                 <Text bold>{item.path}</Text>
-                <Text dimColor>{hunk.context.trim() ? ` · ${hunk.context.trim()}` : ""} · {where(hunk)} · {pos.item + 1}/{items.length}</Text>
+                <Text dimColor>{hunk.context.trim() ? ` · ${hunk.context.trim()}` : ""} · {where(hunk)} · {pos.item + 1}/{items.length}{wrap ? " · wrapped" : x ? ` · →${x}` : ""}</Text>
               </Text>
               <Text wrap="truncate">
                 {item.mechanical
@@ -266,16 +306,26 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
                 const mark = worst ? <Text color={SEV[worst.severity]}>▲</Text> : fs.length ? <Text dimColor>△</Text> : ns.length ? <Text color="cyan">»</Text> : <Text> </Text>;
                 const num = String(l.n ?? l.o ?? "").padStart(gutterW);
                 const color = l.t === "+" ? "green" : l.t === "-" ? "red" : undefined;
-                const text = `${l.t}${l.text}`.replace(/\t/g, "    ");
+                const changed = l.t !== " ";
+                const code = rowsOf(start + k); // `shown` starts at `start`; spans are indexed over the whole hunk
                 return (
                   <Box key={i} flexDirection="column">
-                    <Text wrap="truncate">
-                      <Text dimColor={!cur} color={cur ? "cyan" : undefined}>{num}</Text> {mark} <Text color={color} inverse={cur}>{cur ? fit(text).padEnd(codeW) : fit(text)}</Text>
-                    </Text>
+                    {code.map((row, k) => {
+                      const used = lengthOf(row);
+                      return (
+                        <Text key={k} wrap="truncate">
+                          {k === 0
+                            ? <><Text dimColor={!cur} color={cur ? "cyan" : undefined}>{num}</Text> {mark} <Text color={color} inverse={cur}>{l.t}</Text></>
+                            : <Text dimColor>{" ".repeat(gutterW + 3)}↪</Text>}
+                          {row.map((sp, j) => { const st = styleOf(sp.kind, changed); return <Text key={j} color={st.color ?? color} bold={st.bold} italic={st.italic} dimColor={st.dim} inverse={cur}>{sp.text}</Text>; })}
+                          {cur ? <Text color={color} inverse>{" ".repeat(Math.max(0, codeCols - used))}</Text> : null}
+                        </Text>
+                      );
+                    })}
                     {ns.map((n, j) => <Text key={j} color="cyan" wrap="truncate">{" ".repeat(gutterW + 3)}» {fit(n.text)}</Text>)}
                     {cur && float ? (
                       <Box flexDirection="column" marginLeft={gutterW + 2} width={floatW} height={floatH} overflow="hidden" borderStyle="round" borderColor={float.color ?? "gray"} paddingX={1}>
-                        <Text bold color={float.color} wrap="truncate">{float.title}{busy ? <Text dimColor> · {busy}</Text> : null}{scroll ? <Text dimColor> · ↑{scroll}</Text> : null}</Text>
+                        <Text bold color={float.color} wrap="truncate">{float.title}{busy ? <Text dimColor> · {busy}</Text> : null}{floatLines.length > floatRows(floatH) ? <Text dimColor> · {sc + 1}-{Math.min(floatLines.length, sc + floatRows(floatH))}/{floatLines.length} PgUp/PgDn</Text> : null}</Text>
                         {shownFloat.map((t, j) => <Text key={j} wrap="truncate">{t}</Text>)}
                       </Box>
                     ) : null}
@@ -291,24 +341,12 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
   );
 }
 
-function wrapText(s: string, width: number): string[] {
-  const out: string[] = [];
-  for (const para of s.split("\n")) {
-    let cur = "";
-    for (const w of para.split(/\s+/).filter(Boolean)) {
-      if (cur && (cur + " " + w).length > width) { out.push(cur); cur = w; } else cur = cur ? `${cur} ${w}` : w;
-    }
-    out.push(cur);
-  }
-  return out;
-}
-
 /** Run the app once; resolves with what the reader wants next. State lives on the review object and is saved as it changes. */
-export function show(review: Review, files: FileDiff[]): Promise<Outcome> {
+export function show(review: Review, files: FileDiff[], beside?: Beside): Promise<Outcome> {
   return new Promise((resolve) => {
     let outcome: Outcome = { kind: "quit" };
     process.stdout.write("\x1b[?1049h\x1b[H");
-    const app = render(<App review={review} files={files} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
+    const app = render(<App review={review} files={files} beside={beside} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
     app.waitUntilExit().then(() => { app.clear(); process.stdout.write("\x1b[?1049l"); save(review); resolve(outcome); });
   });
 }
