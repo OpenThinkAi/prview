@@ -478,3 +478,51 @@ test("the write-up lists kept findings by title", () => {
   expect(decided).toContain("Long prose about the thing · decided: ignored");
   expect(decided).not.toContain("Short title");
 });
+
+// ---------------------------------------------------------------- which model answered (no network: fetch is stubbed)
+
+import { claudeModelId, complete, modelLabel } from "../src/llm.ts";
+import { preparedBy } from "../src/build.ts";
+
+test("claude -p: the id comes from modelUsage when model is null; the heaviest writer wins", () => {
+  const reply = { type: "result", result: "{}", model: null, total_cost_usd: 0.01, modelUsage: { "claude-opus-5-5": { outputTokens: 900 }, "claude-haiku-5": { outputTokens: 12 } } };
+  expect(claudeModelId(reply)).toBe("claude-opus-5-5");
+  expect(claudeModelId({ modelUsage: { "claude-haiku-5": { outputTokens: 12 }, "claude-opus-5-5": { outputTokens: 900 } } })).toBe("claude-opus-5-5");
+  expect(claudeModelId({ model: "claude-sonnet-5-5", modelUsage: { x: {} } })).toBe("claude-sonnet-5-5");
+  expect(claudeModelId({ model: null, modelUsage: {} })).toBeUndefined();
+  expect(claudeModelId({ result: "x" })).toBeUndefined();
+  expect(claudeModelId(null)).toBeUndefined();
+});
+
+test("label: configured name, then the id, `default` until a reply names one", () => {
+  expect(modelLabel("claude")).toBe("claude · default");
+  expect(modelLabel("claude", "claude-opus-5-5")).toBe("claude · claude-opus-5-5");
+  expect(modelLabel("local-qwen", "qwen3-27b")).toBe("local-qwen · qwen3-27b");
+});
+
+test("OpenAI-compatible and Anthropic replies report their model in the usage callback", async () => {
+  const real = globalThis.fetch;
+  const reply = (body: unknown) => (async () => new Response(JSON.stringify(body))) as unknown as typeof fetch;
+  try {
+    globalThis.fetch = reply({ model: "qwen3-27b-q4", choices: [{ message: { content: "hi" }, finish_reason: "stop" }] });
+    let u: any;
+    await complete({ def: { name: "q", kind: "openai-compatible", endpoint: "http://x/v1", model: "qwen3" } }, "s", "p", (x) => { u = x; });
+    expect(u.model).toBe("qwen3-27b-q4");
+    globalThis.fetch = reply({ model: "claude-sonnet-5-5", content: [{ type: "text", text: "hi" }], stop_reason: "end_turn" });
+    await complete({ def: { name: "a", kind: "anthropic", model: "sonnet" }, key: "k" }, "s", "p", (x) => { u = x; });
+    expect(u.model).toBe("claude-sonnet-5-5");
+    globalThis.fetch = reply({ choices: [{ message: { content: "hi" }, finish_reason: "stop" }] });
+    await complete({ def: { name: "q", kind: "openai-compatible", endpoint: "http://x/v1", model: "qwen3" } }, "s", "p", (x) => { u = x; });
+    expect(u.model).toBeUndefined();
+  } finally { globalThis.fetch = real; }
+});
+
+test("preparedBy groups roles by model id, falls back to the configured name, and is absent without runs", () => {
+  expect(preparedBy(undefined)).toBeUndefined();
+  expect(preparedBy([])).toBeUndefined();
+  expect(preparedBy([
+    { role: "guide", model: "claude-opus-5-5", ms: 1 }, { role: "critic", model: "claude-sonnet-5-5", ms: 1 },
+    { role: "critic", model: "claude-sonnet-5-5", ms: 1 }, { role: "refute", model: "claude-sonnet-5-5", ms: 1 },
+  ])).toBe("Prepared by claude-opus-5-5 (guide), claude-sonnet-5-5 (critic, refute)");
+  expect(preparedBy([{ role: "guide", name: "claude", ms: 1 }])).toBe("Prepared by claude (guide)");
+});
