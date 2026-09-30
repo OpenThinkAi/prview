@@ -71,9 +71,11 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
                               head, or start one in this clone; any producer's document, no source named.
                               Its comments arrive as findings (kind comment) you decide on like any other:
                               c/b adopt one as your own comment to edit, n rejects it. Its verdict is shown
-                              in the opening summary, never picked for you; nothing of it is posted as is
-  prview import --mine <file> restore your own export: comments, decisions and verdict kept as they were
-  prview show [--mine] <file | ->  import a document, then open it
+                              in the opening summary, never picked for you; nothing of it is posted as is.
+  prview import --mine <file | ->
+                              restore your own export: comments, decisions and verdict kept as they were
+  prview show [--mine] <file | ->
+                              import a document, then open it
   prview done <name>          remove it (worktree, fetched refs, state)`;
 
 async function review(r: Review, blind: boolean, dryRun = false): Promise<void> {
