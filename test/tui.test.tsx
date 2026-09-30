@@ -10,7 +10,7 @@ import type { Review } from "../src/build.ts";
 import type { Doc } from "../src/document.ts";
 import { chapterHidden, earlyTitles, hiddenHunks, revealBody, revealEarly } from "../src/blind.ts";
 import { writeup } from "../src/build.ts";
-import { actionOf, ALL_ACTIONS, FINDING_KEYS, findingFooter, INFO_KEYS, infoFooter, NAV_ALIASES, NAV_KEYS, navFooter, startsChord } from "../src/keys.ts";
+import { actionOf, ALL_ACTIONS, DEFAULT_KEYMAP, effectiveKeys, installKeymap, keyOf, FINDING_KEYS, findingFooter, INFO_KEYS, infoFooter, NAV_ALIASES, NAV_KEYS, navFooter, startsChord } from "../src/keys.ts";
 import { parseDocument, SCHEMA } from "../src/document.ts";
 import { parseConfig } from "../src/config.ts";
 import { App, type Outcome } from "../src/tui.tsx";
@@ -843,7 +843,7 @@ test("info box that scrolls lists paging in the footer", async () => {
 test("nav: the footer comes from NAV_KEYS, every listed key acts, b/c/u are not in it and do nothing; F only with --blind", async () => {
   const wide = await open(undefined, { cols: 140, blind: false });
   expect(wide.frame()).toContain(navFooter(140, false));
-  expect(navFooter(140, false)).toBe("j/k line  h/l hunk  J/K chapter  ]f/f find  ? why  y copy  a ask  e edit  n/N note  w wrap  H/L pan  s submit  q quit");
+  expect(navFooter(140, false)).toBe("j/k line  h/l hunk  J/K chapter  ]f/f find  ? why  y copy  a ask  e edit  n/N note  w wrap  H/L pan  s submit  \\ keys  q quit");
   expect(navFooter(140, false)).not.toMatch(/decide|F reveal/);
   expect(navFooter(140, true)).toContain("F reveal");
   expect(NAV_KEYS.some((k) => /[bcu]/.test(k.key.replace("]f", "")) && k.key !== "q")).toBe(false);
@@ -916,4 +916,30 @@ test("actions: one lookup takes a state and a key to an action id, and the handl
   // The handler dispatches on the id: an action with no case would be listed in the footer and do nothing.
   const src = readFileSync(join(import.meta.dir, "../src/tui.tsx"), "utf8");
   for (const { id } of ALL_ACTIONS) expect(src, id).toContain(`case "${id}"`);
+});
+
+// ---------------------------------------------------------------- configurable bindings
+
+test("remapped finding.not_an_issue: the footer and the hints show the new key, the new key acts and the old one does not", async () => {
+  installKeymap(effectiveKeys({ "finding.not_an_issue": "d", "nav.reveal": "R", "finding.hide": "H" }));
+  try {
+    const t = await open(three);
+    await t.press("]f");
+    expect(findingFooter()).toBe("d not an issue  b block  c comment  u undo  H hide  ]f next  y copy");
+    expect(t.frame()).toContain(findingFooter());
+    await t.press("n"); // the old key is now nothing at all
+    expect(t.frame()).not.toContain("not an issue, why? ›");
+    await t.press("d");
+    expect(t.frame()).toContain("not an issue, why? ›");
+    await t.press("\x1b");
+    await t.press("h"); // and h no longer hides
+    expect(t.frame()).toContain(findingFooter());
+    await t.press("H");
+    expect(t.frame()).not.toContain(findingFooter());
+    expect(keyOf("finding.not_an_issue")).toBe("d");
+    // The box the bindings key opens lists the effective keys too.
+    await t.press("\\");
+    expect(t.frame()).toContain("Key bindings");
+    expect(t.frame()).toMatch(/R\s+Reveal|n\s+Write a comment/);
+  } finally { installKeymap(DEFAULT_KEYMAP); }
 });

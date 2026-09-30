@@ -140,6 +140,11 @@ q = ["how do I comment on the whole pull request", "leave a general comment", "w
 actions = ["nav.general_note"]
 why = "A comment on the pull request as a whole, not tied to any line."
 
+[[recipe]]
+q = ["how do I see the key bindings", "list the keys I can use here", "remind me what a key does"]
+actions = ["nav.bindings"]
+why = "Opens a box listing every binding for the state you are in, drawn from your own configuration."
+
 # ---- finishing
 
 [[recipe]]

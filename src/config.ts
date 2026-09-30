@@ -6,6 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { effectiveKeys, KeysError, type Keymap } from "./keys.ts";
 
 export const ROLES = ["guide", "critic", "refute", "ask"] as const;
 export type Role = (typeof ROLES)[number];
@@ -13,7 +14,7 @@ export const KINDS = ["claude-cli", "anthropic", "openai-compatible"] as const;
 export type Kind = (typeof KINDS)[number];
 
 export type ModelDef = { name: string; kind: Kind; endpoint?: string; model?: string; keyEnv?: string; keyKeychain?: string };
-export type Config = { models: Record<string, ModelDef>; roles: Partial<Record<Role, string>>; /** Blind first pass: findings stay hidden in a chapter until it has been read. */ blind: boolean; path: string | null };
+export type Config = { models: Record<string, ModelDef>; roles: Partial<Record<Role, string>>; /** Blind first pass: findings stay hidden in a chapter until it has been read. */ blind: boolean; /** The default bindings with the [keys] table laid over them, already validated. */ keymap: Keymap; path: string | null };
 /** A model whose credential has been looked up and is ready to call. */
 export type Resolved = { def: ModelDef; key?: string };
 export type Lookups = { env: Record<string, string | undefined>; keychain: (service: string) => string | undefined };
@@ -161,7 +162,14 @@ export function parseConfig(text: string, path: string | null = null): Config {
     roles[role] = n;
   }
   if (t.blind !== undefined && typeof t.blind !== "boolean") throw new ConfigError("blind must be true or false");
-  return { models, roles, blind: t.blind === true, path };
+  const overrides: Record<string, string> = {};
+  for (const [id, v] of Object.entries(table("keys"))) {
+    if (typeof v !== "string") throw new ConfigError(`[keys]: ${id} must be a string: the key, or "" to unbind`);
+    overrides[id] = v;
+  }
+  let keymap: Keymap;
+  try { keymap = effectiveKeys(overrides); } catch (e) { throw e instanceof KeysError ? new ConfigError(e.message) : e; }
+  return { models, roles, blind: t.blind === true, keymap, path };
 }
 
 /** The user's config, or the built-in (claude -p for everything) when there is no file. */

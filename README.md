@@ -99,6 +99,24 @@ ask = "qwen"
 A credential is read only from the env var or Keychain service the model itself names, never from
 some ambient key, so a local server never gets a cloud key.
 
+Key bindings: every key in this README is a default. `\` shows the bindings for the state you are in,
+and `prview keys` prints all of them by state (action, key, description). Remap any action with a
+`[keys]` table in the same config, as `"<state>.<action>" = "<key>"`, where the state is `nav` (no box
+open), `finding` or `info` and `prview keys` lists the action names. The footer, the `\` box, the
+hints in boxes and `prview keys` all show your keys.
+
+```toml
+[keys]
+"finding.not_an_issue" = "d"   # instead of n
+"nav.bindings" = "!"           # rebind the show-bindings key; it cannot be unbound
+"nav.wrap" = ""                # an empty key unbinds an action
+```
+
+A key is one printable character or a chord (`[` or `]` and one more character); digits, `g` and `G`
+are taken by counts and `gg`/`G`, and Esc cannot be rebound. prview refuses to start, naming the
+problem, when an action is unknown, two actions in one state share a key, or a key is not valid;
+`prview keys` prints the same message and exits 1.
+
 State lives under `~/.cache/prview` (`$PRVIEW_HOME`): a worktree per review and one JSON file.
 `prview done <name>` removes both.
 
