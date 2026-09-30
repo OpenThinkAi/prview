@@ -163,12 +163,13 @@ rubric (`rubric` in `src/guide.ts`): at most 12 words, names a concrete thing to
 the failures, and exits 0 when at least 90% pass.
 
 ```sh
-bun scripts/eval-intents.ts                          # five pinned merges from pm, stamp-cli, bloom
-bun scripts/eval-intents.ts --ai qwen                # another provider
-bun scripts/eval-intents.ts ~/src/app@abc123         # your own: DIR@MERGE or DIR@BASE..HEAD
+bun scripts/eval-intents.ts ../my-repo@abc1234              # a merge commit in a clone (its two parents)
+bun scripts/eval-intents.ts ../my-repo@main~3..feature      # or DIR@BASE..HEAD
+bun scripts/eval-intents.ts --ai qwen ../a@abc1234 ../b@def5678   # another provider, several changes
+bun scripts/eval-intents.ts --findings ../my-repo@abc1234   # also print the critic's finding titles
 ```
 
-The defaults point at the author's clones under `~/Development`; pass your own elsewhere. It calls
+There is no default list: name at least one change, or it prints usage and exits 2. It calls
 the model for real, one guide call per change, so run it before and after touching `GUIDE_SYSTEM`
 or the limits. When the parser has to cut an intent (over 12 words) or the summary (over two
 sentences), prview asks the guide once more for just those lines; the eval shows when that happened.
