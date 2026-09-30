@@ -185,6 +185,18 @@ bun scripts/build-embedder.ts                 # download, convert, rewrite the r
 bun scripts/build-embedder.ts --no-reference  # convert only
 ```
 
+## The docs index
+
+`docs/index.json` holds the embedded docs corpus (`src/corpus.ts`: one doc per action, one per phrasing in
+`docs/recipes.toml`): model name, dimension, a hash of the corpus, and the vectors. `search(query, n)` in
+`src/docs-index.ts` embeds the question and ranks by cosine plus a small bonus per query word found in the doc,
+returning action ids with scores. Change a recipe or an action's description and rebuild, or `bun test` fails:
+
+```sh
+bun run build:docs-index    # re-embed the corpus into docs/index.json; commit it
+bun scripts/eval-docs.ts    # 20+ real questions; the right action must be in the top 3 for 85%
+```
+
 ## Development
 
 ```sh

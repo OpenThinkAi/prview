@@ -9,7 +9,8 @@
   },
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:docs-index": "bun scripts/build-docs-index.ts"
   },
   "dependencies": {
     "ink": "^7.0.1",

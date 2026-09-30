@@ -18,7 +18,7 @@ actions = ["nav.line_up"]
 why = "Moves the cursor up one line; a count in front moves that many."
 
 [[recipe]]
-q = ["how do I jump to the next hunk", "skip to the next change", "go on to the following hunk"]
+q = ["how do I jump to the next hunk", "skip to the next change", "go on to the following hunk", "show the next piece of the diff"]
 actions = ["nav.next_hunk"]
 why = "Hunks go in reading order, not file order; the space bar does the same."
 
@@ -53,7 +53,7 @@ actions = ["nav.finding_here"]
 why = "Opens the next finding in this hunk from the cursor, wrapping round; it says so when there is none."
 
 [[recipe]]
-q = ["how do I scroll long lines sideways", "read code that runs off the screen", "pan left to see the start of a line"]
+q = ["how do I scroll long lines sideways", "read code that runs off the screen", "pan left to see the start of a line", "a line is cut off on the right side"]
 actions = ["nav.pan_left", "nav.pan_right"]
 why = "Pans unwrapped code left or right; turn wrapping off first, or wrapped lines never need it."
 
@@ -92,7 +92,7 @@ actions = ["finding.block"]
 why = "Turns the finding into a comment that requests changes; the verdict follows at submit."
 
 [[recipe]]
-q = ["how do I post a finding as a comment", "reply to a finding without blocking", "leave a comment on the pull request about this finding", "turn a finding into a review comment"]
+q = ["how do I post a finding as a comment", "reply to a finding without blocking", "leave a comment on the pull request about this finding", "respond to a finding with a remark that does not hold up the merge"]
 actions = ["nav.next_finding", "finding.comment", "nav.submit"]
 why = "Open the finding, choose comment and word it yourself; it is posted under your name when you submit."
 
@@ -102,7 +102,7 @@ actions = ["finding.undo"]
 why = "Clears the decision on this finding so it reads as undecided again."
 
 [[recipe]]
-q = ["how do I close a finding without deciding", "put a finding away for later", "leave the box without recording anything"]
+q = ["how do I close a finding without deciding", "put a finding away for later", "leave the box without recording anything", "close the popup"]
 actions = ["finding.hide", "info.hide"]
 why = "Closes the box and records nothing; Esc does the same."
 
@@ -141,7 +141,7 @@ actions = ["nav.general_note"]
 why = "A comment on the pull request as a whole, not tied to any line."
 
 [[recipe]]
-q = ["how do I see the key bindings", "list the keys I can use here", "remind me what a key does"]
+q = ["how do I see the key bindings", "list the keys I can use here", "remind me what a key does", "show all the shortcuts"]
 actions = ["nav.bindings"]
 why = "Opens a box listing every binding for the state you are in, drawn from your own configuration."
 
