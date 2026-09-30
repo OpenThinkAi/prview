@@ -39,7 +39,10 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
       → (l) expand a chapter, or enter the block's code   ← (h) up to the chapter, then collapse it
       (the mechanical chapter starts collapsed)
     Code: ↓/↑ (j/k) line, running on into the next block   ⇧↓/⇧↑ (J/K) chapter
-      → (l) open the finding on this line   ← (h) back to the table of contents   Enter your own finding on this line
+      → (l) open the finding on this line   ← (h) back to the table of contents
+      Enter a finding of your own on this line, or on a file's "whole file" row (its diff starts and ends with one):
+        pick a severity (↑/↓, Enter), write the comment (ctrl-n a new line, Enter saves, Esc cancels); it has its
+        severity's default action, carried out as your own comment, and then acts like any finding
     Tab into the content area to scroll it, and back
     s submit: pick a verdict (Enter takes request changes when you blocked on a finding), preview every finding
       with its action, the write-up and what submit will do, Enter. Findings post only as the b/c comments you saved.
@@ -54,7 +57,7 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
     a then: i the summary · ? ask the model about this block (or the open finding's)
     v then: z zen (hide or show the table of contents) · c the content area full-screen (Esc or v c restores)
             · e open the file here in your editor (inside tmux: in a split pane, this screen stays up) · w wrap
-    g then: f/F next/previous finding (wrapping) · h/H next/previous by severity · g/e top/end of the file
+    g then: f/F next/previous finding (wrapping) · h/H next/previous by severity · g/e top/end of the file (the "whole file" rows)
             · <digits> Enter that line of this file (these land in the code)
             · c <digits> Enter that chapter's first block in the table of contents
     Findings are high, medium or low severity, and each has an action: block, comment or ignore. Until you pick
