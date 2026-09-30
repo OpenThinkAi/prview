@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { parseDiff } from "../src/diff.ts";
 import { hunksOf, type Finding } from "../src/guide.ts";
 import { blank, fit, merge, parseDocument, SCHEMA, type Human } from "../src/document.ts";
-import { decide, defaultVerdict, linkedComment, nextUndecided, progress, undecidedNote, undo, withLegacy } from "../src/triage.ts";
+import { decide, defaultVerdict, linkedComment, nextUndecided, progress, suggestionHint, suggestVerdict, undecidedNote, undo, withLegacy } from "../src/triage.ts";
 
 // The decision rules without a screen: what a decision writes, where the pass goes next, how
 // decisions load, fit and merge.
@@ -132,4 +132,35 @@ test("fit drops decisions on findings that left; merge keeps the reader's, fills
   expect(m.human.comments.find((c) => c.id === ref)?.text).toBe("theirs");
   expect(m.human.decisions!["1"]).toEqual({ kind: "dismissed" });
   expect(merge(m, theirs)).toEqual(m);
+});
+
+// ---------------------------------------------------------------- the in-house suggested verdict
+
+const fnd = (id: string, severity: Finding["severity"], status: Finding["status"] = "upheld", title = `title ${id}`): Finding =>
+  ({ id, source: "critic", hunk: "a.rs@1:1", side: "new", line: 1, severity, kind: "bug", title, claim: "c", evidence: "e", status });
+
+test("suggestVerdict: a live blocking finding means request changes, naming the count and up to two titles", () => {
+  expect(suggestVerdict([fnd("a", "blocking"), fnd("b", "warn"), fnd("c", "blocking", "unrefuted", "Second one")])).toEqual({ by: "prview", verdict: "request_changes", reason: "2 blocking: title a; Second one" });
+  expect(suggestVerdict([fnd("a", "blocking"), fnd("b", "blocking"), fnd("c", "blocking")]).reason).toBe("3 blocking: title a; title b; …");
+});
+
+test("suggestVerdict: no blocking but a warning means comment", () => {
+  expect(suggestVerdict([fnd("a", "warn"), fnd("b", "nit")])).toEqual({ by: "prview", verdict: "comment", reason: "1 warn: title a" });
+});
+
+test("suggestVerdict: only nits, or nothing, means approve", () => {
+  expect(suggestVerdict([fnd("a", "nit")])).toEqual({ by: "prview", verdict: "approve", reason: "only a nit" });
+  expect(suggestVerdict([fnd("a", "nit"), fnd("b", "nit")]).reason).toBe("only 2 nits");
+  expect(suggestVerdict([])).toEqual({ by: "prview", verdict: "approve", reason: "no findings" });
+});
+
+test("suggestVerdict: withdrawn findings never count", () => {
+  expect(suggestVerdict([fnd("a", "blocking", "withdrawn"), fnd("b", "warn", "withdrawn")]).verdict).toBe("approve");
+  expect(suggestVerdict([fnd("a", "blocking", "withdrawn"), fnd("b", "warn")])).toEqual({ by: "prview", verdict: "comment", reason: "1 warn: title b" });
+});
+
+test("suggestionHint lists every suggestion as information, and is empty without any", () => {
+  const label = (v: string) => v === "approve" ? "Approve" : "Request changes";
+  expect(suggestionHint([], label)).toBe("");
+  expect(suggestionHint([{ by: "prview", verdict: "request_changes", reason: "x" }, { by: "imported", verdict: "approve" }], label)).toBe("suggested, information only: prview Request changes, imported Approve");
 });

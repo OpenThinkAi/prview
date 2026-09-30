@@ -7,7 +7,7 @@
 // changing it to "not an issue" takes that comment away again and nothing stale is posted.
 
 import { titleOf, type Finding } from "./guide.ts";
-import type { Comment, Decision, DecisionKind, Decisions, Human, Verdict } from "./document.ts";
+import type { Comment, Decision, DecisionKind, Decisions, Human, Suggested, Verdict } from "./document.ts";
 import { spotsOf, type At, type NavItem } from "./nav.ts";
 
 /** How a decision reads on the screen and in the write-up. */
@@ -99,4 +99,27 @@ export function undo(h: Human, id: string): Human {
   const prior = linkedComment(h, id);
   const { [id]: _, ...rest } = h.decisions!;
   return { ...h, comments: prior ? h.comments.filter((c) => c !== prior) : h.comments, decisions: rest };
+}
+
+/** Who the in-house guide/critic review signs its suggestion as. */
+export const IN_HOUSE = "prview";
+
+/**
+ * The verdict the in-house review's surviving findings point to, by rule and not by a model:
+ * anything blocking means request changes, else any warning means comment, else approve.
+ * Withdrawn findings never count. Information only: nothing starts from it and nothing posts it.
+ */
+export function suggestVerdict(findings: Finding[]): Suggested {
+  const live = findings.filter((f) => f.status !== "withdrawn");
+  for (const [severity, verdict] of [["blocking", "request_changes"], ["warn", "comment"]] as const) {
+    const hit = live.filter((f) => f.severity === severity);
+    if (hit.length) return { by: IN_HOUSE, verdict, reason: `${hit.length} ${severity}: ${hit.slice(0, 2).map(titleOf).join("; ")}${hit.length > 2 ? "; …" : ""}` };
+  }
+  return { by: IN_HOUSE, verdict: "approve", reason: live.length ? `only ${live.length === 1 ? "a nit" : `${live.length} nits`}` : "no findings" };
+}
+
+/** The submit picker's hint line: every suggestion, marked as information. Empty when there are none. */
+export function suggestionHint(suggested: Suggested[], label: (v: Verdict) => string): string {
+  if (!suggested.length) return "";
+  return `suggested, information only: ${suggested.map((s) => `${s.by === "imported" ? "imported" : s.by} ${label(s.verdict)}`).join(", ")}`;
 }

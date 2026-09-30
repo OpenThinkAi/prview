@@ -680,3 +680,13 @@ test("keys: lookups follow the installed map, and the listing shows the effectiv
     expect(out.indexOf("finding:")).toBeLessThan(out.indexOf("info:"));
   } finally { installKeymap(DEFAULT_KEYMAP); }
 });
+
+test("a stored suggestion keeps its reason across reopen at the same head, and one saved without a reason still loads", async () => {
+  const r = load((await build(join(tmp, "repo"), "main..feature", { ai: null })).slug);
+  r.suggested = [{ by: "prview", verdict: "comment", reason: "1 warn: Off by one" }, { by: "imported", verdict: "approve" }];
+  save(r);
+  expect(load(r.slug).suggested).toEqual(r.suggested);
+  expect((await build(join(tmp, "repo"), "main..feature", { ai: null })).suggested).toEqual(r.suggested);
+  const raw = JSON.parse(readFileSync(join(process.env.PRVIEW_HOME!, `${r.slug}.json`), "utf8"));
+  expect(raw.suggested[1].reason).toBeUndefined(); // an older store, or an imported one, has none
+});

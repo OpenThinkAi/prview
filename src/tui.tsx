@@ -28,7 +28,7 @@ import { clampScroll, clampX, floatHeight, floatRows, layoutOf, pageStep, rowsFo
 import type { Beside } from "./editor.ts";
 import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
 import { describe, planOf } from "./submit.ts";
-import { decide, decisionOf, defaultVerdict, LABEL, linkedComment, nextUndecided, progress, undecidedNote, undo } from "./triage.ts";
+import { decide, decisionOf, defaultVerdict, LABEL, linkedComment, nextUndecided, progress, suggestionHint, undecidedNote, undo } from "./triage.ts";
 import { actionOf, BINDINGS_ACTION, bindingsHint, type KeyState, keyOf, startsChord } from "./keys.ts";
 import { answersBody, answersFor, answerText, type Answer } from "./ask-docs.ts";
 import { entriesOf, panelOf, panelTitle } from "./panel.ts";
@@ -90,7 +90,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const [pos, setPosRaw] = useState<Pos>(() => ({ item: Math.min(r.pos.item, Math.max(0, items.length - 1)), line: r.pos.line }));
   const setPos = (p: Pos) => { r.pos = p; setPosRaw(p); };
   // An imported review's verdict is only ever information here: submit never starts from it.
-  const verdicts = (review.suggested ?? []).map((v) => `${v.by === "imported" ? "An imported review" : `${v.by}'s review`} suggested ${VERDICT[v.verdict]}.`);
+  const verdicts = (review.suggested ?? []).map((v) => `${v.by === "imported" ? "An imported review" : `${v.by}'s review`} suggested ${VERDICT[v.verdict]}${v.reason ? `: ${v.reason.replace(/[.\s]+$/, "")}` : ""}.`);
   const suggested = verdicts.length ? [...verdicts, "That is information only: you pick your own verdict at submit."].join("\n") : "";
   const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary || suggested ? { title: "Summary of this change · not a finding", summary: true, color: "magenta", copy: d.plan.summary || suggested, body: [d.plan.summary, suggested, preparedBy(review.ai?.runs), `${keyOf(BINDINGS_ACTION)} shows the keys for where you are; ${keyOf("info.hide")} closes this.`].filter(Boolean).join("\n\n") } : null);
   const [scroll, setScroll] = useState(0);
@@ -446,8 +446,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const footer = () => {
     switch (mode.kind) {
       case "verdict": {
-        const dv = verdictDefault();
-        return <Text><Text color="green" bold> verdict › </Text>{dv ? <Text dimColor>Enter takes {VERDICT[dv]}</Text> : null}</Text>;
+        const dv = verdictDefault(), hint = suggestionHint(review.suggested ?? [], (v) => VERDICT[v]);
+        return <Text><Text color="green" bold> verdict › </Text>{dv ? <Text dimColor>Enter takes {VERDICT[dv]}</Text> : null}{hint ? <Text dimColor wrap="truncate">{dv ? " · " : ""}{hint}</Text> : null}</Text>;
       }
       case "reason": return <Text><Text color="cyan" bold> not an issue, why? › </Text>{input}<Text inverse> </Text><Text dimColor>  (optional, never posted)</Text></Text>;
       case "preview": return <Text dimColor> </Text>;
