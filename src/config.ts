@@ -18,7 +18,8 @@ export type Kind = (typeof KINDS)[number];
 
 export type ModelDef = { name: string; kind: Kind; endpoint?: string; model?: string; keyEnv?: string; keyKeychain?: string };
 export type Config = { models: Record<string, ModelDef>; roles: Partial<Record<Role, string>>; /** Blind first pass: findings stay hidden in a chapter until it has been read. */ blind: boolean; /** The default bindings with the [keys] table laid over them, already validated. */ keymap: Keymap;
-  /** The action each finding starts with, by severity: DEFAULTS with the [defaults] table laid over it. */ defaults: Defaults; path: string | null };
+  /** The action each finding starts with, by severity: DEFAULTS with the [defaults] table laid over it. */ defaults: Defaults;
+  /** The editor command `v e` runs (after $PRVIEW_EDITOR, before $EDITOR). */ editor?: string; /** Long lines wrap from the start (`v w` still toggles). */ wrap: boolean; path: string | null };
 /** A model whose credential has been looked up and is ready to call. */
 export type Resolved = { def: ModelDef; key?: string };
 export type Lookups = { env: Record<string, string | undefined>; keychain: (service: string) => string | undefined };
@@ -76,7 +77,7 @@ export function parseToml(text: string): Table {
 }
 
 /** Drop a trailing `# comment`, but not a # inside a quoted string. */
-function stripComment(s: string): string {
+export function stripComment(s: string): string {
   let q: string | null = null;
   for (let i = 0; i < s.length; i++) {
     const c = s[i]!;
@@ -87,7 +88,7 @@ function stripComment(s: string): string {
   return s;
 }
 
-function splitKey(s: string, bad: (w: string) => Error): string[] {
+export function splitKey(s: string, bad: (w: string) => Error): string[] {
   const out: string[] = [];
   let rest = s.trim();
   while (rest) {
@@ -179,6 +180,8 @@ export function parseConfig(text: string, path: string | null = null): Config {
     roles[role] = n;
   }
   if (t.blind !== undefined && typeof t.blind !== "boolean") throw new ConfigError("blind must be true or false");
+  if (t.wrap !== undefined && typeof t.wrap !== "boolean") throw new ConfigError("wrap must be true or false");
+  const editor = str(t, "editor", "editor");
   // [keys]: "<action>" = "k" sets the primary; { primary = "k", secondary = "j" } either or both; secondary = "" removes it.
   const overrides: Record<string, Binding> = {};
   const shape = (id: string) => new ConfigError(`[keys]: ${id} must be a key ("k") or { primary = "k", secondary = "j" }`);
@@ -198,7 +201,7 @@ export function parseConfig(text: string, path: string | null = null): Config {
     if (typeof v !== "string" || !(ACTION_KINDS as readonly string[]).includes(v)) throw new ConfigError(`[defaults]: ${sev} must be one of ${ACTION_KINDS.map((k) => `"${k}"`).join(", ")}`);
     defaults[sev as Severity] = v as DecisionKind;
   }
-  return { models, roles, blind: t.blind === true, keymap, defaults, path };
+  return { models, roles, blind: t.blind === true, keymap, defaults, editor, wrap: t.wrap === true, path };
 }
 
 /** The user's config, or the built-in (claude -p for everything) when there is no file. */

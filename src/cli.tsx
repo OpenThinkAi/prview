@@ -65,7 +65,9 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
         edit, Enter saves (ctrl-u clears the line, Esc cancels); submit then defaults to request changes
       c comment: the same, not blocking   i ignore, with an optional private note (never posted)
       pressing b, c or i again changes the action   x or ← close it   y copy it   PgUp/PgDn page it
-    Coming with later changes (they say so when pressed): \\ settings, a s drafts, f h/m/a filters.
+    \\ settings: every key (primary and secondary), the default action per severity, the model per role, the
+      editor and wrap/blind defaults; Enter edits, Esc leaves and asks to save to the config (applied at once)
+    Coming with later changes (they say so when pressed): a s drafts.
 
   prview prepare <target>     build it (fetch, guide, critic) without opening the screen; open it later
   prview models               list the configured models and roles, and check each model is reachable
@@ -89,10 +91,12 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
 async function review(r: Review, cfg: Config, blind: boolean, dryRun = false): Promise<void> {
   checkHead(r);
   const files = filesOf(r);
+  let blindNow = blind;
   for (;;) {
-    const o = await show(r, files, besideIn(r.worktree), blind, dryRun, cfg.defaults);
+    // A save in the settings view updates `cfg` in place, so the editor and the defaults below are the saved ones.
+    const o = await show(r, files, besideIn(r.worktree, process.env, () => cfg.editor), blindNow, dryRun, cfg.defaults, cfg, (c) => { if (c.blind !== cfg.blind) blindNow = c.blind; Object.assign(cfg, c); });
     if (o.kind === "edit") {
-      const cmd = editor();
+      const cmd = editor(process.env, cfg.editor);
       const p = Bun.spawnSync(editorArgs(cmd, o.path, o.line), { cwd: r.worktree, stdio: ["inherit", "inherit", "inherit"] });
       if (p.exitCode !== 0 && !existsSync(join(r.worktree, o.path))) console.error(`prview: ${o.path} is not in the worktree`);
       continue;

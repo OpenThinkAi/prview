@@ -221,9 +221,9 @@ actions = ["review.search_docs"]
 why = "Type a question and see the matching actions with your current keys; it runs offline and calls no model. To question the model about the code, use the ask action."
 
 [[recipe]]
-q = ["how do I change a key binding", "open the settings", "change the default models or editor"]
+q = ["how do I change a key binding", "open the settings", "change the default models or editor", "turn wrap or blind on by default"]
 actions = ["review.settings"]
-why = "Opens the settings view; key bindings can also be set in the keys table of the config file."
+why = "Opens the settings view: every action's primary and secondary key, the default action per severity, the model per role, the editor and the display defaults. Enter edits a field, Esc leaves and offers to save to the config file; saved changes apply at once."
 
 # ---- finishing
 
