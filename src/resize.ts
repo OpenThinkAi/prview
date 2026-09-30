@@ -8,9 +8,12 @@ import { useStdout } from "ink";
 
 export type Size = { cols: number; rows: number };
 
-/** Below this the layout cannot hold a rail, a code line and a footer; a one-line notice is shown instead. */
-export const MIN_COLS = 40;
-export const MIN_ROWS = 10;
+/**
+ * Below this the layout cannot hold the status area, a few code lines, the content area beside the key panel and the
+ * footer; a one-line notice is shown instead.
+ */
+export const MIN_COLS = 60;
+export const MIN_ROWS = 20;
 export const tooSmall = (s: Size) => s.cols < MIN_COLS || s.rows < MIN_ROWS;
 
 /** Clear screen, clear scrollback, cursor home. */

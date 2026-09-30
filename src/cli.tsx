@@ -29,9 +29,12 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   model for all four roles this run; --no-ai skips the models.
 
   Keys (the defaults; [keys] in the config remaps them, prview keys prints yours). Arrows move; the prefixes
-  a (AI), f (filter), v (view) and g (go to) hold the rest, and the key panel (bottom-left, always there) lists
+  a (AI), f (filter), v (view) and g (go to) hold the rest, and the key panel (bottom right, always there) lists
   the keys for where you are, or a prefix's second keys once it is pressed. Esc backs out of anything.
-    ↓/↑ (j/k) line, running on into the next block   ⇧↓/⇧↑ (J/K) chapter   Tab into the box to scroll it, and back
+  The screen: a status area (title, then PR, branches, read, findings to decide, comments, suggested verdict), the
+  table of contents and the code, and a bottom panel: the content area (the summary, a chapter's why, a finding's
+  detail, docs results, answers, prompts) beside the key panel. Below 60x20 it asks for a larger terminal.
+    ↓/↑ (j/k) line, running on into the next block   ⇧↓/⇧↑ (J/K) chapter   Tab into the content area to scroll it, and back
     → (l) open the finding on this line   ← (h) the chapter's intent and why   Enter your own finding on this line
     s submit: pick a verdict (Enter takes request changes when anything is blocking), preview the review, the
       findings still undecided and what submit will do, Enter. Findings post only as the b/c comments you saved.
@@ -39,22 +42,23 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
       for its target's platform (github: gh api), then, if the document declares on_submit, its command runs
       only if you press x in the preview to allow it (shown in full first; no shell); v in the preview adds
       a line saying how much you read to the posted summary (off by default)
-    y copy the box (a finding, the summary, an answer) as clean text; with none open, the line's path:line
+    y copy the content area (a finding, the summary, an answer) as clean text; with it empty, the line's path:line
       (pbcopy, wl-copy, xclip, else OSC 52; PRVIEW_CLIPBOARD=osc52 forces the terminal route)
     ? search the docs: type what you want to do, Enter lists the matching actions with your keys (offline, no model)
     q quit (everything is kept)
     a then: i the summary · ? ask the model about this block (or the open finding's)
-    v then: e open the file here in your editor (inside tmux: in a split pane, this screen stays up) · w wrap
+    v then: z zen (hide or show the table of contents) · c the content area full-screen (Esc or v c restores)
+            · e open the file here in your editor (inside tmux: in a split pane, this screen stays up) · w wrap
     g then: f/F next/previous finding (wrapping) · h/H next/previous by severity · g/e top/end of the file
             · <digits> Enter that line of this file · c <digits> Enter that chapter
-    Inside a finding (→ or g f opens one; each decision moves on to the next undecided one, and the box shows
+    Inside a finding (→ or g f opens one; each decision moves on to the next undecided one, and its header shows
     how many are decided, e.g. 3/9 decided):
       b block on it: your line comment at the finding's line, prefilled with its title (or your comment);
         edit, Enter saves (ctrl-u clears the line, Esc cancels); submit then defaults to request changes
       c comment: the same, not blocking   i ignore, with an optional private note (never posted)
       x or ← close it without deciding   y copy it   PgUp/PgDn page it   deciding again changes the decision
     Coming with later changes (they say so when pressed): the table of contents, \\ settings, a s drafts,
-    f h/m/a filters, v z zen, v c full-screen content.
+    f h/m/a filters.
 
   prview prepare <target>     build it (fetch, guide, critic) without opening the screen; open it later
   prview models               list the configured models and roles, and check each model is reachable
