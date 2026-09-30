@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { earlyTitles } from "./blind.ts";
 import { clean, visible } from "./sanitize.ts";
-import { LABEL } from "./triage.ts";
+import { IN_HOUSE, LABEL, suggestVerdict } from "./triage.ts";
 import { parseDiff, type FileDiff } from "./diff.ts";
 import { blank, Fail, fit, merge, parseDocument, SCHEMA, suggestions, type Comment, type Doc, type Suggested, type Target } from "./document.ts";
 import {
@@ -250,7 +250,7 @@ function revive(j: any): Review | undefined {
     human: { comments: j.notes, dismissals: j.dismissed, visited: j.visited, verdict: j.verdict },
   } : undefined);
   const suggested = (Array.isArray(j.suggested) ? j.suggested : []).flatMap((v: any): Suggested[] =>
-    typeof v?.by === "string" && v.by && ["approve", "request_changes", "comment"].includes(v.verdict) ? [{ by: v.by.slice(0, 40), verdict: v.verdict }] : []);
+    typeof v?.by === "string" && v.by && ["approve", "request_changes", "comment"].includes(v.verdict) ? [{ by: v.by.slice(0, 40), verdict: v.verdict, ...(typeof v.reason === "string" && v.reason.trim() ? { reason: v.reason.trim().slice(0, 240) } : {}) }] : []);
   try {
     return { slug: j.slug, repo: j.repo, ref: j.ref ?? j.target, worktree: j.worktree, context: j.context ?? 3, created: j.created, pos: j.pos ?? { item: 0, line: 0 }, ai: j.ai, doc: parseDocument(raw), ...(suggested.length ? { suggested } : {}) };
   } catch { return undefined; }
@@ -343,6 +343,8 @@ export async function build(repo: string, target: string | undefined, opts: Buil
       r.doc = merge(r.doc, fit(doc, files));
       r.ai = { models: Object.fromEntries(Object.entries(models).map(([k, v]) => [k, v.def.name])) as Record<Role, string>, at: new Date().toISOString(), errors, samples, runs };
       for (const e of errors) say(`warning: ${e}`);
+      // By rule, from the findings that survived refute; information only, never the verdict submit starts from.
+      r.suggested = [suggestVerdict(r.doc.findings), ...(prior && prior.doc.target.head === t.head ? prior.suggested ?? [] : []).filter((v) => v.by !== IN_HOUSE)];
     }
   }
   save(r);

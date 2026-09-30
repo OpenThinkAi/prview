@@ -785,6 +785,17 @@ test("an imported review's verdict is in the opening summary as information only
   expect(t.r.doc.human.verdict).toBeUndefined();
 });
 
+test("the in-house suggestion shows its reason in the summary and as a picker hint, and never becomes the default", async () => {
+  const t = await open({}, { suggested: [{ by: "prview", verdict: "comment", reason: "1 warn: Off by one" }, { by: "imported", verdict: "approve" }] });
+  expect(t.frame()).toContain("prview's review suggested Comment: 1 warn: Off by one.");
+  await t.press("h");
+  await t.press("s");
+  expect(t.frame()).toContain("verdict ›");
+  expect(t.frame()).toContain("suggested, information only: prview Comment, imported Approve");
+  expect(t.frame()).not.toContain("Enter takes");
+  expect(t.r.doc.human.verdict).toBeUndefined();
+});
+
 // ---------------------------------------------------------------- every box and the nav footer: the footer is the truth
 
 const SUMMARY = "Replaces the hard-coded answer with one derived from the input.";

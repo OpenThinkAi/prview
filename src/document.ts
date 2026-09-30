@@ -234,7 +234,8 @@ export function fit(doc: Doc, files: FileDiff[]): Doc {
 // ---------------------------------------------------------------- someone else's human layer
 
 /** What an imported review's verdict was: shown to the reader as information, never picked for them. */
-export type Suggested = { by: string; verdict: Verdict };
+/** `reason` is one line of why, set by producers that can say (the in-house review names its findings); absent on imported ones. */
+export type Suggested = { by: string; verdict: Verdict; reason?: string };
 
 /**
  * A document's `human` layer belongs to whoever wrote it, and anything posted from this review is the
