@@ -112,9 +112,9 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "ai.discard", states: FINDING, prefix: "a", key: "x", label: "discard answer", description: "Discard the model's answer about this finding and leave the finding as it was.", coming: "follow-up answers on findings" },
 
   // ---- f: filter
-  { id: "filter.high", states: OUTSIDE, prefix: "f", key: "h", label: "high only", description: "Show only the high severity findings.", coming: "filters" },
-  { id: "filter.medium", states: OUTSIDE, prefix: "f", key: "m", label: "high and medium", description: "Show the high and medium severity findings.", coming: "filters" },
-  { id: "filter.all", states: OUTSIDE, prefix: "f", key: "a", label: "all", description: "Show every finding.", coming: "filters" },
+  { id: "filter.high", states: OUTSIDE, prefix: "f", key: "h", label: "high only", description: "Show only the high severity findings." },
+  { id: "filter.medium", states: OUTSIDE, prefix: "f", key: "m", label: "high and medium", description: "Show the high and medium severity findings." },
+  { id: "filter.all", states: OUTSIDE, prefix: "f", key: "a", label: "all", description: "Show every finding." },
 
   // ---- v: view
   { id: "view.zen", states: READING, prefix: "v", key: "z", label: "zen", description: "Hide or show the table of contents." },

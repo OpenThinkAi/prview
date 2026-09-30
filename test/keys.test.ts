@@ -167,7 +167,7 @@ test("prview keys: primary and secondary per action, by state and by prefix, wit
   expect(out).toMatch(/finding\.ignore\s+d\s+-\s/);
   expect(out).toMatch(/view\.wrap\s+\(unbound\)/);
   expect(out).toMatch(/go\.next_finding\s+g f\s/);
-  expect(out).toMatch(/filter\.high\s+f h\s+-\s+.*\(coming: filters\)/);
+  expect(out).toMatch(/settings\.down\s+.*\(coming: the settings view\)/);
   for (const heading of ["toc:", "code:", "finding:", "content:", "prompt:", "submit:", "a then: AI", "f then: filter", "v then: view", "g then: go to"]) expect(out, heading).toContain(heading);
   expect(out.indexOf("code:")).toBeLessThan(out.indexOf("finding:"));
   expect(out).toContain("Esc and Tab cannot be rebound");

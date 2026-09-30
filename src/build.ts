@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { earlyTitles } from "./blind.ts";
+import { filterOf, type Filter } from "./filter.ts";
 import { clean, visible } from "./sanitize.ts";
 import { actionOf, actionText, DEFAULTS, IN_HOUSE, suggestVerdict, type Defaults } from "./triage.ts";
 import { parseDiff, type FileDiff } from "./diff.ts";
@@ -48,7 +49,7 @@ export type Ai = { models: Record<Role, string>; at: string; errors: string[]; s
 export type Pos = { item: number; line: number };
 /** `ref` is what was asked for (a PR number or a range), so the review can be rebuilt at a newer head. */
 /** `suggested`: the verdicts of documents imported at this head, shown in the opening summary as information only. */
-export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; ai?: Ai; doc: Doc; suggested?: Suggested[] };
+export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; /** The severity filter (`f h`/`f m`/`f a`), kept here with the reader's place, never in the document; absent means all. */ filter?: Filter; ai?: Ai; doc: Doc; suggested?: Suggested[] };
 
 export const home = () => process.env.PRVIEW_HOME ?? join(homedir(), ".cache", "prview");
 const metaOf = (slug: string) => join(home(), `${slug}.json`);
@@ -252,7 +253,7 @@ function revive(j: any): Review | undefined {
   const suggested = (Array.isArray(j.suggested) ? j.suggested : []).flatMap((v: any): Suggested[] =>
     typeof v?.by === "string" && v.by && ["approve", "request_changes", "comment"].includes(v.verdict) ? [{ by: v.by.slice(0, 40), verdict: v.verdict, ...(typeof v.reason === "string" && v.reason.trim() ? { reason: v.reason.trim().slice(0, 240) } : {}) }] : []);
   try {
-    return { slug: j.slug, repo: j.repo, ref: j.ref ?? j.target, worktree: j.worktree, context: j.context ?? 3, created: j.created, pos: j.pos ?? { item: 0, line: 0 }, ai: j.ai, doc: parseDocument(raw), ...(suggested.length ? { suggested } : {}) };
+    return { slug: j.slug, repo: j.repo, ref: j.ref ?? j.target, worktree: j.worktree, context: j.context ?? 3, created: j.created, pos: j.pos ?? { item: 0, line: 0 }, ...(filterOf(j.filter) !== "all" ? { filter: filterOf(j.filter) } : {}), ai: j.ai, doc: parseDocument(raw), ...(suggested.length ? { suggested } : {}) };
   } catch { return undefined; }
 }
 
@@ -333,7 +334,7 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   const same = !!prior && prior.doc.target.head === t.head && !opts.fresh;
   const r: Review = { slug, repo, ref: isPR(target) ? target!.replace(/^#/, "") : target, worktree, context, created: new Date().toISOString(), pos: { item: 0, line: 0 }, doc: fit(blank(t), files) };
   if (same) {
-    Object.assign(r, { pos: prior.pos, ai: prior.ai, doc: fit(prior.doc, files), ...(prior.suggested ? { suggested: prior.suggested } : {}) });
+    Object.assign(r, { pos: prior.pos, ...(prior.filter ? { filter: prior.filter } : {}), ai: prior.ai, doc: fit(prior.doc, files), ...(prior.suggested ? { suggested: prior.suggested } : {}) });
     say(`reusing the review document from ${prior.ai?.at.slice(0, 16).replace("T", " ") ?? "before"} (--fresh redoes it)`);
   } else {
     if (prior) r.doc.human.comments = prior.doc.human.comments;
