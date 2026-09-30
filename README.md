@@ -2,6 +2,14 @@
 
 Review a pull request in the terminal. A model prepares the reading; you do the reviewing.
 
+## Install
+
+```sh
+npm install -g @openthink/prview
+```
+
+prview runs on [Bun](https://bun.sh), which must be installed; without it the command says so and exits.
+
 ```sh
 prview 42                      # a PR in this repo
 prview main..my-branch         # any range
