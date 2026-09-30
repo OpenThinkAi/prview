@@ -29,7 +29,8 @@ import type { Beside } from "./editor.ts";
 import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
 import { describe, planOf } from "./submit.ts";
 import { decide, decisionOf, defaultVerdict, LABEL, linkedComment, nextUndecided, progress, undecidedNote, undo } from "./triage.ts";
-import { actionOf, bindingsBody, findingFooter, infoFooter, type KeyState, keyOf, navFooter, startsChord } from "./keys.ts";
+import { actionOf, BINDINGS_ACTION, bindingsHint, type KeyState, keyOf, startsChord } from "./keys.ts";
+import { entriesOf, panelOf, panelTitle } from "./panel.ts";
 import { MIN_COLS, MIN_ROWS, tooSmall, useTerminalSize } from "./resize.ts";
 
 /** `hook`: the human allowed the document's on_submit command for this submit (x in the preview). */
@@ -83,7 +84,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const redraw = () => { save(r); bump((n) => n + 1); };
   const [pos, setPosRaw] = useState<Pos>(() => ({ item: Math.min(r.pos.item, Math.max(0, items.length - 1)), line: r.pos.line }));
   const setPos = (p: Pos) => { r.pos = p; setPosRaw(p); };
-  const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary ? { title: "Summary of this change · not a finding", summary: true, color: "magenta", copy: d.plan.summary, body: [d.plan.summary, preparedBy(review.ai?.runs)].filter(Boolean).join("\n\n") } : null);
+  const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary ? { title: "Summary of this change · not a finding", summary: true, color: "magenta", copy: d.plan.summary, body: [d.plan.summary, preparedBy(review.ai?.runs), `${keyOf(BINDINGS_ACTION)} shows the keys for where you are; ${keyOf("info.hide")} closes this.`].filter(Boolean).join("\n\n") } : null);
   const [scroll, setScroll] = useState(0);
   // What `y` just did, shown in the footer until the next key.
   const [note, setNote] = useState<string | null>(null);
@@ -99,6 +100,19 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   // Long lines either scroll sideways (H/L) or wrap onto more rows (w).
   const [wrap, setWrap] = useState(false);
   const [panX, setPanX] = useState(0);
+
+  // The key panel: a state with keys of its own (a box, a prompt, the verdict and preview steps) opens it by itself and
+  // closing the state closes it; with nothing open it is only there when `\` asks. A press of `\` (or Esc, with nothing
+  // open) is remembered against the state it was made in, and forgotten when the state changes.
+  const keyState: KeyState = mode.kind === "verdict" ? { box: "verdict" }
+    : mode.kind === "preview" ? (() => { const p = planOf(r, files, { coverage: mode.coverage }); return { box: "preview" as const, dryRun, hook: p.hook ? mode.hook : null, coverage: p.adapter ? mode.coverage : null }; })()
+    : mode.kind !== "nav" ? { box: "prompt", kind: mode.kind, decide: mode.kind === "comment" && !!mode.decide }
+    : float ? (float.finding ? { box: "finding" } : { box: "info", copyable: !!float.copy }) : { box: null, blind };
+  const stateId = keyState.box ?? "nav";
+  const [pin, setPin] = useState<{ key: string; open: boolean } | null>(null);
+  useEffect(() => setPin(null), [stateId]);
+  const panelOpen = pin && pin.key === stateId ? pin.open : keyState.box !== null;
+  const toggleBindings = () => setPin({ key: stateId, open: !panelOpen });
 
   const item = items[pos.item];
   const hunk = item?.hunk ?? null;
@@ -195,20 +209,23 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     setScroll((s) => clampScroll(s + by, floatLines.length, floatH));
     return true;
   };
-  const stateOf = (): KeyState => float ? (float.finding ? { box: "finding" } : { box: "info", copyable: !!float.copy }) : { box: null, blind };
   const handle = (ch: string, key: Parameters<Parameters<typeof useInput>[0]>[1]) => {
     if (busy) return;
     if (mode.kind === "verdict") {
-      const v: Verdict | undefined = ch === "a" ? "approve" : ch === "r" ? "request_changes" : ch === "c" ? "comment" : key.return ? verdictDefault() : undefined;
       if (key.escape) { setMode({ kind: "nav" }); return; }
+      const id = actionOf(keyState, key.return ? "Enter" : ch);
+      if (id === BINDINGS_ACTION) { toggleBindings(); return; }
+      const v: Verdict | undefined = id === "verdict.approve" ? "approve" : id === "verdict.request_changes" ? "request_changes" : id === "verdict.comment" ? "comment" : id === "verdict.default" ? verdictDefault() : undefined;
       if (v) { h.verdict = v; save(r); preview(false, false); }
       return;
     }
     if (mode.kind === "preview") {
       if (key.escape) { setMode({ kind: "verdict" }); setFloat(null); return; }
-      if (key.return) { onDone({ kind: "submit", hook: mode.hook, coverage: mode.coverage }); exit(); return; }
-      if (ch === "x" && d.on_submit) { const at = scroll; preview(!mode.hook, mode.coverage); setScroll(at); return; }
-      if (ch === "v" && planOf(r, files).adapter) { const at = scroll; preview(mode.hook, !mode.coverage); setScroll(at); return; }
+      const id = actionOf(keyState, key.return ? "Enter" : ch);
+      if (id === "preview.submit") { onDone({ kind: "submit", hook: mode.hook, coverage: mode.coverage }); exit(); return; }
+      if (id === "preview.hook") { const at = scroll; preview(!mode.hook, mode.coverage); setScroll(at); return; }
+      if (id === "preview.coverage") { const at = scroll; preview(mode.hook, !mode.coverage); setScroll(at); return; }
+      if (id === BINDINGS_ACTION) { toggleBindings(); return; }
       scrollFloat(ch, key);
       return;
     }
@@ -245,8 +262,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     // here: Esc, paging, a count, gg/G and the arrow keys.
     const count = countRef.current, pending = pendingRef.current;
     setNote(null);
-    const state = stateOf();
-    if (key.escape) { setFloat(null); setCount(""); setPending(null); return; }
+    const state = keyState;
+    if (key.escape) { setFloat(null); setCount(""); setPending(null); setPin(null); return; }
     if (pending) {
       const p = pending; setPending(null);
       if (p === "g") { if (ch === "g") setPos({ ...pos, line: 0 }); return; }
@@ -272,7 +289,6 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const act = (id: string, n?: number) => {
     switch (id) {
       case "nav.quit": onDone({ kind: "quit" }); exit(); return;
-      case "nav.bindings": { const body = bindingsBody(stateOf()); setFloat({ title: "Key bindings · no box open", body, copy: body }); return; }
       case "nav.submit": setMode({ kind: "verdict" }); setFloat(null); return;
       case "nav.line_down": setPos({ ...pos, line: Math.min(lines.length - 1, line + (n ?? 1)) }); return;
       case "nav.line_up": setPos({ ...pos, line: Math.max(0, line - (n ?? 1)) }); return;
@@ -283,6 +299,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       case "nav.next_finding": case "finding.next": case "info.next_finding": jumpFinding(1); return;
       case "nav.prev_finding": case "finding.prev": case "info.prev_finding": jumpFinding(-1); return;
       case "finding.hide": case "info.hide": setFloat(null); return;
+      case "nav.bindings": toggleBindings(); return;
       case "nav.why": {
         if (!item) return;
         const body = item.mechanical ? `${MECHANICAL_INTENT}\n\nMechanical: ${item.mechanical}. Classified by rule, not by a model.` : `${chapter?.intent ? chapter.intent + "\n\n" : ""}${chapter?.why || "The guide gave no reason for this chapter."}`;
@@ -348,10 +365,13 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   // A finding's float sits right under the cursor line (the summary at the top of the hunk), so the window keeps that many rows free.
   const leadLines = float?.lead ? wrapText(float.lead, floatInner) : [];
   const floatLines = float ? [...leadLines, ...(leadLines.length ? [""] : []), ...wrapText(float.body, floatInner)] : [];
-  const floatH = float ? floatHeight(floatLines.length, rows, !!float.tall) : 0;
+  // The panel takes its rows out of the screen before the box and the code divide what is left, so it covers neither.
+  const keyPanel = panelOpen ? panelOf(panelTitle(keyState), entriesOf(keyState), cols, rows) : null;
+  const avail = rows - (keyPanel?.height ?? 0);
+  const floatH = float ? floatHeight(floatLines.length, avail, !!float.tall) : 0;
   const sc = float ? clampScroll(scroll, floatLines.length, floatH) : 0;
   const shownFloat = floatLines.slice(sc, sc + floatRows(floatH));
-  const bodyRows = rows - 5; // header, hunk header, intent, footer, spare
+  const bodyRows = avail - 5; // header, hunk header, intent, footer, spare
   const longest = Math.max(0, ...spans.map(lengthOf));
   const x = wrap ? 0 : clampX(panX, longest, codeCols);
   const heights = lines.map((l, i) => (wrap ? rowsFor(lengthOf(spans[i] ?? []), codeCols) : 1) + notesAt(l).length);
@@ -379,17 +399,17 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const footer = () => {
     switch (mode.kind) {
       case "verdict": {
-        const dv = verdictDefault(), opt = (k: string, v: Verdict, label: string) => dv === v ? <Text bold>{k} {label} (Enter)</Text> : <Text>{k} {label}</Text>;
-        return <Text><Text color="green" bold> verdict › </Text>{opt("a", "approve", "approve")}   {opt("r", "request_changes", "request changes")}   {opt("c", "comment", "comment")}   <Text dimColor>Esc cancel</Text></Text>;
+        const dv = verdictDefault();
+        return <Text><Text color="green" bold> verdict › </Text>{dv ? <Text dimColor>Enter takes {VERDICT[dv]}</Text> : null}</Text>;
       }
-      case "reason": return <Text><Text color="cyan" bold> not an issue, why? › </Text>{input}<Text inverse> </Text><Text dimColor>  (optional, never posted; Enter to decide, Esc to cancel)</Text></Text>;
-      case "preview": return <Text wrap="truncate" dimColor> Enter {dryRun ? "prints the calls" : "submits"}{planOf(r, files).adapter ? ` · v ${mode.coverage ? "drop" : "add"} coverage line` : ""}{d.on_submit ? ` · x ${mode.hook ? "disallow" : "allow"} the document's command` : ""} · Esc back to the verdict · j/k PgUp/PgDn scroll</Text>;
+      case "reason": return <Text><Text color="cyan" bold> not an issue, why? › </Text>{input}<Text inverse> </Text><Text dimColor>  (optional, never posted)</Text></Text>;
+      case "preview": return <Text dimColor> </Text>;
       case "nav": if (note) return <Text wrap="truncate" color="green"> {note}</Text>;
-        return <Text wrap="truncate" dimColor> {busy ? `${busy} keys wait until it answers` : float ? (float.finding ? findingFooter() : infoFooter(!!float.copy, floatLines.length > floatRows(floatH))) : navFooter(cols, blind)}{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
+        return <Text wrap="truncate" dimColor> {busy ? `${busy} keys wait until it answers` : ""}{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
       default: {
         const decideKind = mode.kind === "comment" ? mode.decide?.kind : undefined;
         const label = mode.kind === "ask" ? "ask" : decideKind === "block" ? "block on it" : decideKind ? "comment on the finding" : mode.general ? "summary comment" : "comment";
-        return <Text><Text color="cyan" bold> {label} › </Text>{input}<Text inverse> </Text><Text dimColor>  ({decideKind ? "Enter saves, ctrl-u clears, Esc cancels the decision" : "Enter to send, Esc to cancel"})</Text></Text>;
+        return <Text><Text color="cyan" bold> {label} › </Text>{input}<Text inverse> </Text></Text>;
       }
     }
   };
@@ -470,7 +490,11 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
           ) : <Text dimColor>Nothing to read: the diff is empty.</Text>}
         </Box>
       </Box>
-      <Box>{footer()}</Box>
+      {keyPanel ? keyPanel.boxed
+        ? <Box flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1} width={keyPanel.width} height={keyPanel.height}><Text bold>{keyPanel.title}</Text>{keyPanel.lines.map((t, i) => <Text key={i} wrap="truncate">{t}</Text>)}</Box>
+        : <Text wrap="truncate" dimColor> {keyPanel.lines[0]}</Text> : null}
+      {/* The footer's one permanent hint. In a prompt `\` is text, so it is not offered there. */}
+      <Box justifyContent="space-between"><Box flexShrink={1}>{footer()}</Box>{keyState.box === "prompt" ? null : <Text dimColor>{bindingsHint()} </Text>}</Box>
     </Box>
   );
 }
