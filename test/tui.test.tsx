@@ -1190,8 +1190,9 @@ test("keys that come with later changes say so, and do nothing else", async () =
     expect(t.frame(), id).toContain("not built yet, coming with");
     expect(t.r.pos, id).toEqual({ item: 0, line: 0 });
   }
+  // a a and a x are not keys inside a finding until an answer about it is waiting: the prefix is cancelled, nothing else.
   await t.press("gf" + "aa");
-  expect(t.frame()).toContain("coming with follow-up answers on findings");
+  expect(t.frame()).not.toContain("coming with");
   expect(t.frame()).toContain("Hard-coded answer in main"); // the finding stays open
 });
 
