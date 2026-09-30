@@ -30,7 +30,10 @@ export const configPath = (env: Record<string, string | undefined> = process.env
 
 type Table = Record<string, unknown>;
 
-/** Tables and `key = value` lines with strings, integers and booleans: all the config needs. Anything else is an error with a line number. */
+/**
+ * Tables, `[[array-of-tables]]` and `key = value` lines with strings, integers, booleans and one-line arrays of strings:
+ * all the config and the docs recipes need. Anything else is an error with a line number.
+ */
 export function parseToml(text: string): Table {
   const root: Table = {};
   let cur = root;
@@ -39,13 +42,22 @@ export function parseToml(text: string): Table {
     const line = stripComment(raw).trim();
     if (!line) return;
     if (line.startsWith("[")) {
-      if (!line.endsWith("]") || line.startsWith("[[")) throw bad("expected a [table] header");
+      const multi = line.startsWith("[[");
+      if (!line.endsWith(multi ? "]]" : "]")) throw bad(multi ? "expected a [[table]] header" : "expected a [table] header");
+      const parts = splitKey(line.slice(multi ? 2 : 1, multi ? -2 : -1), bad);
       cur = root;
-      for (const part of splitKey(line.slice(1, -1), bad)) {
-        const next = (cur[part] ??= {});
+      parts.forEach((part, n) => {
+        if (multi && n === parts.length - 1) {
+          const list = (cur[part] ??= []);
+          if (!Array.isArray(list)) throw bad(`${part} is already a value`);
+          list.push((cur = {}));
+          return;
+        }
+        let next = (cur[part] ??= {});
+        if (Array.isArray(next)) next = next[next.length - 1] as Table; // a [sub.table] of the latest [[array]] entry
         if (typeof next !== "object" || next === null) throw bad(`${part} is already a value`);
         cur = next as Table;
-      }
+      });
       return;
     }
     const eq = line.indexOf("=");
@@ -87,8 +99,20 @@ function unescape(s: string, bad: (w: string) => Error): string {
   try { return JSON.parse(`"${s}"`); } catch { throw bad("bad escape in string"); }
 }
 
-function parseValue(v: string, bad: (w: string) => Error): string | number | boolean {
+function parseValue(v: string, bad: (w: string) => Error): string | number | boolean | string[] {
   let m: RegExpMatchArray | null;
+  if (v.startsWith("[")) {
+    if (!v.endsWith("]")) throw bad("arrays must open and close on one line");
+    const items: string[] = [];
+    let rest = v.slice(1, -1).trim();
+    while (rest) {
+      const x = rest.match(/^(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*(?:,\s*|$)/);
+      if (!x) throw bad("arrays hold quoted strings only");
+      items.push(x[1] !== undefined ? unescape(x[1], bad) : x[2]!);
+      rest = rest.slice(x[0].length);
+    }
+    return items;
+  }
   if ((m = v.match(/^"((?:[^"\\]|\\.)*)"$/))) return unescape(m[1]!, bad);
   if ((m = v.match(/^'([^']*)'$/))) return m[1]!;
   if (v === "true") return true;
