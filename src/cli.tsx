@@ -29,14 +29,21 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
 
   Keys:  j/k line   h/l hunk   J/K chapter   123G go to file line   gg/G first/last   ]f [f next/previous finding
          F reveal this chapter's findings early (--blind only)
-         ? why this chapter matters   f finding under the cursor   d dismiss it   a ask about this hunk
+         Deciding on findings (]f opens the next; each decision moves on to the next undecided one, and the
+         box shows how many are decided, e.g. 3/9 decided):
+           b block on it: your line comment at the finding's line, prefilled with its title; edit, Enter saves
+             (ctrl-u clears the line, Esc cancels); submit then defaults to request changes
+           c comment: the same, not blocking     d not an issue (an optional reason, kept, never posted)
+           i ignore: true but not worth raising  u undo the decision (and the comment it wrote)
+         ? why this chapter matters   f next finding in this hunk   a ask about this hunk
          y copy the open box (finding, ? why, ask answer) as clean text; with none open, the line's path:line
            (pbcopy, wl-copy, xclip, else OSC 52; PRVIEW_CLIPBOARD=osc52 forces the terminal route)
          e open the file here in your editor (inside tmux: in a split pane, this screen stays up)
          n comment on this line   N summary comment   w wrap long lines   H/L pan them sideways
          PgUp/PgDn (ctrl-u/ctrl-d) page an open box   below 100 columns the rail shows chapter numbers only
-         s submit: pick a verdict, say whether to add your kept findings as comments (y/N; only the claim is
-           posted, as your own comment), preview the review and what submit will do, Enter. The document is
+         s submit: pick a verdict (Enter takes request changes when anything is blocking), preview the review,
+           the findings still undecided, and what submit will do, Enter. Findings post only as the b/c comments
+           you saved. The document is
            written to $PRVIEW_HOME/submitted/<slug>.json (+ .md), then posted through the adapter for its
            target's platform (github: gh api), then, if the document declares on_submit, its command runs
            only if you press x in the preview to allow it (shown in full first; no shell); v in the preview
@@ -66,7 +73,7 @@ async function review(r: Review, blind: boolean, dryRun = false): Promise<void> 
       continue;
     }
     if (o.kind === "submit") {
-      const res = submit(r, files, { allowHook: o.hook, findings: o.findings, coverage: o.coverage, dryRun });
+      const res = submit(r, files, { allowHook: o.hook, coverage: o.coverage, dryRun });
       process.stdout.write((dryRun ? "" : writeup(r.doc, files) + "\n") + `${res.summary}\n`);
       if (!res.ok) process.exitCode = 1;
     }

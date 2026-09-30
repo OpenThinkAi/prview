@@ -9,6 +9,7 @@
 
 import type { FileDiff } from "./diff.ts";
 import { anchorLine, checkPlan, classify, clip, filePlan, fitLine, hunksOf, SEVERITIES, type Chapter, type Finding, type Mechanical, type Plan, type Severity } from "./guide.ts";
+import { withLegacy } from "./triage.ts";
 
 export const SCHEMA = "prview-review/1";
 
@@ -17,9 +18,22 @@ export class Fail extends Error {}
 
 export type Verdict = "approve" | "request_changes" | "comment";
 export type Target = { repo: string; base: string; head: string; url?: string; platform?: string; title: string; body: string; label: string };
-export type Comment = { hunk: string | null; side: "new" | "old"; line: number | null; text: string; at: string };
-/** `revealed` is optional so a document from before the blind pass loads unchanged: chapters (by first hunk) whose findings were shown before being read. */
-export type Human = { comments: Comment[]; dismissals: string[]; visited: string[]; revealed?: string[]; verdict?: Verdict };
+/** `id` is only set on a comment something points at: the one a finding decision (block or comment) wrote. */
+export type Comment = { id?: string; hunk: string | null; side: "new" | "old"; line: number | null; text: string; at: string };
+/**
+ * What the reader decided about one finding. `block` and `comment` made a line comment of the
+ * reader's own (`comment` is its id); `dismissed` is "not an issue", with an optional reason that
+ * stays in the document and is never posted; `ignored` is true but not worth raising.
+ */
+export type DecisionKind = "block" | "comment" | "dismissed" | "ignored";
+export type Decision = { kind: DecisionKind; reason?: string; comment?: string };
+/** Finding id to decision. */
+export type Decisions = Record<string, Decision>;
+/**
+ * `revealed` and `decisions` are optional so older documents load unchanged: chapters (by first hunk) whose findings were
+ * shown before being read, and the reader's decision per finding. A document's legacy `dismissals` are read as decisions.
+ */
+export type Human = { comments: Comment[]; visited: string[]; decisions?: Decisions; revealed?: string[]; verdict?: Verdict };
 /**
  * A producer's command to run after submit, as an argv (a string form is split here, without a
  * shell). A document can come from anyone, so this is only ever a request: submit shows the exact
@@ -35,7 +49,7 @@ export type Submission = {
 export type Doc = { schema: typeof SCHEMA; target: Target; plan: Plan; findings: Finding[]; human: Human; on_submit?: OnSubmit; submissions?: Submission[] };
 
 export const blank = (target: Target): Doc => ({
-  schema: SCHEMA, target, plan: { summary: "", chapters: [], mechanical: [], by: "files" }, findings: [], human: { comments: [], dismissals: [], visited: [] },
+  schema: SCHEMA, target, plan: { summary: "", chapters: [], mechanical: [], by: "files" }, findings: [], human: { comments: [], visited: [] },
 });
 
 // ---------------------------------------------------------------- reading one
@@ -48,6 +62,7 @@ const sha = (v: unknown) => typeof v === "string" && /^([0-9a-f]{40}|[0-9a-f]{64
 const side = (v: unknown): "new" | "old" => v === "old" ? "old" : "new";
 const VERDICTS = new Set<Verdict>(["approve", "request_changes", "comment"]);
 const STATUSES = new Set<Finding["status"]>(["upheld", "withdrawn", "unrefuted"]);
+const KINDS = new Set<DecisionKind>(["block", "comment", "dismissed", "ignored"]);
 
 /** A document from a file, stdin or the store. Refuses only what cannot be a review at all: another schema, or no commits to anchor on. */
 export function parseDocument(input: unknown): Doc {
@@ -93,15 +108,26 @@ export function parseDocument(input: unknown): Doc {
   }
 
   const h = isObj(j.human) ? j.human : {};
+  const cids = new Set<string>();
   const human: Human = {
     comments: arr(h.comments).filter(isObj).flatMap((c): Comment[] => {
       const text = str(c.text, 5000);
       if (!text) return [];
-      return [{ hunk: typeof c.hunk === "string" ? c.hunk : null, side: side(c.side), line: Number.isInteger(c.line) ? c.line as number : null, text, at: str(c.at, 40) }];
+      // A repeated id would make a decision point at two comments: the second one loses it.
+      const id = typeof c.id === "string" && c.id && c.id.length <= 40 && !cids.has(c.id) ? c.id : undefined;
+      if (id) cids.add(id);
+      return [{ ...(id ? { id } : {}), hunk: typeof c.hunk === "string" ? c.hunk : null, side: side(c.side), line: Number.isInteger(c.line) ? c.line as number : null, text, at: str(c.at, 40) }];
     }),
-    dismissals: arr(h.dismissals).map(String).filter((d) => ids.has(d)),
     visited: arr(h.visited).filter((v): v is string => typeof v === "string"),
   };
+  const decisions: Decisions = {};
+  for (const [id, v] of Object.entries(isObj(h.decisions) ? h.decisions : {})) {
+    if (!ids.has(id) || !isObj(v) || !KINDS.has(v.kind as DecisionKind)) continue;
+    const kind = v.kind as DecisionKind, reason = str(v.reason, 200);
+    decisions[id] = { kind, ...(reason && kind === "dismissed" ? { reason } : {}), ...(typeof v.comment === "string" && cids.has(v.comment) && (kind === "block" || kind === "comment") ? { comment: v.comment } : {}) };
+  }
+  const all = withLegacy(decisions, arr(h.dismissals).map(String).filter((d) => ids.has(d)));
+  if (Object.keys(all).length) human.decisions = all;
   const revealed = arr(h.revealed).filter((v): v is string => typeof v === "string");
   if (revealed.length) human.revealed = [...new Set(revealed)];
   if (VERDICTS.has(h.verdict as Verdict)) human.verdict = h.verdict as Verdict;
@@ -195,7 +221,11 @@ export function fit(doc: Doc, files: FileDiff[]): Doc {
     return h ? [{ ...f, line: anchorLine(h, f.side, f.line) }] : [];
   });
   const ids = new Set(findings.map((f) => f.id));
-  const human = { ...doc.human, dismissals: doc.human.dismissals.filter((d) => ids.has(d)), visited: doc.human.visited.filter((v) => at.has(v)) };
+  const human: Human = { ...doc.human, visited: doc.human.visited.filter((v) => at.has(v)) };
+  if (doc.human.decisions) {
+    const kept = Object.fromEntries(Object.entries(doc.human.decisions).filter(([id]) => ids.has(id)));
+    if (Object.keys(kept).length) human.decisions = kept; else delete human.decisions;
+  }
   if (doc.human.revealed) human.revealed = doc.human.revealed.filter((v) => at.has(v));
   return { ...doc, plan, findings, human };
 }
@@ -226,17 +256,34 @@ export function merge(into: Doc, incoming: Doc): Doc {
     ids.add(id); byKey.set(findingKey(f), id); renamed.set(f.id, id);
     findings.push({ ...f, id });
   }
-  const seen = new Set(into.human.comments.map(commentKey));
-  const comments = [...into.human.comments];
+  // Comments are copied so an existing one can take an id an incoming decision points at.
+  const comments = into.human.comments.map((c) => ({ ...c }));
+  const byComment = new Map(comments.map((c) => [commentKey(c), c]));
+  const taken = new Set(comments.flatMap((c) => c.id ? [c.id] : []));
+  const fresh = (id: string) => { let n = id; for (let k = 2; taken.has(n); k++) n = `${id}.${k}`; taken.add(n); return n; };
+  const cid = new Map<string, string>(); // an incoming comment id to the id it has here
   for (const c of incoming.human.comments) {
-    if (seen.has(commentKey(c))) continue;
-    seen.add(commentKey(c)); comments.push(c);
+    const known = byComment.get(commentKey(c));
+    if (known) {
+      if (c.id) { known.id ??= fresh(c.id); cid.set(c.id, known.id); }
+      continue;
+    }
+    const mine = { ...c, ...(c.id ? { id: fresh(c.id) } : {}) };
+    if (c.id) cid.set(c.id, mine.id!);
+    byComment.set(commentKey(c), mine); comments.push(mine);
   }
+  // The reader's decision here stands; an incoming one fills in only a finding not decided yet.
+  const decisions: Decisions = {};
+  for (const [id, v] of Object.entries(incoming.human.decisions ?? {})) {
+    const comment = v.comment ? cid.get(v.comment) : undefined;
+    decisions[renamed.get(id) ?? id] = { kind: v.kind, ...(v.reason ? { reason: v.reason } : {}), ...(comment ? { comment } : {}) };
+  }
+  Object.assign(decisions, into.human.decisions ?? {});
   const human: Human = {
     comments,
-    dismissals: [...new Set([...into.human.dismissals, ...incoming.human.dismissals.map((d) => renamed.get(d) ?? d)])],
     visited: [...new Set([...into.human.visited, ...incoming.human.visited])],
   };
+  if (Object.keys(decisions).length) human.decisions = decisions;
   const revealed = [...new Set([...(into.human.revealed ?? []), ...(incoming.human.revealed ?? [])])];
   if (revealed.length) human.revealed = revealed;
   const verdict = into.human.verdict ?? incoming.human.verdict;
