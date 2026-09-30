@@ -1,0 +1,191 @@
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseDiff } from "../src/diff.ts";
+import { hunksOf } from "../src/guide.ts";
+import { argvOf, merge, parseDocument, SCHEMA, splitArgs, type Doc } from "../src/document.ts";
+import { adapterFor, github, postingOf, type Runner } from "../src/platform.ts";
+import { describe, hookOf, planOf, runHook, shown, submit, type HookRunner } from "../src/submit.ts";
+import type { Review } from "../src/build.ts";
+
+// Submitting writes under $PRVIEW_HOME and runs the hook in the review's worktree: both are scratch
+// directories here. Posting never reaches a network: the adapter is handed a fake runner.
+let tmp = "", saved: string | undefined;
+beforeAll(() => { saved = process.env.PRVIEW_HOME; tmp = mkdtempSync(join(tmpdir(), "prview-submit-")); process.env.PRVIEW_HOME = join(tmp, "home"); });
+afterAll(() => { rmSync(tmp, { recursive: true, force: true }); if (saved === undefined) delete process.env.PRVIEW_HOME; else process.env.PRVIEW_HOME = saved; });
+
+const DIFF = `diff --git a/src/a.rs b/src/a.rs
+index 1..2 100644
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -10,3 +10,4 @@ fn main() {
+ keep
+-old
++new1
++new2
+ keep2
+`;
+const files = parseDiff(DIFF);
+const [h1] = hunksOf(files);
+const A = "a".repeat(40), B = "b".repeat(40);
+const PR = "https://github.com/o/r/pull/7";
+
+let n = 0;
+function review(over: Partial<Doc> = {}, target: Partial<Doc["target"]> = {}): Review {
+  const worktree = mkdtempSync(join(tmp, "wt-"));
+  const doc: Doc = {
+    schema: SCHEMA, target: { repo: "o/r", base: A, head: B, title: "A change", body: "", label: "main..x", ...target },
+    plan: { summary: "", chapters: [], mechanical: [], by: "files" }, findings: [],
+    human: { comments: [], dismissals: [], visited: [], verdict: "approve" }, ...over,
+  };
+  return { slug: `s${++n}`, repo: worktree, worktree, context: 3, created: "now", pos: { item: 0, line: 0 }, doc };
+}
+const noHook: HookRunner = () => { throw new Error("the hook must not run"); };
+const noNet: Runner = () => { throw new Error("nothing may be posted"); };
+
+test("on_submit is an argv: a string is split with quotes and no shell; what cannot be split cleanly is no command", () => {
+  expect(splitArgs(`cat {file} > /tmp/x`)).toEqual(["cat", "{file}", ">", "/tmp/x"]);
+  expect(splitArgs(`tool --msg "two words" 'it''s' a\\ b ""`)).toEqual(["tool", "--msg", "two words", "its", "a b", ""]);
+  expect(splitArgs(`echo $(whoami); rm -rf ~`)).toEqual(["echo", "$(whoami);", "rm", "-rf", "~"]); // literal words, never run by a shell
+  expect(splitArgs(`tool "open`)).toBeNull();
+  expect(argvOf(["a", 1])).toBeNull();
+  expect(argvOf("")).toBeNull();
+  expect(argvOf(Array(65).fill("a"))).toBeNull();
+  const doc = (run: unknown) => parseDocument({ schema: SCHEMA, target: { base: A, head: B }, on_submit: { run } });
+  expect(doc("notify --file {file}").on_submit).toEqual({ run: ["notify", "--file", "{file}"] });
+  expect(doc(["notify", "{file}"]).on_submit).toEqual({ run: ["notify", "{file}"] });
+  expect(doc(5).on_submit).toBeUndefined();
+  expect(doc(`bad "quote`).on_submit).toBeUndefined();
+});
+
+test("the hook as it runs: {file} is the only thing filled in; a trailing > path takes stdout, resolved in the worktree", () => {
+  expect(hookOf(["cat", "{file}", ">", "out.txt"], "/h/s.json", "/wt")).toEqual({ argv: ["cat", "/h/s.json"], cwd: "/wt", stdout: "/wt/out.txt", timeoutMs: 60_000 });
+  expect(hookOf(["cat", "{file}", ">/tmp/x"], "/h/a b.json", "/wt")).toEqual({ argv: ["cat", "/h/a b.json"], cwd: "/wt", stdout: "/tmp/x", timeoutMs: 60_000 });
+  expect(hookOf(["tool", "--in={file}", "$HOME", "{target}"], "/f", "/wt").argv).toEqual(["tool", "--in=/f", "$HOME", "{target}"]);
+  expect(hookOf([">", "x"], "/f", "/wt").stdout).toBeUndefined(); // a redirect with no command is just the argv
+  expect(shown(["cat", "/h/a b.json", "it's"])).toBe(`cat '/h/a b.json' 'it'\\''s'`);
+});
+
+test("merging: the newest producer's command replaces an older one; a document without one keeps what was there", () => {
+  const base = review().doc;
+  const withHook = { ...base, on_submit: { run: ["new"] } };
+  expect(merge({ ...base, on_submit: { run: ["old"] } }, withHook).on_submit).toEqual({ run: ["new"] });
+  expect(merge({ ...base, on_submit: { run: ["old"] } }, base).on_submit).toEqual({ run: ["old"] });
+});
+
+test("submissions survive a read; junk in them is dropped", () => {
+  const d = parseDocument({
+    schema: SCHEMA, target: { base: A, head: B },
+    submissions: [
+      { at: "2026-09-30T00:00:00Z", verdict: "approve", file: "/f.json", posted: { platform: "github", ok: false, error: "nope" }, hook: { argv: ["cat", "/f.json"], cwd: "/wt", ran: true, exit: 1, output: "boom" } },
+      { at: "x" }, "junk",
+    ],
+  });
+  expect(d.submissions).toEqual([{ at: "2026-09-30T00:00:00Z", verdict: "approve", file: "/f.json", posted: { platform: "github", ok: false, error: "nope" }, hook: { argv: ["cat", "/f.json"], cwd: "/wt", ran: true, exit: 1, output: "boom" } }]);
+});
+
+test("what is posted is the human's words only: verdict, summary as the body, line comments on their lines", () => {
+  const p = postingOf("request_changes", [
+    { hunk: null, side: "new", line: null, text: "Needs a test.", at: "now" },
+    { hunk: h1!.id, side: "new", line: 11, text: "why two?", at: "now" },
+    { hunk: h1!.id, side: "new", line: null, text: "this hunk overall", at: "now" },
+    { hunk: "gone.rs@1:1", side: "old", line: 3, text: "stale", at: "now" },
+  ], (id) => id === h1!.id ? "src/a.rs" : undefined);
+  expect(p).toEqual({ verdict: "request_changes", body: "Needs a test.\n\nsrc/a.rs: this hunk overall\n\ngone.rs: stale", comments: [{ path: "src/a.rs", side: "new", line: 11, text: "why two?" }] });
+  expect(adapterFor("GitHub")).toBe(github);
+  expect(adapterFor("gitlab")).toBeUndefined();
+  expect(adapterFor(undefined)).toBeUndefined();
+});
+
+test("github: one review through gh api with the payload on stdin; refused before sending when GitHub would refuse it", () => {
+  const t = review({}, { url: PR, platform: "github" }).doc.target;
+  const calls: { argv: string[]; stdin?: string }[] = [];
+  const ok: Runner = (argv, o) => { calls.push({ argv, stdin: o.stdin }); return { exit: 0, stdout: JSON.stringify({ html_url: `${PR}#pullrequestreview-1` }), stderr: "" }; };
+  const p = postingOf("comment", [{ hunk: h1!.id, side: "old", line: 11, text: "was this used?", at: "now" }], () => "src/a.rs");
+  expect(github.post(t, p, ok, "/wt")).toEqual({ url: `${PR}#pullrequestreview-1` });
+  expect(calls[0]!.argv).toEqual(["gh", "api", "--method", "POST", "repos/o/r/pulls/7/reviews", "--input", "-"]);
+  expect(JSON.parse(calls[0]!.stdin!)).toEqual({ commit_id: B, event: "COMMENT", body: "", comments: [{ path: "src/a.rs", line: 11, side: "LEFT", body: "was this used?" }] });
+  expect(github.describe(t, p)).toContain("posts to https://github.com/o/r/pull/7");
+
+  const silent = postingOf("request_changes", [], () => undefined);
+  expect(() => github.post(t, silent, noNet, "/wt")).toThrow("needs a summary comment (N)");
+  expect(github.describe(t, silent)).toStartWith("not posted:");
+  expect(() => github.post({ ...t, url: undefined }, p, noNet, "/wt")).toThrow("no GitHub pull request URL");
+  const refused: Runner = () => ({ exit: 1, stdout: JSON.stringify({ message: "Unprocessable Entity", errors: ["Can not approve your own pull request"] }), stderr: "gh: HTTP 422" });
+  expect(() => github.post(t, postingOf("approve", [], () => undefined), refused, "/wt")).toThrow("gh api failed (exit 1): Unprocessable Entity: Can not approve your own pull request");
+});
+
+test("no platform and no hook: submit writes the document and its markdown, and says where", () => {
+  const r = review();
+  const res = submit(r, files, { allowHook: false, run: noNet, hook: noHook });
+  const file = join(tmp, "home", "submitted", `${r.slug}.json`);
+  expect(res.ok).toBe(true);
+  expect(res.summary).toBe(`Submitted (Approve): wrote ${file} · no platform to post to, the file is the review`);
+  const written = parseDocument(readFileSync(file, "utf8"));
+  expect(written.submissions).toEqual([{ at: expect.any(String), verdict: "approve", file }]);
+  expect(readFileSync(file.replace(/\.json$/, ".md"), "utf8")).toContain("# A change");
+  expect(r.doc.submissions).toHaveLength(1);
+  // The review in the store carries the record too.
+  expect(JSON.parse(readFileSync(join(tmp, "home", `${r.slug}.json`), "utf8")).doc.submissions).toHaveLength(1);
+});
+
+test("an allowed hook runs for real: `cat {file} > out` in the worktree produces the written document", () => {
+  const r = review({ on_submit: { run: splitArgs("cat {file} > out.json")! } });
+  const res = submit(r, files, { allowHook: true, run: noNet });
+  const out = join(r.worktree, "out.json");
+  expect(res.ok).toBe(true);
+  expect(res.summary).toContain(`on_submit ran (exit 0, stdout in ${out})`);
+  expect(parseDocument(readFileSync(out, "utf8")).target.head).toBe(B);
+  expect(r.doc.submissions![0]!.hook).toEqual({ argv: ["cat", res.submission.file, ">", out], cwd: r.worktree, ran: true, exit: 0, output: "" });
+});
+
+test("a hook the human did not allow never runs, and the summary says so", () => {
+  const r = review({ on_submit: { run: ["cat", "{file}", ">", "out.json"] } });
+  const res = submit(r, files, { allowHook: false, run: noNet, hook: noHook });
+  expect(res.summary).toContain("on_submit not run (not allowed)");
+  expect(existsSync(join(r.worktree, "out.json"))).toBe(false);
+  expect(res.submission.hook).toMatchObject({ ran: false });
+});
+
+test("a failing hook, a missing command, or a failed post is in the summary and the record; the document is still written", () => {
+  const r = review({ on_submit: { run: ["sh", "-c", "echo boom >&2; exit 3"] } }, { url: PR, platform: "github" });
+  const down: Runner = () => ({ exit: 1, stdout: "", stderr: "gh: could not resolve host" });
+  const res = submit(r, files, { allowHook: true, run: down });
+  expect(res.ok).toBe(false);
+  expect(res.summary).toContain("NOT posted to github: gh api failed (exit 1): gh: could not resolve host");
+  expect(res.summary).toContain("on_submit FAILED (exit 3): boom");
+  expect(existsSync(res.submission.file)).toBe(true);
+  expect(res.submission).toMatchObject({ posted: { platform: "github", ok: false }, hook: { ran: true, exit: 3, output: "boom\n" } });
+
+  const gone = submit(review({ on_submit: { run: ["no-such-command-prview-test"] } }), files, { allowHook: true, run: noNet });
+  expect(gone.summary).toContain("on_submit FAILED (Executable not found");
+  expect(existsSync(gone.submission.file)).toBe(true);
+
+  const posted = submit(review({}, { url: PR, platform: "github" }), files, { allowHook: false, run: () => ({ exit: 0, stdout: "{}", stderr: "" }) });
+  expect(posted.summary).toContain(`posted to ${PR}`);
+  expect(posted.submission.posted).toEqual({ platform: "github", ok: true, url: PR });
+});
+
+test("a hook that runs too long is stopped and reported as timed out", () => {
+  const res = runHook({ argv: ["sleep", "5"], cwd: tmp, timeoutMs: 200 });
+  expect(res.timedOut).toBe(true);
+  const r = review({ on_submit: { run: ["sleep", "5"] } });
+  const s = submit(r, files, { allowHook: true, run: noNet, hook: () => ({ exit: null, stdout: "", stderr: "", timedOut: true }) });
+  expect(s.summary).toContain("on_submit FAILED (timed out after 60s)");
+  expect(s.submission.hook).toMatchObject({ timed_out: true });
+});
+
+test("the preview spells out all three steps, the exact command, and whether it is allowed", () => {
+  const r = review({ on_submit: { run: ["notify", "--file", "{file}", ">", "/tmp/x y"] } }, { platform: "gitlab" });
+  const p = planOf(r, files);
+  const text = describe(p, false);
+  expect(text).toContain(`1. Writes ${p.file}`);
+  expect(text).toContain("2. No gitlab adapter yet: the written file is the review.");
+  expect(text).toContain(`     notify --file ${p.file}`);
+  expect(text).toContain("     stdout to /tmp/x y");
+  expect(text).toContain(`in ${r.worktree}, no shell, stopped after 60s.`);
+  expect(text).toContain("[ ] Not allowed");
+  expect(describe(p, true)).toContain("[x] Allowed for this submit");
+  expect(describe(planOf(review(), files), false)).not.toContain("3.");
+});

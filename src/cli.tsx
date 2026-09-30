@@ -1,13 +1,14 @@
 #!/usr/bin/env bun
 // prview: review a pull request in the terminal. A model prepares the reading; you do the reviewing.
 
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { all, build, checkHead, exportDocument, Fail, filesOf, home, importDocument, load, remove, reopen, repoFor, writeup, type BuildOpts, type Review } from "./build.ts";
+import { all, build, checkHead, exportDocument, Fail, filesOf, importDocument, load, remove, reopen, repoFor, writeup, type BuildOpts, type Review } from "./build.ts";
 import { ConfigError, configPath, loadConfig, realLookups, resolveModel, ROLES } from "./config.ts";
 import { probe } from "./llm.ts";
 import { besideIn, editor, editorArgs } from "./editor.ts";
 import { show } from "./tui.tsx";
+import { submit } from "./submit.ts";
 
 const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [--context N] [--ai MODEL | --no-ai] [--samples N] [--blind | --no-blind] [--fresh]
   Opens the change in a full-screen review: a guide (a model) has ordered the hunks into chapters,
@@ -31,8 +32,11 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
          e open the file here in your editor (inside tmux: in a split pane, this screen stays up)
          n comment on this line   N summary comment   w wrap long lines   H/L pan them sideways
          PgUp/PgDn (ctrl-u/ctrl-d) page an open box   below 100 columns the rail shows chapter numbers only
-         s submit: pick a verdict, preview the review, Enter (saved as <slug>.review.md; posting comes with
-         the platform adapters)   q quit (everything is kept)
+         s submit: pick a verdict, preview the review and what submit will do, Enter. The document is
+           written to $PRVIEW_HOME/submitted/<slug>.json (+ .md), then posted through the adapter for its
+           target's platform (github: gh api), then, if the document declares on_submit, its command runs
+           only if you press x in the preview to allow it (shown in full first; no shell)
+         q quit (everything is kept)
 
   prview prepare <target>     build it (fetch, guide, critic) without opening the screen; open it later
   prview models               list the configured models and roles, and check each model is reachable
@@ -57,10 +61,9 @@ async function review(r: Review, blind: boolean): Promise<void> {
       continue;
     }
     if (o.kind === "submit") {
-      const md = writeup(r.doc, files);
-      const out = join(home(), `${r.slug}.review.md`);
-      writeFileSync(out, md);
-      process.stdout.write(md + `\nSaved to ${out}. Posting to the PR's platform is not built yet; the markdown above is the review.\n`);
+      const res = submit(r, files, { allowHook: o.hook });
+      process.stdout.write(writeup(r.doc, files) + `\n${res.summary}\n`);
+      if (!res.ok) process.exitCode = 1;
     }
     return;
   }
@@ -124,7 +127,7 @@ async function main(args: string[]): Promise<void> {
   return review(await build(repoFor(cmd, opts.repo), cmd, opts), blind());
 }
 
-main(process.argv.slice(2)).then(() => process.exit(0), (e) => {
+main(process.argv.slice(2)).then(() => process.exit(Number(process.exitCode ?? 0)), (e) => {
   if (e instanceof Fail || e instanceof ConfigError) { console.error(`prview: ${e.message}`); process.exit(1); }
   throw e;
 });

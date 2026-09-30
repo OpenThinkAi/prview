@@ -58,7 +58,10 @@ export function wrapText(s: string, width: number): string[] {
   const out: string[] = [];
   for (const para of s.split("\n")) {
     let cur = "";
-    for (const w of para.split(/\s+/).filter(Boolean)) {
+    // A word wider than the box (a long path, say) is broken across rows rather than cut: a box can
+    // hold a command the reader is asked to allow, and every character of it has to be visible.
+    const words = para.split(/\s+/).filter(Boolean).flatMap((w) => w.length <= width || width < 1 ? [w] : w.match(new RegExp(`.{1,${width}}`, "g"))!);
+    for (const w of words) {
       if (cur && (cur + " " + w).length > width) { out.push(cur); cur = w; } else cur = cur ? `${cur} ${w}` : w;
     }
     out.push(cur);

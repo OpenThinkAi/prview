@@ -170,7 +170,35 @@ test("submit flow: s asks for a verdict, previews the write-up, Esc goes back, E
   await t.press("c");
   expect(t.outcomes).toEqual([]);
   await t.press("\r");
-  expect(t.outcomes).toEqual([{ kind: "submit" }]);
+  expect(t.outcomes).toEqual([{ kind: "submit", hook: false }]);
+  expect(t.frame()).not.toContain("x allows"); // no command in the document, nothing to allow
+});
+
+test("submit flow: the document's command is shown in full and runs only after its own key, x", async () => {
+  const t = await open();
+  t.r.doc.on_submit = { run: ["notify-tool", "--file", "{file}"] };
+  await t.press("sa");
+  await t.press("\x1b[6~\x1b[6~\x1b[6~"); // page down to the end of the preview
+  expect(t.frame()).toContain("notify-tool --file");
+  expect(t.frame()).toContain("t.json"); // {file}, filled in: the path the document is written to
+  expect(t.frame()).toContain("no shell, stopped after 60s");
+  expect(t.frame()).toContain("[ ] Not allowed");
+  await t.press("x");
+  expect(t.frame()).toContain("[x] Allowed");
+  await t.press("x");
+  expect(t.frame()).toContain("[ ] Not allowed");
+  await t.press("x");
+  await t.press("\r");
+  expect(t.outcomes).toEqual([{ kind: "submit", hook: true }]);
+});
+
+test("submit flow: allowing the command does not outlive the preview; back to the verdict and it is off again", async () => {
+  const t = await open();
+  t.r.doc.on_submit = { run: ["notify-tool"] };
+  await t.press("sax");
+  await t.press("\x1b");
+  await t.press("a\r");
+  expect(t.outcomes).toEqual([{ kind: "submit", hook: false }]);
 });
 
 test("long lines: cut with an ellipsis, H/L pan, w wraps onto more rows and back", async () => {

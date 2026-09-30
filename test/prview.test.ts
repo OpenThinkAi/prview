@@ -246,7 +246,7 @@ test("a document is parsed defensively: another schema or no commits refused, ba
   expect(d.findings.map((f) => [f.id, f.source, f.severity, f.kind])).toEqual([["1", "hal9k", "blocking", "bug"], ["1.2", "hal9k", "warn", "finding"]]);
   expect(d.plan.by).toBe("files");
   expect(d.human).toEqual({ comments: [], dismissals: ["1"], visited: [] });
-  expect(d.on_submit).toBeUndefined(); // a command from a document is never kept silently
+  expect(d.on_submit).toEqual({ run: ["notify"] }); // kept, but only ever run when the human allows it at submit
   expect(d.target.label).toBe("aaaaaaaa..bbbbbbbb");
 });
 

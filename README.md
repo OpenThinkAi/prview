@@ -30,9 +30,15 @@ What you get is a full-screen review, not a diff dump:
   added and removed lines the green or red stays and tokens differ by weight, so the diff still reads
   first. Below 100 columns the rail shrinks to chapter numbers. A long line is cut with `…`: `H`/`L`
   pan sideways, `w` wraps it instead. In an open box `PgUp`/`PgDn` (or `ctrl-u`/`ctrl-d`) page.
-- **Notes and coverage.** `n` notes the line, `N` the whole change. `s` prints the write-up:
-  notes with file and line, how much of the change you actually read, and the findings you kept.
-  Everything is saved as you go; `q` and come back later.
+- **Notes and coverage.** `n` notes the line, `N` the whole change. Everything is saved as you go;
+  `q` and come back later.
+- **Submit.** `s` picks a verdict and previews the write-up (notes with file and line, how much you
+  read, the findings you kept) and what Enter will do: write the finished document to
+  `$PRVIEW_HOME/submitted/<name>.json` (and `.md`), post your verdict and comments to the PR
+  (GitHub, through `gh`; a change with no platform stops at the file), and, if the document asks for
+  one, run its `on_submit` command. That command is shown in full and runs only if you press `x` in
+  the preview; Enter alone skips it. A failed post or command is reported, and the file is kept.
+  Only your own words are posted.
 - **Blind first pass.** With `blind = true` in the config (or `--blind` for a run, `--no-blind` to turn
   it off) findings stay hidden in a chapter until you have visited every hunk in it, so you read the
   code before you read the critic. The gutter shows no `▲`, `f`, `d` and `]f` do nothing there, and the
@@ -88,7 +94,7 @@ prview show review.json                 # import, then open
 A document is anchored on its head commit and is refused by a review at any other head.
 [`schema/`](./schema/) has the JSON Schema and what a producer needs to emit.
 
-Not yet: posting the verdict anywhere.
+Not yet: posting to GitLab or Azure DevOps.
 
 ## Checking the guide's intents
 
