@@ -230,6 +230,43 @@ export function fit(doc: Doc, files: FileDiff[]): Doc {
   return { ...doc, plan, findings, human };
 }
 
+// ---------------------------------------------------------------- someone else's human layer
+
+/** What an imported review's verdict was: shown to the reader as information, never picked for them. */
+export type Suggested = { by: string; verdict: Verdict };
+
+/**
+ * A document's `human` layer belongs to whoever wrote it, and anything posted from this review is the
+ * reader's own words. So a document from anywhere but the reader's own export loses its human layer
+ * here: each comment becomes a finding of kind `comment` the reader triages like any other (`c`/`b`
+ * adopt it as their own editable comment, `n` rejects it), and the verdict comes back separately, as
+ * information. Decisions, coverage and reveals are theirs too, and are dropped. A comment on the whole
+ * change is anchored at the diff's first hunk; one on a hunk this diff does not have is dropped by `fit`.
+ * The findings take the producer's name as their source when every finding in the document shares one,
+ * else `imported`.
+ */
+export function suggestions(doc: Doc, files: FileDiff[]): { doc: Doc; suggested?: Suggested } {
+  const sources = new Set(doc.findings.map((f) => f.source));
+  const by = sources.size === 1 ? [...sources][0]! : "imported";
+  const first = hunksOf(files).find((h) => h.hunk)?.id;
+  const ids = new Set(doc.findings.map((f) => f.id));
+  const findings = [...doc.findings];
+  let n = 0;
+  for (const c of doc.human.comments) {
+    const hunk = c.hunk ?? first;
+    if (!hunk) continue;
+    let id = `comment-${++n}`;
+    while (ids.has(id)) id = `comment-${++n}`;
+    ids.add(id);
+    findings.push({
+      id, source: by, hunk, side: c.side, line: c.line ?? 0, severity: "warn", kind: "comment",
+      claim: clip(c.text, 300), evidence: c.hunk ? "A comment from an imported review." : "A comment on the whole change, from an imported review.", status: "unrefuted",
+    });
+  }
+  const out: Doc = { ...doc, findings, human: { comments: [], visited: [] } };
+  return { doc: out, ...(doc.human.verdict ? { suggested: { by, verdict: doc.human.verdict } } : {}) };
+}
+
 // ---------------------------------------------------------------- merging two
 
 const findingKey = (f: Finding) => [f.source, f.hunk, f.side, f.line, f.claim].join("\0");

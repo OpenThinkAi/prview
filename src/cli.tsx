@@ -68,8 +68,14 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   prview writeup <name>       print the compiled review without opening the screen
   prview export <name>        print its review document (prview-review/1 JSON; schema/ describes it)
   prview import <file | ->    merge a review document's findings and chapters into the review at its
-                              head, or start one in this clone; any producer's document, no source named
-  prview show <file | ->      import a document, then open it
+                              head, or start one in this clone; any producer's document, no source named.
+                              Its comments arrive as findings (kind comment) you decide on like any other:
+                              c/b adopt one as your own comment to edit, n rejects it. Its verdict is shown
+                              in the opening summary, never picked for you; nothing of it is posted as is.
+  prview import --mine <file | ->
+                              restore your own export: comments, decisions and verdict kept as they were
+  prview show [--mine] <file | ->
+                              import a document, then open it
   prview done <name>          remove it (worktree, fetched refs, state)`;
 
 async function review(r: Review, blind: boolean, dryRun = false): Promise<void> {
@@ -113,7 +119,7 @@ function start() {
 }
 
 async function main(args: string[]): Promise<void> {
-  const opts: BuildOpts & { repo?: string; blind?: boolean; dryRun?: boolean } = { context: 3, fresh: false };
+  const opts: BuildOpts & { repo?: string; blind?: boolean; dryRun?: boolean; mine?: boolean } = { context: 3, fresh: false };
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
@@ -123,6 +129,7 @@ async function main(args: string[]): Promise<void> {
     else if (a === "--blind") opts.blind = true;
     else if (a === "--no-blind") opts.blind = false;
     else if (a === "--dry-run") opts.dryRun = true;
+    else if (a === "--mine") opts.mine = true;
     else if (a === "--fresh") opts.fresh = true;
     else if (a === "--samples") {
       const n = Number(args[++i]);
@@ -139,6 +146,7 @@ async function main(args: string[]): Promise<void> {
   }
   opts.say = (s) => process.stderr.write(`prview: ${s}\n`);
   const [cmd, a1] = rest;
+  if (opts.mine && cmd !== "import" && cmd !== "show") throw new Fail("--mine only goes with import or show: prview import --mine <file>");
   // The flag wins over the config either way; the config is only read when a screen is about to open.
   const doc = async () => { if (!a1) throw new Fail(`usage: prview ${cmd} <file | ->`); return a1 === "-" ? Bun.stdin.text() : Bun.file(resolve(a1)).text().catch(() => { throw new Fail(`cannot read ${a1}`); }); };
   switch (cmd) {
@@ -148,8 +156,8 @@ async function main(args: string[]): Promise<void> {
     case "list": console.log(all().map(({ slug, doc: { target: t, human: h } }) => `${slug}\t${t.label}\t${h.visited.length} read · ${h.comments.length} notes\t${t.title}`).join("\n")); return;
     case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r.doc, filesOf(r))); const by = preparedBy(r.ai?.runs); if (by) process.stderr.write(`${by}\n`); return; }
     case "export": { if (!a1) throw new Fail("usage: prview export <name>"); process.stdout.write(exportDocument(load(a1))); return; }
-    case "import": { const r = importDocument(await doc(), opts.repo); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
-    case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); const cfg = start(); return review(importDocument(await doc(), opts.repo), opts.blind ?? cfg.blind, opts.dryRun); }
+    case "import": { const r = importDocument(await doc(), opts.repo, opts.mine); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
+    case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); const cfg = start(); return review(importDocument(await doc(), opts.repo, opts.mine), opts.blind ?? cfg.blind, opts.dryRun); }
     case "done": { if (!a1) throw new Fail("usage: prview done <name>"); console.log(remove(a1)); return; }
     case "open": { if (!a1) throw new Fail("usage: prview open <name> (prview list)"); const cfg = start(); return review(await reopen(a1, opts), opts.blind ?? cfg.blind, opts.dryRun); }
     case "prepare": { const r = await build(repoFor(a1, opts.repo), a1, opts); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }

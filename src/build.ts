@@ -14,7 +14,7 @@ import { basename, join } from "node:path";
 import { earlyTitles } from "./blind.ts";
 import { LABEL } from "./triage.ts";
 import { parseDiff, type FileDiff } from "./diff.ts";
-import { blank, Fail, fit, merge, parseDocument, SCHEMA, type Comment, type Doc, type Target } from "./document.ts";
+import { blank, Fail, fit, merge, parseDocument, SCHEMA, suggestions, type Comment, type Doc, type Suggested, type Target } from "./document.ts";
 import {
   applyReask, applyRefute, classify, CRITIC_SYSTEM, criticPrompt, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, numbered,
   mergeFindings, readCritic, readGuide, applyTitleReask, TITLE_REASK_SYSTEM, titleReaskPrompt, titleOf, REASK_SYSTEM, reaskPrompt, REFUTE_SYSTEM, refutePrompt, type Chapter, type Finding, type HunkAt, type Mechanical, type Plan,
@@ -46,7 +46,8 @@ export function preparedBy(runs: Run[] | undefined): string | undefined {
 export type Ai = { models: Record<Role, string>; at: string; errors: string[]; samples?: number; runs?: Run[] };
 export type Pos = { item: number; line: number };
 /** `ref` is what was asked for (a PR number or a range), so the review can be rebuilt at a newer head. */
-export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; ai?: Ai; doc: Doc };
+/** `suggested`: the verdicts of documents imported at this head, shown in the opening summary as information only. */
+export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; ai?: Ai; doc: Doc; suggested?: Suggested[] };
 
 export const home = () => process.env.PRVIEW_HOME ?? join(homedir(), ".cache", "prview");
 const metaOf = (slug: string) => join(home(), `${slug}.json`);
@@ -235,8 +236,10 @@ function revive(j: any): Review | undefined {
     findings: (j.findings ?? []).map((f: any) => ({ ...f, source: "critic" })),
     human: { comments: j.notes, dismissals: j.dismissed, visited: j.visited, verdict: j.verdict },
   } : undefined);
+  const suggested = (Array.isArray(j.suggested) ? j.suggested : []).flatMap((v: any): Suggested[] =>
+    typeof v?.by === "string" && v.by && ["approve", "request_changes", "comment"].includes(v.verdict) ? [{ by: v.by.slice(0, 40), verdict: v.verdict }] : []);
   try {
-    return { slug: j.slug, repo: j.repo, ref: j.ref ?? j.target, worktree: j.worktree, context: j.context ?? 3, created: j.created, pos: j.pos ?? { item: 0, line: 0 }, ai: j.ai, doc: parseDocument(raw) };
+    return { slug: j.slug, repo: j.repo, ref: j.ref ?? j.target, worktree: j.worktree, context: j.context ?? 3, created: j.created, pos: j.pos ?? { item: 0, line: 0 }, ai: j.ai, doc: parseDocument(raw), ...(suggested.length ? { suggested } : {}) };
   } catch { return undefined; }
 }
 
@@ -317,7 +320,7 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   const same = !!prior && prior.doc.target.head === t.head && !opts.fresh;
   const r: Review = { slug, repo, ref: isPR(target) ? target!.replace(/^#/, "") : target, worktree, context, created: new Date().toISOString(), pos: { item: 0, line: 0 }, doc: fit(blank(t), files) };
   if (same) {
-    Object.assign(r, { pos: prior.pos, ai: prior.ai, doc: fit(prior.doc, files) });
+    Object.assign(r, { pos: prior.pos, ai: prior.ai, doc: fit(prior.doc, files), ...(prior.suggested ? { suggested: prior.suggested } : {}) });
     say(`reusing the review document from ${prior.ai?.at.slice(0, 16).replace("T", " ") ?? "before"} (--fresh redoes it)`);
   } else {
     if (prior) r.doc.human.comments = prior.doc.human.comments;
@@ -356,13 +359,21 @@ function haveCommits(repo: string, t: Target): void {
 /**
  * A document from anywhere, folded into the review at its head: merged into the one already there,
  * or opened as a new review in this clone. A review of the same change at another head refuses it.
+ * Its human layer is someone else's, so it arrives as suggestions (see `suggestions`) unless `mine`
+ * says the reader is restoring their own export, which keeps it as it is.
  */
-export function importDocument(text: string, explicitRepo?: string): Review {
+export function importDocument(text: string, explicitRepo?: string, mine = false): Review {
   const doc = parseDocument(text);
+  const take = (r: Review, files: FileDiff[]): Doc => {
+    if (mine) return fit(doc, files);
+    const s = suggestions(doc, files);
+    if (s.suggested && !r.suggested?.some((v) => v.by === s.suggested!.by && v.verdict === s.suggested!.verdict)) r.suggested = [...(r.suggested ?? []), s.suggested];
+    return fit(s.doc, files);
+  };
   const existing = all().find((r) => r.doc.target.head === doc.target.head);
   if (existing) {
     checkHead(existing);
-    existing.doc = merge(existing.doc, fit(doc, filesOf(existing)));
+    existing.doc = merge(existing.doc, take(existing, filesOf(existing)));
     save(existing);
     return existing;
   }
@@ -378,7 +389,7 @@ export function importDocument(text: string, explicitRepo?: string): Review {
     slug, repo, ref: pr ? pr[2]! : `${doc.target.base}..${doc.target.head}`, worktree: worktreeAt(repo, slug, doc.target.head),
     context: 3, created: new Date().toISOString(), pos: { item: 0, line: 0 }, doc,
   };
-  r.doc = fit(doc, filesOf(r));
+  r.doc = take(r, filesOf(r));
   save(r);
   return r;
 }
