@@ -27,12 +27,16 @@ export function gotoLine(items: NavItem[], current: number, n: number): At | und
 
 const lineOf = (h: Hunk, f: Finding) => h.lines.findIndex((l) => f.side === "new" ? l.n !== null && l.n === f.line : l.o !== null && l.o === f.line);
 
+/** Every finding's place in reading order, across hunks and chapters; ties on one line keep the document's order. */
+export function spotsOf(items: NavItem[], findings: Finding[]): (At & { finding: Finding })[] {
+  return items.flatMap((it, item) =>
+    findings.map((f, k) => ({ f, k })).filter(({ f }) => f.hunk === it.id).map(({ f, k }) => ({ item, line: Math.max(0, lineOf(it.hunk, f)), finding: f, k })),
+  ).sort((a, b) => a.item - b.item || a.line - b.line || a.k - b.k).map(({ item, line, finding }) => ({ item, line, finding }));
+}
+
 /** `]f` / `[f`: the next or previous finding in reading order, across hunks and chapters. */
 export function nextFinding(items: NavItem[], findings: Finding[], from: At, dir: 1 | -1): (At & { finding: Finding }) | undefined {
-  // Ties on one line keep the document's order.
-  const spots = items.flatMap((it, item) =>
-    findings.map((f, k) => ({ f, k })).filter(({ f }) => f.hunk === it.id).map(({ f, k }) => ({ item, line: Math.max(0, lineOf(it.hunk, f)), finding: f, k })),
-  ).sort((a, b) => a.item - b.item || a.line - b.line || a.k - b.k);
+  const spots = spotsOf(items, findings);
   const after = (s: At) => s.item > from.item || (s.item === from.item && s.line > from.line);
   const before = (s: At) => s.item < from.item || (s.item === from.item && s.line < from.line);
   return dir > 0 ? spots.find(after) : [...spots].reverse().find(before);

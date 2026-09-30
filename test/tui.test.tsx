@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import React from "react";
@@ -59,7 +59,7 @@ function fixture(over: Over = {}): Review {
       ],
     },
     findings: over.findings ?? [finding],
-    human: { comments: over.comments ?? [], dismissals: [], visited: [] },
+    human: { comments: over.comments ?? [], visited: [] },
   };
   return { slug: "t", repo: "/nowhere", worktree: "/nowhere", context: 3, created: "now", pos: { item: 0, line: 0 }, doc };
 }
@@ -110,7 +110,7 @@ test("cursor row: j and k move it, the line number and the sign stay in the gutt
   expect(t.frame()).toMatch(/11\s+▲\s*\+let answer/);
 });
 
-test("finding float: f opens the finding under the cursor, d dismisses it, Esc closes the box", async () => {
+test("finding float: f opens the finding under the cursor with progress and the decision keys, Esc closes the box", async () => {
   const t = await open();
   await t.press("f");
   expect(t.frame()).toContain("critic · bug · blocking");
@@ -119,11 +119,9 @@ test("finding float: f opens the finding under the cursor, d dismisses it, Esc c
   expect(fr.indexOf("Hard-coded answer in main")).toBeGreaterThan(fr.indexOf("critic · bug · blocking"));
   expect(fr.indexOf("answer is hard-coded")).toBeGreaterThan(fr.indexOf("Hard-coded answer in main"));
   expect(t.r.pos.line).toBe(2); // the cursor moved to the finding's line
-  await t.press("d");
-  expect(t.r.doc.human.dismissals).toEqual(["1"]);
-  expect(t.frame()).not.toContain("answer is hard-coded");
-  await t.press("f");
-  expect(t.frame()).toContain("dismissed");
+  expect(fr).toContain("0/1 decided");
+  expect(fr).toContain("b block on it · c comment · d not an issue · i ignore");
+  expect(fr).toContain("u undo  ]f next"); // the footer offers the decision keys while a finding is open
   await t.press("\x1b");
   await settle();
   expect(t.frame()).not.toContain("answer is hard-coded");
@@ -166,23 +164,22 @@ test("submit flow: s asks for a verdict, previews the write-up, Esc goes back, E
   expect(t.frame()).toContain("verdict ›");
   await t.press("r");
   expect(t.r.doc.human.verdict).toBe("request_changes");
-  expect(t.frame()).toContain("kept finding as comments?"); // the critic's finding is kept: posting it is asked, not assumed
-  await t.press("\r"); // Enter is no
+  expect(t.frame()).not.toContain("as comments?"); // no question about posting findings: b and c are how one becomes a comment
   expect(t.frame()).toContain("Request changes");
   expect(t.frame()).toContain("why 42?");
   await t.press("\x1b");
   expect(t.frame()).toContain("verdict ›");
-  await t.press("cn");
+  await t.press("c");
   expect(t.outcomes).toEqual([]);
   await t.press("\r");
-  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, findings: [], coverage: false }]);
+  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, coverage: false }]);
   expect(t.frame()).not.toContain("x allows"); // no command in the document, nothing to allow
 });
 
 test("submit flow: the document's command is shown in full and runs only after its own key, x", async () => {
   const t = await open();
   t.r.doc.on_submit = { run: ["notify-tool", "--file", "{file}"] };
-  await t.press("san");
+  await t.press("sa");
   await t.press("\x1b[6~\x1b[6~\x1b[6~"); // page down to the end of the preview
   expect(t.frame()).toContain("notify-tool --file");
   expect(t.frame()).toContain("t.json"); // {file}, filled in: the path the document is written to
@@ -194,30 +191,41 @@ test("submit flow: the document's command is shown in full and runs only after i
   expect(t.frame()).toContain("[ ] Not allowed");
   await t.press("x");
   await t.press("\r");
-  expect(t.outcomes).toEqual([{ kind: "submit", hook: true, findings: [], coverage: false }]);
+  expect(t.outcomes).toEqual([{ kind: "submit", hook: true, coverage: false }]);
 });
 
 test("submit flow: allowing the command does not outlive the preview; back to the verdict and it is off again", async () => {
   const t = await open();
   t.r.doc.on_submit = { run: ["notify-tool"] };
-  await t.press("sanx");
+  await t.press("sax");
   await t.press("\x1b");
-  await t.press("an\r");
-  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, findings: [], coverage: false }]);
+  await t.press("a\r");
+  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, coverage: false }]);
 });
 
-test("submit flow: kept findings are only posted on a y; dismissed ones are not asked about", async () => {
-  const t = await open();
-  await t.press("say");
+test("submit flow: the preview leads with the undecided findings; with one blocking, Enter picks request changes", async () => {
+  const second: Finding = { ...finding, id: "2", hunk: h2!.id, line: 2, severity: "warn", title: "Type changed to a string" };
+  const t = await open({ findings: [finding, second] });
+  await t.press("s");
+  expect(t.frame()).not.toContain("(Enter)"); // nothing blocking and no verdict yet: no default
   await t.press("\r");
-  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, findings: ["1"], coverage: false }]);
-
-  const u = await open({ findings: [finding] });
-  await u.press("d"); // dismiss the finding under the cursor
-  u.r.doc.human.dismissals = ["1"];
-  await u.press("sa");
-  expect(u.frame()).not.toContain("kept finding"); // nothing kept, nothing to ask
-  expect(u.frame()).toContain("On submit");
+  expect(t.frame()).toContain("verdict ›"); // so Enter picks nothing
+  await t.press("a");
+  expect(t.frame()).toContain("Not decided yet (2)");
+  expect(t.frame()).toContain("▲ src/a.rs:11 · blocking · Hard-coded answer in main");
+  expect(t.frame()).toContain("▲ src/b.ts:2 · warn · Type changed to a string");
+  await t.press("\x1b\x1b");
+  await t.press("]fi"); // the first one ignored, the second is open next
+  await t.press("s");
+  expect(t.frame()).toContain("a approve (Enter)"); // nothing blocking: Enter keeps the verdict chosen before
+  await t.press("\x1b");
+  await t.press("b\r"); // block on the second, with its title as the comment
+  await t.press("s");
+  expect(t.frame()).toContain("r request changes (Enter)");
+  await t.press("\r");
+  expect(t.r.doc.human.verdict).toBe("request_changes");
+  expect(t.frame()).not.toContain("Not decided yet"); // all decided: the list is gone
+  expect(t.frame()).toContain("Type changed to a string"); // the comment it wrote, in the write-up
 });
 
 test("submit flow: v adds the coverage line for a platform that posts; off again with v; Esc backs out of the question", async () => {
@@ -226,17 +234,17 @@ test("submit flow: v adds the coverage line for a platform that posts; off again
   await t.press("sa");
   await t.press("\x1b");
   expect(t.frame()).toContain("verdict ›");
-  await t.press("an");
+  await t.press("a");
   expect(t.frame()).toContain("v add coverage line");
   await t.press("v");
   expect(t.frame()).toContain("v drop coverage line");
   await t.press("\r");
-  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, findings: [], coverage: true }]);
+  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, coverage: true }]);
 });
 
 test("submit flow: with --dry-run the preview says nothing will be posted", async () => {
   const t = await open(undefined, { dryRun: true });
-  await t.press("san");
+  await t.press("sa");
   expect(t.frame()).toContain("Enter prints the calls");
   expect(t.frame()).toContain("DRY RUN");
 });
@@ -401,8 +409,14 @@ test("blind: before visiting, the gutter has no ▲, the rail shows ▲?, f and 
   await t.press("]f");
   expect(t.frame()).not.toContain("answer is hard-coded");
   expect(t.r.pos.item).toBe(0);
-  await t.press("d");
-  expect(t.r.doc.human.dismissals).toEqual([]);
+  for (const k of ["b", "c", "d", "i"]) {
+    await t.press("jj" + k); // on the finding's line: still nothing to decide
+    expect(t.frame()).toContain("hidden until you have read it");
+    await t.press("gg");
+  }
+  expect(t.frame()).not.toContain("comment on the finding ›");
+  expect(t.r.doc.human.decisions).toBeUndefined();
+  expect(t.r.doc.human.comments).toEqual([]);
   expect(t.r.doc.human.revealed).toBeUndefined();
 });
 
@@ -439,6 +453,111 @@ test("blind off: nothing is hidden and the footer does not offer F", async () =>
   const t = await open();
   expect(t.frame()).toContain("▸ 1 Core change ▲1");
   expect(t.frame()).not.toContain("F reveal");
+});
+
+// ---------------------------------------------------------------- finding triage
+
+const f2: Finding = { ...finding, id: "2", line: 12, severity: "warn", title: "Second line looks unused" };
+const f3: Finding = { ...finding, id: "3", hunk: h2!.id, line: 2, severity: "nit", title: "Type changed to a string" };
+const three = { findings: [finding, f2, f3] };
+
+test("triage b: the comment line opens prefilled with the title, is edited, and saves at the finding's line as blocking; the pass moves on", async () => {
+  const t = await open(three);
+  await t.press("]f");
+  expect(t.frame()).toContain("0/3 decided");
+  await t.press("b");
+  expect(t.frame()).toContain("block on it › Hard-coded answer in main");
+  expect(t.frame()).toContain("ctrl-u clears");
+  await t.press("\x15"); // ctrl-u: the prefill is rewritten whole
+  await t.press("Where does 42 come from?\r");
+  const [c] = t.r.doc.human.comments;
+  expect(c).toMatchObject({ hunk: h1!.id, side: "new", line: 11, text: "Where does 42 come from?" });
+  expect(t.r.doc.human.decisions).toEqual({ "1": { kind: "block", comment: c!.id } });
+  expect(t.frame()).toMatch(/» Where does 42 come from\?/); // shown under its line like any comment
+  // Straight to the next undecided finding, open, with the count.
+  expect(t.r.pos).toEqual({ item: 0, line: 3 });
+  expect(t.frame()).toContain("Second line looks unused");
+  expect(t.frame()).toContain("1/3 decided");
+});
+
+test("triage c: Esc cancels the decision and saves nothing; Enter keeps the title as the comment", async () => {
+  const t = await open(three);
+  await t.press("]fc");
+  expect(t.frame()).toContain("comment on the finding › Hard-coded answer in main");
+  await t.press("\x1b");
+  expect(t.r.doc.human.comments).toEqual([]);
+  expect(t.r.doc.human.decisions).toBeUndefined();
+  expect(t.frame()).toContain("0/3 decided"); // the finding is still open where it was
+  await t.press("c\r");
+  expect(t.r.doc.human.comments.map((c) => [c.line, c.text])).toEqual([[11, "Hard-coded answer in main"]]);
+  expect(t.r.doc.human.decisions!["1"]!.kind).toBe("comment");
+  // Emptying the line decides nothing.
+  await t.press("c\x15\r");
+  expect(t.r.doc.human.decisions!["2"]).toBeUndefined();
+});
+
+test("triage d and i: not an issue takes an optional reason, never a comment; ignore is one key; each moves on", async () => {
+  const t = await open(three);
+  await t.press("]fd");
+  expect(t.frame()).toContain("not an issue, why? ›");
+  expect(t.frame()).toContain("never posted");
+  await t.press("42 is the spec\r");
+  expect(t.r.doc.human.decisions!["1"]).toEqual({ kind: "dismissed", reason: "42 is the spec" });
+  expect(t.frame()).toContain("Second line looks unused");
+  await t.press("d\r"); // no reason: still decided
+  expect(t.r.doc.human.decisions!["2"]).toEqual({ kind: "dismissed" });
+  expect(t.frame()).toContain("Type changed to a string");
+  expect(t.r.pos.item).toBe(1); // across hunks
+  await t.press("i");
+  expect(t.r.doc.human.decisions!["3"]).toEqual({ kind: "ignored" });
+  expect(t.r.doc.human.comments).toEqual([]);
+  expect(t.frame()).toContain("3/3 decided");
+  expect(t.frame()).toContain("Every finding is decided");
+  expect(t.frame()).toContain("0 ▲"); // the header counts what is left to decide
+});
+
+test("triage u: undo takes the decision back with the comment it wrote, and the finding is open again", async () => {
+  const t = await open(three);
+  await t.press("]fb\r");
+  expect(t.r.doc.human.comments).toHaveLength(1);
+  await t.press("[f"); // back to the first
+  expect(t.frame()).toContain("Decided: blocking. Your comment: Hard-coded answer in main. u undoes it.");
+  await t.press("u");
+  expect(t.r.doc.human.comments).toEqual([]);
+  expect(t.r.doc.human.decisions).toEqual({});
+  expect(t.frame()).toContain("0/3 decided");
+  expect(t.frame()).toContain("b block on it · c comment");
+  await t.press("u");
+  expect(t.frame()).toContain("nothing decided on this finding");
+});
+
+test("triage: a whole pass is ]f and one key per finding; the decisions are in the saved review", async () => {
+  const t = await open(three);
+  await t.press("]fb\r");
+  await t.press("c\r");
+  await t.press("i");
+  expect(t.r.doc.human.decisions).toMatchObject({ "1": { kind: "block" }, "2": { kind: "comment" }, "3": { kind: "ignored" } });
+  // What a reopen reads: the review as saved, through the document parser.
+  const saved = JSON.parse(readFileSync(join(tmp, "t.json"), "utf8")).doc;
+  const again = { doc: parseDocument({ ...saved, target: { ...saved.target, base: "a".repeat(40), head: "b".repeat(40) } }) }; // the fixture's commits are stand-ins
+  expect(again.doc.human.decisions).toEqual(t.r.doc.human.decisions);
+  expect(again.doc.human.comments.map((c) => c.text)).toEqual(["Hard-coded answer in main", "Second line looks unused"]);
+});
+
+test("triage with nothing to act on: off a finding the keys say so; in blind, a revealed chapter's findings are the only ones counted", async () => {
+  const t = await open(three);
+  await t.press("i");
+  expect(t.frame()).toContain("no finding here: ]f goes to the next one");
+  expect(t.r.doc.human.decisions).toBeUndefined();
+  await t.press("jji"); // on a finding's line, with no box open: that finding
+  expect(t.r.doc.human.decisions).toEqual({ "1": { kind: "ignored" } });
+
+  const b = await open(three, { blind: true });
+  await b.press("]f"); // chapter 1 is read on open (one hunk); chapter 2 is not
+  expect(b.frame()).toContain("0/2 decided");
+  await b.press("ii");
+  expect(b.frame()).toContain("Every finding you can see is decided");
+  expect(b.r.doc.human.decisions!["3"]).toBeUndefined();
 });
 
 // ---------------------------------------------------------------- clipboard

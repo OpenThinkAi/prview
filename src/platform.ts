@@ -3,11 +3,11 @@
 // all) is not an error, the written document is then the review.
 //
 // What is posted is the human's own words and nothing more: the verdict, their summary comments as
-// the body, their line comments on their lines. Never the write-up, never a finding, never a word
-// about prview or any model. Commands run through an injected runner so tests never touch a network.
+// the body, their line comments on their lines. A finding the human decided to block on or comment
+// on reaches here only as the line comment they saved for it. Never the write-up, never a finding's
+// own text, never a word about prview or any model. Commands run through an injected runner so tests never touch a network.
 
 import type { Comment, Target, Verdict } from "./document.ts";
-import type { Finding } from "./guide.ts";
 
 /** Runs one argv (no shell) and hands back what happened; the real one is `spawn` below. */
 export type Runner = (argv: string[], opts: { cwd: string; stdin?: string }) => { exit: number | null; stdout: string; stderr: string };
@@ -38,8 +38,8 @@ export type Adapter = {
  */
 export function postingOf(
   verdict: Verdict, comments: Comment[], pathOf: (hunk: string) => string | undefined,
-  /** What the human chose to add: findings they kept (only the claim is posted, as their own comment) and a coverage line. */
-  extra: { findings?: Finding[]; coverage?: string } = {},
+  /** What the human chose to add: a coverage line. */
+  extra: { coverage?: string } = {},
 ): Posting {
   const body: string[] = [], placed: Posting["comments"] = [];
   for (const c of comments) {
@@ -47,11 +47,6 @@ export function postingOf(
     if (!c.hunk) body.push(c.text);
     else if (path && c.line !== null) placed.push({ path, side: c.side, line: c.line, text: c.text });
     else body.push(`${path ?? c.hunk.split("@")[0]}: ${c.text}`);
-  }
-  for (const f of extra.findings ?? []) {
-    const path = pathOf(f.hunk);
-    if (path) placed.push({ path, side: f.side, line: f.line, text: f.claim });
-    else body.push(`${f.hunk.split("@")[0]}: ${f.claim}`);
   }
   return { verdict, body: body.join("\n\n"), ...(extra.coverage ? { coverage: extra.coverage } : {}), comments: placed };
 }

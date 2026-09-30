@@ -36,8 +36,8 @@ export type Plan = { file: string; md: string; target: Target; platform?: string
 
 export const submittedDir = () => join(home(), "submitted");
 
-/** What the human opted into at submit: the ids of kept findings to post as their own comments, and a coverage line. Both default to nothing. */
-export type Choices = { findings?: string[]; coverage?: boolean };
+/** What the human opted into at submit: a coverage line, off by default. Findings post only as the comments their decisions wrote. */
+export type Choices = { coverage?: boolean };
 
 /** The coverage line, in the reader's own voice: how much of the change they read. */
 export function coverageLine(d: Doc, files: FileDiff[]): string {
@@ -50,8 +50,7 @@ export function planOf(r: Review, files: FileDiff[], choices: Choices = {}): Pla
   const file = join(submittedDir(), `${r.slug}.json`), md = join(submittedDir(), `${r.slug}.md`);
   const d = r.doc, platform = d.target.platform, adapter = adapterFor(platform);
   const paths = new Map(hunksOf(files).map((h) => [h.id, h.file.path]));
-  const chosen = d.findings.filter((f) => choices.findings?.includes(f.id) && f.status !== "withdrawn" && !d.human.dismissals.includes(f.id));
-  const posting = d.human.verdict ? postingOf(d.human.verdict, d.human.comments, (id) => paths.get(id), { findings: chosen, coverage: choices.coverage ? coverageLine(d, files) : undefined }) : undefined;
+  const posting = d.human.verdict ? postingOf(d.human.verdict, d.human.comments, (id) => paths.get(id), { coverage: choices.coverage ? coverageLine(d, files) : undefined }) : undefined;
   return { file, md, target: d.target, platform, adapter, posting, ...(d.on_submit ? { hook: hookOf(d.on_submit.run, file, r.worktree) } : {}) };
 }
 

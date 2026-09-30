@@ -245,7 +245,7 @@ test("a document is parsed defensively: another schema or no commits refused, ba
   const d = parseDocument(JSON.stringify(foreign({ human: { dismissals: [1, "nope"], verdict: "ship it" }, on_submit: { run: ["notify"] } })));
   expect(d.findings.map((f) => [f.id, f.source, f.severity, f.kind])).toEqual([["1", "hal9k", "blocking", "bug"], ["1.2", "hal9k", "warn", "finding"]]);
   expect(d.plan.by).toBe("files");
-  expect(d.human).toEqual({ comments: [], dismissals: ["1"], visited: [] });
+  expect(d.human).toEqual({ comments: [], visited: [], decisions: { "1": { kind: "dismissed" } } }); // a legacy dismissal is "not an issue"
   expect(d.on_submit).toEqual({ run: ["notify"] }); // kept, but only ever run when the human allows it at submit
   expect(d.target.label).toBe("aaaaaaaa..bbbbbbbb");
 });
@@ -264,7 +264,8 @@ test("a document is held to its diff: mechanical by rule, chapters checked, find
   expect(f.plan.chapters).toEqual([{ title: "All", intent: "N is two", why: "", hunks: ["src/real.rs@1:1"] }]);
   expect(f.plan.mechanical.map((m) => m.id)).toEqual(classify(files).map((m) => m.id));
   expect(f.findings.map((x) => [x.id, x.line])).toEqual([["x", 1]]);
-  expect(f.human).toMatchObject({ visited: ["src/real.rs@1:1"], dismissals: [] });
+  expect(f.human).toMatchObject({ visited: ["src/real.rs@1:1"] });
+  expect(f.human.decisions).toBeUndefined(); // the dismissed finding is gone, and its decision with it
   expect(fit(f, files)).toEqual(f);
 });
 
@@ -280,7 +281,7 @@ test("import merges: a finding seen before is kept once, a taken id is renamed, 
   })), files);
   const m = merge(mine, theirs);
   expect(m.findings.map((f) => [f.id, f.source, f.claim])).toEqual([["1", "critic", "n is wrong"], ["1.2", "hal9k", "n is wrong"], ["1.2.2", "hal9k", "same id twice"]]);
-  expect(m.human.dismissals).toEqual(["1.2"]);
+  expect(m.human.decisions).toEqual({ "1.2": { kind: "dismissed" } });
   expect(m.human.comments.map((c) => c.text)).toEqual(["mine", "theirs"]);
   expect(m.human.verdict).toBe("comment");
   expect(m.plan.by).toBe("hal9k"); // the by-file fallback gives way to a producer's chapters
@@ -293,7 +294,7 @@ test("round trip: export, import into a fresh clone with its own store, the same
   expect(Bun.spawnSync(["git", "clone", "-q", "--no-local", repo, clone]).exitCode).toBe(0);
   const r = load((await build(repo, "main..feature", { ai: null })).slug);
   r.doc.findings.push({ id: "h1", source: "hal9k", hunk: "keep.txt@1:1", side: "new", line: 2, severity: "nit", kind: "style", claim: "shouting", evidence: "", status: "unrefuted" });
-  r.doc.human.dismissals.push("h1");
+  r.doc.human.decisions = { h1: { kind: "dismissed" } };
   r.doc.plan = { ...r.doc.plan, summary: "Makes two loud.", by: "hal9k", chapters: [{ title: "Loud", intent: "Two is loud", why: "", hunks: ["keep.txt@1:1"] }] };
   save(r);
   const out = exportDocument(load(r.slug));
@@ -471,5 +472,9 @@ test("the write-up lists kept findings by title", () => {
   const md = writeup(r.doc, parseDiff(MECH));
   expect(md).toContain("warn · Long prose about the thing");
   expect(md).not.toContain("Even more prose");
-  expect(md).toContain("nit · Short title");
+  expect(md).toContain("nit · Short title · not decided");
+  // A decision shows beside its finding; "not an issue" drops the finding from the list.
+  const decided = writeup({ ...r.doc, human: { ...r.doc.human, decisions: { "1": { kind: "ignored" }, "2": { kind: "dismissed" } } } }, parseDiff(MECH));
+  expect(decided).toContain("Long prose about the thing · decided: ignored");
+  expect(decided).not.toContain("Short title");
 });

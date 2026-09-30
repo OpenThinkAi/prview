@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { earlyTitles } from "./blind.ts";
+import { LABEL } from "./triage.ts";
 import { parseDiff, type FileDiff } from "./diff.ts";
 import { blank, Fail, fit, merge, parseDocument, SCHEMA, type Comment, type Doc, type Target } from "./document.ts";
 import {
@@ -382,10 +383,11 @@ export function writeup(d: Doc, files: FileDiff[]): string {
   for (const c of placed) out.push(`**${place(c)}**`, c.text, ``);
   const early = earlyTitles([...d.plan.chapters.map((c) => ({ title: c.title, ids: c.hunks })), { title: "Mechanical", ids: d.plan.mechanical.map((m) => m.id) }], h);
   if (early.length) out.push(`Findings seen before reading: ${early.join(", ")}`, ``);
-  const kept = d.findings.filter((f) => f.status !== "withdrawn" && !h.dismissals.includes(f.id));
+  // "Not an issue" drops a finding from the write-up; every other one is listed with what was decided about it.
+  const kept = d.findings.filter((f) => f.status !== "withdrawn" && h.decisions?.[f.id]?.kind !== "dismissed");
   if (kept.length) {
     out.push(`## Findings you kept`, ``);
-    for (const f of kept) out.push(`- ${f.hunk.split("@")[0]} ${f.side} ${f.line} · ${f.severity} · ${titleOf(f)}`);
+    for (const f of kept) { const k = h.decisions?.[f.id]?.kind; out.push(`- ${f.hunk.split("@")[0]} ${f.side} ${f.line} · ${f.severity} · ${titleOf(f)} · ${k ? `decided: ${LABEL[k]}` : "not decided"}`); }
   }
   return out.join("\n") + "\n";
 }

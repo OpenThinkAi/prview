@@ -20,8 +20,16 @@ What you get is a full-screen review, not a diff dump:
 - **Findings in the gutter.** A critic (a model) raises findings anchored to a line; each one is
   handed to a fresh call with more of the file to refute, and only the survivors are shown (`▲`).
   `f` reads one: a bold title of at most 12 words first ("Missing test: X isn't covered"), the detail
-  beneath, and a header saying who raised it (`▲ critic · bug · warn`); `d` dismisses it. A finding
-  with no title of its own shows its claim's first sentence.
+  beneath, and a header saying who raised it (`▲ critic · bug · warn`). A finding with no title of
+  its own shows its claim's first sentence.
+- **Deciding on findings, one key each.** Step through them with `]f` and decide each as it opens:
+  `b` block on it, `c` comment, `d` not an issue, `i` ignore, `u` undo. `b` and `c` open the comment
+  line at the finding's line, prefilled with its title: edit it (`ctrl-u` clears the line), Enter saves
+  it as your own line comment, Esc cancels the decision. `d` takes an optional one-line reason, kept
+  in the document and never posted; `i` records that it is true but not worth raising. After each
+  decision the next undecided finding opens, so a whole pass is `]f` and then one key per finding; the
+  box says how far along you are (`3/9 decided`), and the `▲` counts on the rail and header are what
+  is left to decide. Decisions are saved as you go (`human.decisions` in the document).
   `y` copies the open box (a finding, the `?` why, an `a` answer) as clean text: the original strings,
   no borders, padding or hard wraps. With no box open it copies the line's `path:line`. It uses `pbcopy`,
   `wl-copy` or `xclip`, else OSC 52 (works through tmux with `allow-passthrough on`, and over ssh);
@@ -38,21 +46,21 @@ What you get is a full-screen review, not a diff dump:
   pan sideways, `w` wraps it instead. In an open box `PgUp`/`PgDn` (or `ctrl-u`/`ctrl-d`) page.
 - **Notes and coverage.** `n` notes the line, `N` the whole change. Everything is saved as you go;
   `q` and come back later.
-- **Submit.** `s` picks a verdict, then (if you kept any findings) asks whether to post them as
-  comments: `y` or `n`, Enter is no, and only the finding's claim is posted, as your own line comment.
-  The preview then shows the write-up (notes with file and line, how much you read, the findings you
-  kept) and what Enter will do: write the finished document to `$PRVIEW_HOME/submitted/<name>.json`
+- **Submit.** `s` picks a verdict; Enter takes request changes when anything is blocking. The
+  preview then lists any findings you have not decided, the write-up (notes with file and line, how
+  much you read, the findings you kept and what you decided) and what Enter will do: write the finished document to `$PRVIEW_HOME/submitted/<name>.json`
   (and `.md`), post your verdict and comments to the PR, and, if the document asks for one, run its
   `on_submit` command. That command is shown in full and runs only if you press `x` in the preview;
   Enter alone skips it. `v` adds a line saying how much you read to the posted summary (off by
   default). On GitHub (through `gh`) this is one review: the head commit is checked first (a PR that
   moved since the review is refused), a pending review gets your line comments (right side for lines
   in the new file, left for the old), then it is submitted with your verdict and summary. A failed
-  post or command is reported, and the file is kept. Only your own words are posted.
+  post or command is reported, and the file is kept. Only your own words are posted: a finding
+  reaches the PR only as the `b`/`c` comment you saved for it.
   `--dry-run` prints the API calls a submit would make and does nothing else.
 - **Blind first pass.** With `blind = true` in the config (or `--blind` for a run, `--no-blind` to turn
   it off) findings stay hidden in a chapter until you have visited every hunk in it, so you read the
-  code before you read the critic. The gutter shows no `▲`, `f`, `d` and `]f` do nothing there, and the
+  code before you read the critic. The gutter shows no `▲`, `f`, `]f` and the decision keys do nothing there, and the
   rail marks the chapter `▲?`. `F` reveals the chapter early: a box lists what the model found next to
   the comments you already left, the reveal is kept in the document (`human.revealed`), and the
   write-up notes which chapters you looked at early.
@@ -91,8 +99,8 @@ State lives under `~/.cache/prview` (`$PRVIEW_HOME`): a worktree per review and 
 ## One document, any producer
 
 Every review is a `prview-review/1` document: the target (repo, base, head, PR), the chapters,
-the findings (each with the `source` that raised it), and your comments, dismissals, coverage
-and verdict. The guide and critic are just the default producer; any reviewer that writes the
+the findings (each with the `source` that raised it), and your comments, decisions on findings,
+coverage and verdict (an older document's `dismissals` load as "not an issue"). The guide and critic are just the default producer; any reviewer that writes the
 document can feed prview, and prview never asks which one did.
 
 ```sh

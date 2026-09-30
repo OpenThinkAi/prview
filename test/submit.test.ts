@@ -8,6 +8,7 @@ import { argvOf, merge, parseDocument, SCHEMA, splitArgs, type Doc } from "../sr
 import { adapterFor, github, postingOf, type Runner } from "../src/platform.ts";
 import { describe, hookOf, planOf, runHook, shown, submit, type HookRunner } from "../src/submit.ts";
 import type { Review } from "../src/build.ts";
+import { decide } from "../src/triage.ts";
 
 // Submitting writes under $PRVIEW_HOME and runs the hook in the review's worktree: both are scratch
 // directories here. Posting never reaches a network: the adapter is handed a fake runner.
@@ -37,7 +38,7 @@ function review(over: Partial<Doc> = {}, target: Partial<Doc["target"]> = {}): R
   const doc: Doc = {
     schema: SCHEMA, target: { repo: "o/r", base: A, head: B, title: "A change", body: "", label: "main..x", ...target },
     plan: { summary: "", chapters: [], mechanical: [], by: "files" }, findings: [],
-    human: { comments: [], dismissals: [], visited: [], verdict: "approve" }, ...over,
+    human: { comments: [], visited: [], verdict: "approve" }, ...over,
   };
   return { slug: `s${++n}`, repo: worktree, worktree, context: 3, created: "now", pos: { item: 0, line: 0 }, doc };
 }
@@ -173,22 +174,26 @@ test("github: refused before sending when GitHub would refuse it", () => {
   expect(() => github.post(t, postingOf("approve", [], () => undefined), down, "/wt")).toThrow("gh api failed (exit 1): gh: HTTP 404");
 });
 
-test("kept findings are posted only when chosen, as their claim alone; the coverage line only when chosen", () => {
+test("a finding posts only as the comment its block or comment decision wrote; ignored and not-an-issue post nothing; coverage only when chosen", () => {
   const f = { id: "1", source: "stamp:security", hunk: h1!.id, side: "new" as const, line: 11, severity: "blocking" as const, kind: "bug", claim: "This can overflow when the count is zero.", evidence: "see the loop", status: "upheld" as const };
-  const gone = { ...f, id: "2", status: "withdrawn" as const };
-  const r = review({ findings: [f, gone, { ...f, id: "3", line: 12, claim: "dismissed one" }], human: { comments: [], dismissals: ["3"], visited: [h1!.id], verdict: "comment" } }, { url: PR, platform: "github" });
-  expect(planOf(r, files).posting).toEqual({ verdict: "comment", body: "", comments: [] });
-  // Even if asked for, a withdrawn or dismissed finding is not posted.
-  const plan = planOf(r, files, { findings: ["1", "2", "3"], coverage: true });
-  expect(plan.posting).toEqual({ verdict: "comment", body: "", coverage: "I read 1 of 1 hunk.", comments: [{ path: "src/a.rs", side: "new", line: 11, text: "This can overflow when the count is zero." }] });
+  let human: Doc["human"] = { comments: [], visited: [h1!.id], verdict: "request_changes" };
+  human = decide(human, f, "block", { text: "Guard the zero count here", at: "now" });
+  human = decide(human, { ...f, id: "2", line: 12 }, "ignored", { at: "now" });
+  human = decide(human, { ...f, id: "3", line: 12 }, "dismissed", { reason: "the critic misread the loop", at: "now" });
+  const r = review({ findings: [f, { ...f, id: "2", line: 12 }, { ...f, id: "3", line: 12 }], human }, { url: PR, platform: "github" });
+  expect(planOf(r, files).posting).toEqual({ verdict: "request_changes", body: "", comments: [{ path: "src/a.rs", side: "new", line: 11, text: "Guard the zero count here" }] });
+  const plan = planOf(r, files, { coverage: true });
+  expect(plan.posting!.coverage).toBe("I read 1 of 1 hunk.");
   const { calls, run } = fakeGh();
   github.post(r.doc.target, plan.posting!, run, "/wt");
-  expect(JSON.stringify(calls.map((c) => c.body))).not.toMatch(/stamp|security|prview|critic|evidence|see the loop/i);
+  expect(calls[1]!.body.comments).toEqual([{ path: "src/a.rs", line: 11, side: "RIGHT", body: "Guard the zero count here" }]);
+  // Nothing but the reader's words: no source, claim, evidence, reason or comment id reaches GitHub.
+  expect(JSON.stringify(calls.map((c) => c.body))).not.toMatch(/stamp|security|prview|critic|evidence|see the loop|overflow|misread|"c1"|blocking/i);
   expect(calls[2]!.body.body).toBe("I read 1 of 1 hunk.");
 });
 
 test("dry run: prints the API calls, writes nothing, posts nothing, records nothing", () => {
-  const r = review({ human: { comments: [{ hunk: h1!.id, side: "old", line: 11, text: "was this used?", at: "now" }], dismissals: [], visited: [], verdict: "comment" } }, { url: PR, platform: "github" });
+  const r = review({ human: { comments: [{ hunk: h1!.id, side: "old", line: 11, text: "was this used?", at: "now" }], visited: [], verdict: "comment" } }, { url: PR, platform: "github" });
   const res = submit(r, files, { allowHook: true, run: noNet, hook: noHook, dryRun: true });
   expect(res.ok).toBe(true);
   expect(res.summary).toContain("Dry run (Comment): nothing written or posted.");
