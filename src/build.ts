@@ -17,7 +17,7 @@ import { LABEL } from "./triage.ts";
 import { parseDiff, type FileDiff } from "./diff.ts";
 import { blank, Fail, fit, merge, parseDocument, SCHEMA, suggestions, type Comment, type Doc, type Suggested, type Target } from "./document.ts";
 import {
-  applyReask, applyRefute, classify, CRITIC_SYSTEM, criticPrompt, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, numbered,
+  applyReask, applyRefute, classify, CRITIC_SYSTEM, criticPrompt, DATA_RULE, fence, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, numbered, refutable,
   mergeFindings, readCritic, readGuide, applyTitleReask, TITLE_REASK_SYSTEM, titleReaskPrompt, titleOf, REASK_SYSTEM, reaskPrompt, REFUTE_SYSTEM, refutePrompt, type Chapter, type Finding, type HunkAt, type Mechanical, type Plan,
 } from "./guide.ts";
 import { DEFAULT_MODEL, loadConfig, realLookups, resolveModel, resolveRoles, type Resolved, type Role } from "./config.ts";
@@ -128,29 +128,31 @@ export const isPR = (target: string | undefined) => !!target && (/^#?\d+$/.test(
 // ---------------------------------------------------------------- the model passes
 
 export type Progress = (s: string) => void;
+/** How a pass reaches a model: `complete` in use, a stub in tests (the fencing contract is tested through the whole pipeline). */
+export type Call = typeof complete;
 
 /**
  * The guide's pass: one call, and one more only if the parser had to cut a line to fit. A failed
  * re-ask keeps the cut plan; a failed first call throws, and the caller falls back to file order.
  */
-export async function runGuide(model: Resolved, src: { title: string; body: string }, hunks: HunkAt[], mechanical: Mechanical[], say: Progress = () => {}, usage?: (u: Usage) => void): Promise<{ plan: Plan; reasked: number; errors: string[] }> {
-  const { plan, cuts, summarySaid } = readGuide(await complete(model, GUIDE_SYSTEM, guidePrompt(src, hunks, mechanical), usage), hunks, mechanical);
+export async function runGuide(model: Resolved, src: { title: string; body: string }, hunks: HunkAt[], mechanical: Mechanical[], say: Progress = () => {}, usage?: (u: Usage) => void, call: Call = complete): Promise<{ plan: Plan; reasked: number; errors: string[] }> {
+  const { plan, cuts, summarySaid } = readGuide(await call(model, GUIDE_SYSTEM, guidePrompt(src, hunks, mechanical), usage), hunks, mechanical);
   if (!cuts.length) return { plan, reasked: 0, errors: [] };
   say(`guide: ${cuts.length} line${cuts.length === 1 ? "" : "s"} too long, asking once more…`);
-  try { return { plan: applyReask(plan, cuts, await complete(model, REASK_SYSTEM, reaskPrompt(src.title, cuts, summarySaid), usage)), reasked: cuts.length, errors: [] }; }
+  try { return { plan: applyReask(plan, cuts, await call(model, REASK_SYSTEM, reaskPrompt(src.title, cuts, summarySaid), usage)), reasked: cuts.length, errors: [] }; }
   catch (e) { return { plan, reasked: cuts.length, errors: [`guide re-ask: ${(e as Error).message}`] }; }
 }
 
 /** One critic run: parsed, with one re-ask for any title that had to be cut (a failed re-ask keeps the cut titles). */
-export async function runCritic(model: Resolved, prompt: string, chapter: Chapter, hunks: HunkAt[], usage?: (u: Usage) => void): Promise<Finding[]> {
-  const { findings, cuts } = readCritic(await complete(model, CRITIC_SYSTEM, prompt, usage), chapter, hunks, 0);
+export async function runCritic(model: Resolved, prompt: string, chapter: Chapter, hunks: HunkAt[], usage?: (u: Usage) => void, call: Call = complete): Promise<Finding[]> {
+  const { findings, cuts } = readCritic(await call(model, CRITIC_SYSTEM, prompt, usage), chapter, hunks, 0);
   if (!cuts.length) return findings;
-  try { return applyTitleReask(findings, cuts, await complete(model, TITLE_REASK_SYSTEM, titleReaskPrompt(findings, cuts), usage)); }
+  try { return applyTitleReask(findings, cuts, await call(model, TITLE_REASK_SYSTEM, titleReaskPrompt(findings, cuts), usage)); }
   catch { return findings; }
 }
 
-/** The default producer: the guide orders the hunks, the critic raises findings, refute re-checks them. */
-async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, models: Record<Role, Resolved>, samples: number, say: Progress): Promise<{ doc: Doc; errors: string[]; runs: Run[] }> {
+/** The default producer: the guide orders the hunks, the critic raises findings, refute re-checks them. Exported for the pipeline tests. */
+export async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, models: Record<Role, Resolved>, samples: number, say: Progress, call: Call = complete): Promise<{ doc: Doc; errors: string[]; runs: Run[] }> {
   const errors: string[] = [], runs: Run[] = [];
   // The id each role shows: the config's own until a reply says better, `default` if neither is known yet.
   // Keyed by model name, so a role sharing a model another role has already heard from starts with the real id.
@@ -164,7 +166,7 @@ async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, 
   const hunks = hunksOf(files);
   let plan: Plan;
   say(`${tag("guide")}: reading ${hunks.length - mechanical.length} hunks (${mechanical.length} mechanical)…`);
-  try { const g = await runGuide(models.guide, src, hunks, mechanical, (m) => say(m.replace(/^guide:/, `${tag("guide")}:`)), timed("guide")); plan = g.plan; errors.push(...g.errors); }
+  try { const g = await runGuide(models.guide, src, hunks, mechanical, (m) => say(m.replace(/^guide:/, `${tag("guide")}:`)), timed("guide"), call); plan = g.plan; errors.push(...g.errors); }
   catch (e) { errors.push(`guide: ${(e as Error).message}`); plan = filePlan(files, mechanical); }
   say(`${tag("guide")}: ${plan.chapters.length} chapters${plan.by === "files" ? " (by file: the guide failed)" : ""}`);
 
@@ -174,7 +176,7 @@ async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, 
   const reviews = await pool(plan.chapters.map((c, i) => async () => {
     const prompt = criticPrompt(src, c, hunks);
     const each = await Promise.all(Array.from({ length: samples }, () =>
-      runCritic(models.critic, prompt, c, hunks, timed("critic")).catch((e) => e instanceof Error ? e : new Error(String(e)))));
+      runCritic(models.critic, prompt, c, hunks, timed("critic"), call).catch((e) => e instanceof Error ? e : new Error(String(e)))));
     const ok = each.filter((r): r is Finding[] => !(r instanceof Error));
     for (const r of each) if (r instanceof Error) errors.push(`critic (${c.title}): ${r.message}`);
     if (!ok.length) throw new Error("every run failed");
@@ -192,7 +194,8 @@ async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, 
     const h = at.get(f.hunk)!;
     const file = join(worktree, h.file.path);
     const text = f.side === "new" && existsSync(file) ? readFileSync(file, "utf8") : null;
-    return applyRefute(f, await complete(models.refute, REFUTE_SYSTEM, refutePrompt(f, h.hunk!, text), timed("refute")));
+    // A withdrawal has to cite a line the prompt showed; `refutable` says which those were.
+    return applyRefute(f, await call(models.refute, REFUTE_SYSTEM, refutePrompt(f, h.hunk!, text), timed("refute")), refutable(f, h.hunk!, text));
   }));
   const settled = new Map<string, Finding>();
   verdicts.forEach((v, i) => { if (v instanceof Error) errors.push(`refute: ${v.message}`); else settled.set(contested[i]!.id, v); });
@@ -202,7 +205,8 @@ async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, 
   return { doc: { ...blank(src), plan, findings }, errors, runs };
 }
 
-const ASK_SYSTEM = `You help a human reviewer understand one hunk of a code change. You know the change's summary and what the reviewer is meant to verify in this chapter. Answer their question about the hunk; with no question, explain what the hunk does, why it is probably written this way, and what could go wrong. Ground everything in the code shown; say so when you would need to see more. Plain text, short paragraphs, no markdown headers, under 180 words.`;
+const ASK_SYSTEM = `You help a human reviewer understand one hunk of a code change. You know the change's summary and what the reviewer is meant to verify in this chapter. Answer their question about the hunk; with no question, explain what the hunk does, why it is probably written this way, and what could go wrong. Ground everything in the code shown; say so when you would need to see more. Plain text, short paragraphs, no markdown headers, under 180 words.
+${DATA_RULE} The reviewer's question is the one thing outside the blocks you answer.`;
 
 export async function ask(r: Review, files: FileDiff[], hunkId: string, question: string): Promise<string> {
   const h = hunksOf(files).find((x) => x.id === hunkId);
@@ -211,7 +215,8 @@ export async function ask(r: Review, files: FileDiff[], hunkId: string, question
   const chapter = d.plan.chapters.find((c) => c.hunks.includes(h.id));
   const file = join(r.worktree, h.file.path);
   const around = existsSync(file) ? readFileSync(file, "utf8").split("\n").slice(Math.max(0, h.hunk.newStart - 30), h.hunk.newStart + h.hunk.newCount + 30).join("\n") : "";
-  const prompt = `# ${d.target.title}\n${d.plan.summary}\n\n## Chapter: ${chapter?.title ?? "?"}\n${chapter?.intent ?? ""}. ${chapter?.why ?? ""}\n\n## Hunk ${h.id}\n${numbered(h.hunk)}\n\n## The file after the change, around it\n${around}\n\n## Question\n${question.trim() || "(none: explain the hunk)"}`;
+  // Everything but the reviewer's own question came from the change (or a model reading it), so it is fenced.
+  const prompt = `# The change\n${fence("title", d.target.title)}\n${fence("summary", d.plan.summary)}\n\n## The chapter\n${fence("chapter", `${chapter?.title ?? "?"}\n${chapter?.intent ?? ""}. ${chapter?.why ?? ""}`)}\n\n## The hunk\n${fence("hunk", `id: ${h.id}\n${numbered(h.hunk)}`)}\n\n## The file after the change, around it\n${fence("file", around)}\n\n## The reviewer's question\n${question.trim() || "(none: explain the hunk)"}`;
   // Resolved now, not at build time, so ask works on a review built with --no-ai and picks up a key added since.
   const cfg = loadConfig();
   const name = r.ai?.models?.ask && cfg.models[r.ai.models.ask] ? r.ai.models.ask : undefined;

@@ -31,6 +31,7 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   Keys (the defaults: [keys] in the config remaps them per state, prview keys prints yours):
          j/k line   h/l hunk   J/K chapter   123G go to file line   gg/G first/last   ]f [f next/previous finding
          F reveal this chapter's findings early (--blind only)
+         W show or hide the findings the second look withdrew (dimmed ▽, with its reason; the header counts them)
          Deciding on findings (]f opens the next; each decision moves on to the next undecided one, and the
          box shows how many are decided, e.g. 3/9 decided):
            n not an issue (an optional one-line reason, kept in the document, never posted)

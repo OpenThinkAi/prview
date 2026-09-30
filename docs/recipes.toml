@@ -79,6 +79,11 @@ q = ["how do I see the findings before reading the chapter", "reveal hidden find
 actions = ["nav.reveal"]
 why = "Blind mode hides a chapter's findings until you have been through it; this lifts that for one chapter."
 
+[[recipe]]
+q = ["how do I see the withdrawn findings", "show findings the second look knocked down", "what did the model decide was not a problem after all", "why did a finding disappear"]
+actions = ["nav.withdrawn"]
+why = "Toggles the withdrawn findings, dimmed in the gutter; open one to read why the second look withdrew it. The header counts them."
+
 # ---- deciding on a finding
 
 [[recipe]]

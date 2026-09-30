@@ -873,7 +873,7 @@ test("nav: the panel comes from NAV_KEYS, every listed key acts, b/c/u are not i
   expect(wide.frame()).not.toMatch(row("j/k", "line")); // nothing open: only the footer's hint
   await wide.press("\\");
   for (const e of entriesOf({ box: null, blind: false })) expect(wide.frame()).toMatch(row(e.keys, e.label));
-  expect(listing(entriesOf({ box: null, blind: false }))).toEqual(["j/k line", "h/l hunk", "J/K chapter", "]f/f find", "? why", "y copy", "a ask", "/ ask the docs", "e edit", "n/N note", "w wrap", "H/L pan", "s submit", "\\ bindings", "q quit"]);
+  expect(listing(entriesOf({ box: null, blind: false }))).toEqual(["j/k line", "h/l hunk", "J/K chapter", "]f/f find", "W withdrawn", "? why", "y copy", "a ask", "/ ask the docs", "e edit", "n/N note", "w wrap", "H/L pan", "s submit", "\\ bindings", "q quit"]);
   expect(listing(entriesOf({ box: null, blind: false })).join("|")).not.toMatch(/decide|F reveal/);
   expect(listing(entriesOf({ box: null, blind: true }))).toContain("F reveal");
   expect(NAV_KEYS.some((k) => /[bcu]/.test(k.key.replace("]f", "")) && k.key !== "q")).toBe(false);
@@ -892,7 +892,7 @@ test("nav: the panel comes from NAV_KEYS, every listed key acts, b/c/u are not i
   // Letters the table does not list do nothing without a box.
   const t = await open(undefined, { cols: 140 });
   const before = t.frame();
-  for (const ch of "bcdgimoprtuvxzACDEGIMOPQRSTUVWXYZ".split("")) {
+  for (const ch of "bcdgimoprtuvxzACDEGIMOPQRSTUVXYZ".split("")) {
     if (ch === "g" || ch === "G") continue;
     await t.press(ch);
     expect(t.frame(), `key ${ch}`).toBe(before);
@@ -905,6 +905,34 @@ test("nav: the panel comes from NAV_KEYS, every listed key acts, b/c/u are not i
   expect(b.frame()).toMatch(row("F", "reveal"));
   await b.press("F");
   expect(b.frame()).toContain("what the model found");
+});
+
+test("withdrawn findings: counted in the header, hidden until W, then dimmed ▽ with the refute's reason, never decidable", async () => {
+  const gone: Finding = { ...finding, id: "2", line: 12, severity: "warn", title: "Second line is unused", claim: "new2 is never read", status: "withdrawn", refute: "read on line 13 (cites n13)" };
+  const t = await open({ findings: [finding, gone] });
+  expect(t.frame()).toContain("1 ▲ · 1 withdrawn");
+  const gutter = () => t.frame().split("\n").find((l) => l.includes("new2")) ?? "";
+  expect(gutter()).not.toContain("▽");
+  await t.press("W");
+  expect(t.frame()).toContain("showing 1 withdrawn finding, dimmed ▽");
+  expect(gutter()).toContain("▽");
+  // ]f steps onto it; the box says why it was withdrawn and offers only the notice keys, so nothing can decide it.
+  await t.press("]f");
+  expect(t.frame()).toContain("Hard-coded answer in main");
+  await t.press("]f");
+  expect(t.frame()).toContain("▽ withdrawn · critic · bug · warn");
+  expect(t.frame()).toContain("Withdrawn by the second look: read on line 13 (cites n13)");
+  await t.press("b");
+  expect(t.r.doc.human.decisions?.["2"]).toBeUndefined();
+  await t.press("h");
+  await t.press("W");
+  expect(t.frame()).toContain("withdrawn findings hidden");
+  expect(gutter()).not.toContain("▽");
+  // With nothing withdrawn the header says nothing about it, and W says so.
+  const none = await open();
+  expect(none.frame()).not.toContain("withdrawn");
+  await none.press("W");
+  expect(none.frame()).toContain("no findings were withdrawn");
 });
 
 // ---------------------------------------------------------------- actions as data: the tables name what a key does
