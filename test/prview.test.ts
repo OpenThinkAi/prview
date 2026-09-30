@@ -6,7 +6,8 @@ import { parseDiff } from "../src/diff.ts";
 import { applyReask, applyRefute, applyTitleReask, claimAddsTo, classify, deriveTitle, readCritic, titleOf, titleReaskPrompt, filePlan, fitLine, hunksOf, MECHANICAL_INTENT, mergeFindings, oneLine, parseCritic, parseGuide, readGuide, reaskPrompt, rubric, sameClaim, twoSentences, worstFirst, type Finding } from "../src/guide.ts";
 import { blank, fit, merge, parseDocument, SCHEMA, type Doc } from "../src/document.ts";
 import { gotoLine, nextFinding } from "../src/nav.ts";
-import { actionOf, badKey, DEFAULT_KEYMAP, describeKeymap, effectiveKeys, installKeymap, navFooter } from "../src/keys.ts";
+import { actionOf, badKey, DEFAULT_KEYMAP, describeKeymap, effectiveKeys, installKeymap, bindingsHint } from "../src/keys.ts";
+import { entriesOf } from "../src/panel.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "prview-"));
 process.env.PRVIEW_HOME = join(tmp, "store");
@@ -570,6 +571,20 @@ test("keys: show-bindings can be rebound, not unbound", () => {
   expect(() => parseConfig(`[keys]\n"nav.bindings" = "B"`)).not.toThrow();
 });
 
+test("keys: the bindings key follows its binding in the hint, the panel and every state that shows the panel; a box action cannot take it", () => {
+  installKeymap(effectiveKeys({ "nav.bindings": "!" }));
+  try {
+    expect(bindingsHint()).toBe("! bindings");
+    for (const s of [{ box: "finding" }, { box: "info", copyable: true }, { box: null, blind: false }, { box: "verdict" }, { box: "preview", dryRun: false, hook: null, coverage: null }] as const) {
+      expect(actionOf(s, "!"), s.box ?? "nav").toBe("nav.bindings");
+      expect(actionOf(s, "\\"), s.box ?? "nav").toBeUndefined();
+      expect(entriesOf(s).some((e) => e.keys === "!" && e.label === "bindings"), s.box ?? "nav").toBe(true);
+    }
+    expect(actionOf({ box: "prompt", kind: "ask" }, "!")).toBeUndefined(); // a prompt takes text
+  } finally { installKeymap(DEFAULT_KEYMAP); }
+  expect(() => effectiveKeys({ "finding.copy": "\\" })).toThrow(/finding\.copy and nav\.bindings are both/);
+});
+
 test("keys: lookups follow the installed map, and the listing shows the effective keys", () => {
   const km = effectiveKeys({ "finding.not_an_issue": "d", "nav.wrap": "" });
   installKeymap(km);
@@ -577,7 +592,7 @@ test("keys: lookups follow the installed map, and the listing shows the effectiv
     expect(actionOf({ box: "finding" }, "d")).toBe("finding.not_an_issue");
     expect(actionOf({ box: "finding" }, "n")).toBeUndefined();
     expect(actionOf({ box: null, blind: false }, "w")).toBeUndefined();
-    expect(navFooter(200, false)).not.toContain("wrap");
+    expect(entriesOf({ box: null, blind: false }).map((e) => e.label)).not.toContain("wrap");
     const out = describeKeymap(km);
     expect(out).toMatch(/finding\.not_an_issue\s+d\s/);
     expect(out).toMatch(/nav\.wrap\s+\(unbound\)/);

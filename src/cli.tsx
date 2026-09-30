@@ -38,7 +38,7 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
              (ctrl-u clears the line, Esc cancels); submit then defaults to request changes
            c comment: the same, not blocking     u undo the decision (and the comment it wrote)
            h hide any box (finding, summary, ? why, answer) without deciding (Esc does the same)
-           With a box open only its footer keys, [f, Esc and paging act: a finding lists n b c u h ]f y,
+           With a box open only its panel's keys, [f, Esc and paging act: a finding lists n b c u h ]f y,
            every other box h y ]f. With none open b/c/u do nothing.
          ? why this chapter matters   f next finding in this hunk   a ask about this hunk
          y copy the open box (finding, ? why, ask answer) as clean text; with none open, the line's path:line
@@ -53,7 +53,8 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
            target's platform (github: gh api), then, if the document declares on_submit, its command runs
            only if you press x in the preview to allow it (shown in full first; no shell); v in the preview
            adds a line saying how much you read to the posted summary (off by default)
-         \\ show the key bindings for this state
+         \\ show or hide the key panel (bottom-left); a box, prompt or the submit steps open it by themselves,
+           and it lists exactly the keys that act there. The footer shows only this hint.
          q quit (everything is kept)
 
   prview prepare <target>     build it (fetch, guide, critic) without opening the screen; open it later

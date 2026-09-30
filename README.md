@@ -27,9 +27,9 @@ What you get is a full-screen review, not a diff dump:
   line at the finding's line, prefilled with its title: edit it (`ctrl-u` clears the line), Enter saves
   it as your own line comment, Esc cancels the decision. `n` takes an optional one-line reason, kept
   in the document and never posted. `h` closes any box and records nothing, like Esc. With a box open
-  only the keys in the footer act (plus `[f`, Esc and paging): a finding lists the decision keys; every
-  other box lists `h hide  y copy  ]f finding`. With no box open the footer is the navigation keys and
-  `b`/`c`/`u` do nothing: decisions happen only with a finding open. After each
+  only the keys in its key panel act (plus `[f`, Esc and paging): a finding lists the decision keys; every
+  other box lists `h hide  y copy  ]f finding`. With no box open `b`/`c`/`u` do nothing: decisions
+  happen only with a finding open. After each
   decision the next undecided finding opens, so a whole pass is `]f` and then one key per finding; the
   box says how far along you are (`3/9 decided`), and the `▲` counts on the rail and header are what
   is left to decide. Decisions are saved as you go (`human.decisions` in the document).
@@ -37,6 +37,15 @@ What you get is a full-screen review, not a diff dump:
   no borders, padding or hard wraps. With no box open it copies the line's `path:line`. It uses `pbcopy`,
   `wl-copy` or `xclip`, else OSC 52 (works through tmux with `allow-passthrough on`, and over ssh);
   `PRVIEW_CLIPBOARD=osc52` forces the terminal route.
+- **A key panel, helix-style.** The footer carries one permanent hint, `\ bindings`. A state with keys of
+  its own opens a small panel in the bottom-left corner listing them, key and label: a finding box, any other
+  box (the opening summary, `?` why, an `a` answer, `F` reveal), the ask, comment and reason prompts, the verdict
+  choice and the submit preview. Leaving the state closes it. With nothing open, `\` opens the panel with every
+  navigation key; `\` again or Esc closes it, and in a box `\` hides or shows the panel the same way (in a prompt
+  `\` is text, so the panel stays). The panel is drawn from the same tables the key handler reads, so it lists
+  exactly what acts. It takes its rows out of the screen, so it never covers the cursor line or a box's text: a third of
+  the height at most, laid out in as many columns as the width needs (below 100 columns too), and on a short terminal it
+  collapses to one line.
 - **A floating box** for whatever wants explaining: `?` the chapter's intent, `f` a finding,
   `a` a question about the hunk in front of you. A review with a summary opens on it: a double-ruled
   magenta box titled "Summary of this change · not a finding" at the top of the hunk (findings are round
@@ -102,8 +111,9 @@ some ambient key, so a local server never gets a cloud key.
 Key bindings: every key in this README is a default. `\` shows the bindings for the state you are in,
 and `prview keys` prints all of them by state (action, key, description). Remap any action with a
 `[keys]` table in the same config, as `"<state>.<action>" = "<key>"`, where the state is `nav` (no box
-open), `finding` or `info` and `prview keys` lists the action names. The footer, the `\` box, the
-hints in boxes and `prview keys` all show your keys.
+open), `finding` or `info` and `prview keys` lists the action names. The footer hint, the key panel, the
+hints in boxes and `prview keys` all show your keys. The bindings key is one binding for every state that
+shows the panel, so a box action cannot take it.
 
 ```toml
 [keys]

@@ -10,7 +10,8 @@ import type { Review } from "../src/build.ts";
 import type { Doc } from "../src/document.ts";
 import { chapterHidden, earlyTitles, hiddenHunks, revealBody, revealEarly } from "../src/blind.ts";
 import { writeup } from "../src/build.ts";
-import { actionOf, ALL_ACTIONS, DEFAULT_KEYMAP, effectiveKeys, installKeymap, keyOf, FINDING_KEYS, findingFooter, INFO_KEYS, infoFooter, NAV_ALIASES, NAV_KEYS, navFooter, startsChord } from "../src/keys.ts";
+import { entriesOf, panelCap, panelOf } from "../src/panel.ts";
+import { actionOf, ALL_ACTIONS, DEFAULT_KEYMAP, effectiveKeys, installKeymap, keyOf, bindingsHint, FINDING_KEYS, INFO_KEYS, NAV_ALIASES, NAV_KEYS, PREVIEW_KEYS, PROMPT_KEYS, VERDICT_KEYS, startsChord } from "../src/keys.ts";
 import { parseDocument, SCHEMA } from "../src/document.ts";
 import { parseConfig } from "../src/config.ts";
 import { App, type Outcome } from "../src/tui.tsx";
@@ -65,6 +66,10 @@ function fixture(over: Over = {}): Review {
   return { slug: "t", repo: "/nowhere", worktree: "/nowhere", context: 3, created: "now", pos: { item: 0, line: 0 }, doc };
 }
 
+// The key panel draws each entry as its keys, then its label; a second column is three spaces from the first.
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const row = (keys: string, label: string) => new RegExp(`(?:│ |   )${esc(keys)} +${esc(label)}(?: |\\s*│)`);
+const listing = (e: { keys: string; label: string }[]) => e.map((x) => `${x.keys} ${x.label}`);
 const settle = () => new Promise((r) => setTimeout(r, 30));
 async function open(over?: Over, props: { ai?: Review["ai"]; blind?: boolean; dryRun?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined } = {}) {
   const outcomes: Outcome[] = [];
@@ -94,7 +99,7 @@ test("rail: below 100 columns it collapses to chapter numbers and the code keeps
   expect(t.frame()).not.toContain("Core change");
   expect(t.frame()).toContain("Check the answer is derived"); // the chapter's intent is still on the hunk header
   for (const line of t.frame().split("\n")) expect([...line].length).toBeLessThanOrEqual(80);
-  expect(t.frame()).toContain("j/k line  h/l hunk"); // the short footer, not one that wraps
+  expect(t.frame()).toContain("\\ bindings"); // the footer's one hint fits
 });
 
 test("cursor row: j and k move it, the line number and the sign stay in the gutter, G and gg jump", async () => {
@@ -122,7 +127,7 @@ test("finding float: f opens the finding under the cursor with progress and the 
   expect(fr.indexOf("answer is hard-coded")).toBeGreaterThan(fr.indexOf("Hard-coded answer in main"));
   expect(t.r.pos.line).toBe(2); // the cursor moved to the finding's line
   expect(fr).toContain("0/1 decided");
-  expect(fr).toContain("n not an issue  b block  c comment  u undo  h hide  ]f next  y copy");
+  for (const e of entriesOf({ box: "finding" })) expect(fr).toMatch(row(e.keys, e.label)); // the panel opens with the box
   expect(fr).not.toContain("b block on it"); // the box has no key-hint line of its own
   await t.press("\x1b");
   await settle();
@@ -209,7 +214,7 @@ test("submit flow: the preview leads with the undecided findings; with one block
   const second: Finding = { ...finding, id: "2", hunk: h2!.id, line: 2, severity: "warn", title: "Type changed to a string" };
   const t = await open({ findings: [finding, second] });
   await t.press("s");
-  expect(t.frame()).not.toContain("(Enter)"); // nothing blocking and no verdict yet: no default
+  expect(t.frame()).not.toContain("Enter takes"); // nothing blocking and no verdict yet: no default
   await t.press("\r");
   expect(t.frame()).toContain("verdict ›"); // so Enter picks nothing
   await t.press("a");
@@ -220,12 +225,12 @@ test("submit flow: the preview leads with the undecided findings; with one block
   await t.press("]fn\r"); // the first one not an issue, the second is open next
   await t.press("\x1b");
   await t.press("s");
-  expect(t.frame()).toContain("a approve (Enter)"); // nothing blocking: Enter keeps the verdict chosen before
+  expect(t.frame()).toContain("Enter takes Approve"); // nothing blocking: Enter keeps the verdict chosen before
   await t.press("\x1b");
   await t.press("fb\r"); // reopen the second (the only one in this hunk), and block on it, with its title as the comment
   await t.press("h"); // the all-decided box is open: only hide acts, then s
   await t.press("s");
-  expect(t.frame()).toContain("r request changes (Enter)");
+  expect(t.frame()).toContain("Enter takes Request changes");
   await t.press("\r");
   expect(t.r.doc.human.verdict).toBe("request_changes");
   expect(t.frame()).not.toContain("Not decided yet"); // all decided: the list is gone
@@ -239,9 +244,9 @@ test("submit flow: v adds the coverage line for a platform that posts; off again
   await t.press("\x1b");
   expect(t.frame()).toContain("verdict ›");
   await t.press("a");
-  expect(t.frame()).toContain("v add coverage line");
+  expect(t.frame()).toMatch(row("v", "add coverage line"));
   await t.press("v");
-  expect(t.frame()).toContain("v drop coverage line");
+  expect(t.frame()).toMatch(row("v", "drop coverage line"));
   await t.press("\r");
   expect(t.outcomes).toEqual([{ kind: "submit", hook: false, coverage: true }]);
 });
@@ -405,7 +410,8 @@ test("blind: before visiting, the gutter has no ▲, the rail shows ▲?, f and 
   expect(t.frame()).not.toContain("▲ ");
   expect(t.frame()).toContain("Both ▲?");
   expect(t.frame()).toContain("0 ▲?"); // header: nothing revealed, something hidden
-  expect(t.frame()).toContain("F reveal");
+  await t.press("\\");
+  expect(t.frame()).toMatch(row("F", "reveal"));
   await t.press("f");
   expect(t.frame()).toContain("Hidden until you have been through this chapter");
   expect(t.frame()).not.toContain("answer is hard-coded");
@@ -457,7 +463,8 @@ test("blind: visiting every hunk of a chapter reveals it without recording anyth
 test("blind off: nothing is hidden and the footer does not offer F", async () => {
   const t = await open();
   expect(t.frame()).toContain("▸ 1 Core change ▲1");
-  expect(t.frame()).not.toContain("F reveal");
+  await t.press("\\");
+  expect(t.frame()).not.toMatch(row("F", "reveal"));
 });
 
 // ---------------------------------------------------------------- finding triage
@@ -472,7 +479,8 @@ test("triage b: the comment line opens prefilled with the title, is edited, and 
   expect(t.frame()).toContain("0/3 decided");
   await t.press("b");
   expect(t.frame()).toContain("block on it › Hard-coded answer in main");
-  expect(t.frame()).toContain("ctrl-u clears");
+  expect(t.frame()).toMatch(row("ctrl-u", "clear line")); // the prompt's panel, with Enter worded for a decision
+  expect(t.frame()).toMatch(row("Enter", "save"));
   await t.press("\x15"); // ctrl-u: the prefill is rewritten whole
   await t.press("Where does 42 come from?\r");
   const [c] = t.r.doc.human.comments;
@@ -636,7 +644,9 @@ test("y: with a finding open copies its source text and the footer says how much
 test("y: a box with no source text says so instead of copying the hints", async () => {
   const t = await copying({ findings: [] });
   await t.press("f");
-  expect(t.frame()).toContain("h hide  ]f finding"); // a hint has no source text, so the footer does not offer y
+  expect(t.frame()).toMatch(row("h", "hide"));
+  expect(t.frame()).toMatch(row("]f", "finding"));
+  expect(t.frame()).not.toMatch(row("y", "copy")); // a hint has no source text, so the panel does not offer y
   await t.press("y");
   expect(t.copied).toEqual([]);
   expect(t.frame()).not.toContain("copied");
@@ -692,11 +702,11 @@ test("tooSmall: the limits are 40 columns and 10 rows", () => {
 
 // ---------------------------------------------------------------- finding keys: the footer is the truth
 
-test("finding box open: the footer lists exactly the keys the handler accepts, drawn from one table", async () => {
+test("finding box open: the panel lists exactly the keys the handler accepts, drawn from one table", async () => {
   const t = await open(three);
   await t.press("]f");
-  expect(findingFooter()).toBe("n not an issue  b block  c comment  u undo  h hide  ]f next  y copy");
-  expect(t.frame()).toContain(findingFooter());
+  expect(listing(entriesOf({ box: "finding" }))).toEqual(["n not an issue", "b block", "c comment", "u undo", "h hide", "]f next", "y copy", "\\ bindings"]);
+  for (const e of entriesOf({ box: "finding" })) expect(t.frame()).toMatch(row(e.keys, e.label));
   expect(t.frame()).not.toContain("Esc close");
   const box = () => t.frame().split("\n").filter((l) => l.includes("│ ")).length; // just to see the box did not change
   // Every letter the table does not list does nothing: same screen, nothing decided, no mode entered.
@@ -726,7 +736,7 @@ test("finding box open: the footer lists exactly the keys the handler accepts, d
   expect(t.frame()).toContain("Second line looks unused");
   await t.press("h");
   expect(t.frame()).not.toContain("Second line looks unused");
-  expect(t.frame()).not.toContain(findingFooter());
+  expect(t.frame()).not.toMatch(row("n", "not an issue")); // the state is left, so is the panel
 });
 
 test("finding box: h hides without deciding; n records not an issue with its reason, shown on reopen; d and i do nothing", async () => {
@@ -774,8 +784,9 @@ test("opening summary: a double-ruled box titled as the summary, above the code 
   expect(f).not.toContain("╭");
   expect(f.indexOf("Summary of this change")).toBeLessThan(f.indexOf("keep")); // above the first code line, not hugging the ▲ line
   expect(f).not.toMatch(/not an issue|b block|u undo|Prepared by/); // no key list, no provenance without runs
-  expect(f).toContain(infoFooter(true, false));
-  expect(infoFooter(true, false)).toBe("h hide  y copy  ]f finding");
+  for (const e of entriesOf({ box: "info", copyable: true })) expect(f).toMatch(row(e.keys, e.label));
+  expect(listing(entriesOf({ box: "info", copyable: true }))).toEqual(["h hide", "y copy", "]f finding", "\\ bindings"]);
+  expect(f).toContain("\\ shows the keys for where you are"); // the box itself says where the keys are
   await t.press("h");
   expect(t.frame()).not.toContain("Summary of this change");
   expect(t.r.pos.item).toBe(0); // h closed the box, it did not move a hunk
@@ -783,7 +794,8 @@ test("opening summary: a double-ruled box titled as the summary, above the code 
   expect(t.r.pos.item).toBe(1);
   await t.press("h");
   expect(t.r.pos.item).toBe(0);
-  expect(t.frame()).toContain(navFooter(120, false));
+  expect(t.frame()).not.toMatch(row("h", "hide")); // back in nav: no panel until asked
+  expect(t.frame()).toContain("\\ bindings");
 });
 
 test("opening summary: a finding box keeps its own look, and the summary names who prepared it only when every run has a model id", async () => {
@@ -798,7 +810,7 @@ test("opening summary: a finding box keeps its own look, and the summary names w
   expect(old.frame()).not.toContain("unknown");
 });
 
-test("info boxes (summary, ? why, F reveal, notices): footer from INFO_KEYS, only those keys act, h hides any of them", async () => {
+test("info boxes (summary, ? why, F reveal, notices): panel from INFO_KEYS, only those keys act, h hides any of them", async () => {
   const boxes: [string, (t: Awaited<ReturnType<typeof open>>) => Promise<void>, boolean][] = [
     ["summary", async () => {}, true],
     ["? why", async (t) => { await t.press("h?"); }, true],
@@ -808,9 +820,9 @@ test("info boxes (summary, ? why, F reveal, notices): footer from INFO_KEYS, onl
   for (const [name, into, copyable] of boxes) {
     const t = await open({ ...withSummary(), findings: name === "f notice" ? [] : undefined }, { blind: name === "F reveal" });
     await into(t);
-    const footer = infoFooter(copyable, false);
-    expect(t.frame(), name).toContain(footer);
-    expect(footer, name).toBe(copyable ? "h hide  y copy  ]f finding" : "h hide  ]f finding");
+    const entries = entriesOf({ box: "info", copyable });
+    for (const e of entries) expect(t.frame(), name).toMatch(row(e.keys, e.label));
+    expect(listing(entries), name).toEqual(copyable ? ["h hide", "y copy", "]f finding", "\\ bindings"] : ["h hide", "]f finding", "\\ bindings"]);
     const before = t.frame();
     const listed = new Set(["h", "]", "[", ...(copyable ? ["y"] : [])]);
     for (const ch of "abcdefgijklmnopqrstuvwxzABCDEGHIJKLMNOPQRSTUVWXYZ?".split("")) {
@@ -821,12 +833,12 @@ test("info boxes (summary, ? why, F reveal, notices): footer from INFO_KEYS, onl
     expect(t.r.pos.item, name).toBe(0);
     expect(t.r.doc.human.comments, name).toEqual([]);
     await t.press("h");
-    expect(t.frame(), name).not.toContain(footer);
+    expect(t.frame(), name).not.toMatch(row("h", "hide"));
   }
   // ]f acts from an info box: it opens a finding with the finding footer.
   const t = await open(withSummary());
   await t.press("]f");
-  expect(t.frame()).toContain(findingFooter());
+  expect(t.frame()).toMatch(row("n", "not an issue"));
   // ]c is not listed, so it does nothing while a box is open, and works once it is closed.
   await t.press("h?]c");
   expect(t.r.pos.item).toBe(0);
@@ -834,18 +846,20 @@ test("info boxes (summary, ? why, F reveal, notices): footer from INFO_KEYS, onl
   expect(t.r.pos.item).toBe(1);
 }, 30000);
 
-test("info box that scrolls lists paging in the footer", async () => {
+test("info box that scrolls says so in its own title", async () => {
   const long = Array.from({ length: 60 }, (_, i) => `line ${i}`).join("\n");
   const t = await open(withSummary({ summary: long }));
-  expect(t.frame()).toContain("h hide  y copy  ]f finding  PgUp/PgDn page");
+  expect(t.frame()).toContain("PgUp/PgDn");
 });
 
-test("nav: the footer comes from NAV_KEYS, every listed key acts, b/c/u are not in it and do nothing; F only with --blind", async () => {
+test("nav: the panel comes from NAV_KEYS, every listed key acts, b/c/u are not in it and do nothing; F only with --blind", async () => {
   const wide = await open(undefined, { cols: 140, blind: false });
-  expect(wide.frame()).toContain(navFooter(140, false));
-  expect(navFooter(140, false)).toBe("j/k line  h/l hunk  J/K chapter  ]f/f find  ? why  y copy  a ask  e edit  n/N note  w wrap  H/L pan  s submit  \\ keys  q quit");
-  expect(navFooter(140, false)).not.toMatch(/decide|F reveal/);
-  expect(navFooter(140, true)).toContain("F reveal");
+  expect(wide.frame()).not.toMatch(row("j/k", "line")); // nothing open: only the footer's hint
+  await wide.press("\\");
+  for (const e of entriesOf({ box: null, blind: false })) expect(wide.frame()).toMatch(row(e.keys, e.label));
+  expect(listing(entriesOf({ box: null, blind: false }))).toEqual(["j/k line", "h/l hunk", "J/K chapter", "]f/f find", "? why", "y copy", "a ask", "e edit", "n/N note", "w wrap", "H/L pan", "s submit", "\\ bindings", "q quit"]);
+  expect(listing(entriesOf({ box: null, blind: false })).join("|")).not.toMatch(/decide|F reveal/);
+  expect(listing(entriesOf({ box: null, blind: true }))).toContain("F reveal");
   expect(NAV_KEYS.some((k) => /[bcu]/.test(k.key.replace("]f", "")) && k.key !== "q")).toBe(false);
   // Every listed key does something, from a state where it can.
   const prelude: Record<string, string> = { H: "L", k: "j", h: "l", K: "J" };
@@ -871,7 +885,8 @@ test("nav: the footer comes from NAV_KEYS, every listed key acts, b/c/u are not 
   await t.press("F");
   expect(t.frame()).toBe(before); // not blind: F is not in the footer and does nothing
   const b = await open(undefined, { cols: 200, blind: true });
-  expect(b.frame()).toContain(navFooter(200, true));
+  await b.press("\\");
+  expect(b.frame()).toMatch(row("F", "reveal"));
   await b.press("F");
   expect(b.frame()).toContain("what the model found");
 });
@@ -881,7 +896,7 @@ test("nav: the footer comes from NAV_KEYS, every listed key acts, b/c/u are not 
 test("actions: ids are unique, <state>.<action> for their own table, each with a key, a label and a one-line description", () => {
   const ids = ALL_ACTIONS.map((a) => a.id);
   expect(new Set(ids).size).toBe(ids.length);
-  for (const [state, rows] of [["nav", NAV_KEYS], ["finding", FINDING_KEYS], ["info", INFO_KEYS]] as const) {
+  for (const [state, rows] of [["nav", NAV_KEYS], ["finding", FINDING_KEYS], ["info", INFO_KEYS], ["prompt", PROMPT_KEYS], ["verdict", VERDICT_KEYS], ["preview", PREVIEW_KEYS]] as const) {
     for (const a of rows) {
       expect(a.id, a.id).toMatch(new RegExp(`^${state}\\.[a-z_]+$`));
       expect(a.key.length, a.id).toBeGreaterThan(0);
@@ -915,31 +930,209 @@ test("actions: one lookup takes a state and a key to an action id, and the handl
   expect(startsChord({ box: "finding" }, "g")).toBe(false);
   // The handler dispatches on the id: an action with no case would be listed in the footer and do nothing.
   const src = readFileSync(join(import.meta.dir, "../src/tui.tsx"), "utf8");
-  for (const { id } of ALL_ACTIONS) expect(src, id).toContain(`case "${id}"`);
+  // (prompts, the verdict and the preview dispatch in their own steps and are covered on screen, in the key panel tests)
+  for (const { id } of ALL_ACTIONS.filter((a) => /^(nav|finding|info)\./.test(a.id))) expect(src, id).toContain(`case "${id}"`);
+});
+
+// ---------------------------------------------------------------- the key panel: \ bindings, and a panel per state
+
+const shown = (t: { frame: () => string }, s: Parameters<typeof entriesOf>[0]) => { for (const e of entriesOf(s)) expect(t.frame(), `${e.keys} ${e.label}`).toMatch(row(e.keys, e.label)); };
+// (the bindings entry is left out: the footer's hint reads the same)
+const hidden = (t: { frame: () => string }, s: Parameters<typeof entriesOf>[0]) => expect(entriesOf(s).filter((e) => e.label !== "bindings").some((e) => row(e.keys, e.label).test(t.frame()))).toBe(false);
+
+test("footer: one permanent hint, the binding of the bindings action, in nav and in every box", async () => {
+  expect(bindingsHint()).toBe("\\ bindings");
+  const t = await open(withSummary());
+  const last = () => t.frame().split("\n").at(-1)!.trim();
+  expect(last()).toBe("\\ bindings"); // with the summary box open
+  await t.press("h");
+  expect(last()).toBe("\\ bindings"); // nav
+  await t.press("]f");
+  expect(last()).toBe("\\ bindings"); // a finding box
+  await t.press("n");
+  expect(last()).not.toContain("bindings"); // a prompt types text, `\` is a character there
+});
+
+test("\\ toggles the nav panel with the full list; \\ again or Esc closes it; it is gone when the state changes", async () => {
+  const t = await open(undefined, { cols: 140 });
+  hidden(t, { box: null, blind: false });
+  await t.press("\\");
+  shown(t, { box: null, blind: false });
+  expect(t.frame()).not.toMatch(row("F", "reveal")); // the same filter the handler uses: not blind
+  await t.press("\\");
+  hidden(t, { box: null, blind: false });
+  await t.press("\\");
+  shown(t, { box: null, blind: false });
+  await t.press("\x1b");
+  hidden(t, { box: null, blind: false });
+  // open, then leave the state for a box: the box's panel replaces it, and closing the box does not bring nav's back
+  await t.press("\\");
+  await t.press("]f");
+  shown(t, { box: "finding" });
+  await t.press("h");
+  hidden(t, { box: null, blind: false });
+  // --blind lists F, because the panel reads the same rows the handler acts on
+  const b = await open(undefined, { cols: 140, blind: true });
+  await b.press("\\");
+  expect(b.frame()).toMatch(row("F", "reveal"));
+});
+
+test("a state with keys of its own opens its panel by itself, \\ hides and shows it, and leaving the state closes it", async () => {
+  const states: { name: string; into: string; state: Parameters<typeof entriesOf>[0]; out: string; over?: Over; platform?: boolean }[] = [
+    { name: "finding box", into: "]f", state: { box: "finding" }, out: "\x1b" },
+    { name: "opening summary", into: "", state: { box: "info", copyable: true }, out: "\x1b", over: withSummary() },
+    { name: "? why", into: "?", state: { box: "info", copyable: true }, out: "\x1b" },
+    { name: "ask prompt", into: "a", state: { box: "prompt", kind: "ask" }, out: "\x1b" },
+    { name: "line comment", into: "n", state: { box: "prompt", kind: "comment" }, out: "\x1b" },
+    { name: "summary comment", into: "N", state: { box: "prompt", kind: "comment" }, out: "\x1b" },
+    { name: "not an issue reason", into: "]fn", state: { box: "prompt", kind: "reason" }, out: "\x1b\x1b" },
+    { name: "block comment", into: "]fb", state: { box: "prompt", kind: "comment", decide: true }, out: "\x1b\x1b" },
+    { name: "verdict", into: "s", state: { box: "verdict" }, out: "\x1b" },
+    { name: "preview", into: "sa", state: { box: "preview", dryRun: false, hook: null, coverage: null }, out: "\x1b\x1b" },
+  ];
+  for (const s of states) {
+    const t = await open(s.over, { cols: 140, rows: 40 });
+    await t.press(s.into);
+    shown(t, s.state);
+    if (s.state.box !== "prompt") {
+      await t.press("\\"); // the toggle
+      hidden(t, s.state);
+      await t.press("\\");
+      shown(t, s.state);
+    }
+    await t.press(s.out);
+    hidden(t, s.state);
+    expect(t.frame(), s.name).toContain("\\ bindings");
+  }
+});
+
+test("prompts: their panel is the keys that work; text goes in as typed, backslash included", async () => {
+  const t = await open();
+  await t.press("n");
+  expect(listing(entriesOf({ box: "prompt", kind: "comment" }))).toEqual(["Enter send", "ctrl-u clear line", "ctrl-w delete word", "Esc cancel"]);
+  await t.press("one two\\");
+  expect(t.frame()).toContain("comment › one two\\");
+  shown(t, { box: "prompt", kind: "comment" }); // `\` did not close it
+  await t.press("\x17"); // ctrl-w
+  expect(t.frame()).toContain("comment › ");
+  expect(t.frame()).not.toContain("one two");
+  await t.press("zzz\x15"); // ctrl-u
+  expect(t.frame()).not.toContain("zzz");
+  await t.press("x\r");
+  expect(t.r.doc.human.comments.map((c) => c.text)).toEqual(["x"]);
+  expect(listing(entriesOf({ box: "prompt", kind: "ask" }))[0]).toBe("Enter ask");
+  expect(listing(entriesOf({ box: "prompt", kind: "reason" }))).toEqual(["Enter decide", "ctrl-u clear line", "Esc cancel"]);
+  expect(listing(entriesOf({ box: "prompt", kind: "comment", decide: true }))).toEqual(["Enter save", "ctrl-u clear line", "ctrl-w delete word", "Esc cancel decision"]);
+});
+
+test("verdict and preview: the panel lists what acts; x and v appear only when the submit has that choice", async () => {
+  expect(listing(entriesOf({ box: "verdict" }))).toEqual(["a approve", "r request changes", "c comment", "Enter default verdict", "Esc cancel", "\\ bindings"]);
+  const t = await open();
+  await t.press("sr"); // request changes
+  expect(t.r.doc.human.verdict).toBe("request_changes");
+  expect(listing(entriesOf({ box: "preview", dryRun: false, hook: null, coverage: null }))).toEqual(["Enter submit", "j/k scroll", "PgUp/PgDn page", "Esc back", "\\ bindings"]);
+  shown(t, { box: "preview", dryRun: false, hook: null, coverage: null });
+  expect(t.frame()).not.toMatch(row("x", "allow command"));
+  expect(t.frame()).not.toMatch(row("v", "add coverage line"));
+  await t.press("\\");
+  hidden(t, { box: "preview", dryRun: false, hook: null, coverage: null });
+  await t.press("\x1b");
+  const g = await open(undefined, { dryRun: true });
+  g.r.doc.target.platform = "github";
+  g.r.doc.on_submit = { run: ["true"] } as Doc["on_submit"];
+  await g.press("sc");
+  expect(g.frame()).toMatch(row("Enter", "print the calls"));
+  expect(g.frame()).toMatch(row("x", "allow command"));
+  expect(g.frame()).toMatch(row("v", "add coverage line"));
+  await g.press("x");
+  expect(g.frame()).toMatch(row("x", "disallow command"));
+  await g.press("v");
+  expect(g.frame()).toMatch(row("v", "drop coverage line"));
+  await g.press("\r");
+  expect(g.outcomes).toEqual([{ kind: "submit", hook: true, coverage: true }]);
+});
+
+test("the panel never covers the cursor line or the open box's text, at any width or height", async () => {
+  for (const [cols, rows] of [[140, 40], [100, 30], [90, 28], [80, 24], [60, 20], [100, 20]] as const) {
+    const t = await open(undefined, { cols, rows });
+    await t.press("f"); // a finding box open under the cursor line, with its panel
+    const f = t.frame();
+    const at = `${cols}x${rows}`;
+    expect(f, at).toContain("let answer = 42"); // the cursor line
+    expect(f, at).toContain("Hard-coded answer in main");
+    expect(f, at).toContain("42 appears with no source"); // the box's text, to its last line
+    expect(f.split("\n").length, at).toBeLessThanOrEqual(rows);
+    for (const line of f.split("\n")) expect([...line].length, at).toBeLessThanOrEqual(cols);
+    await t.press("h\\");
+    expect(t.frame(), at).toContain("let answer = 42");
+    const nav = t.frame().split("\n");
+    expect(nav.length, at).toBeLessThanOrEqual(rows);
+  }
+});
+
+test("below 100 columns the nav panel still lists every key in a grid; too short, it collapses to one line", async () => {
+  const t = await open(undefined, { cols: 90, rows: 40 });
+  await t.press("\\");
+  shown(t, { box: null, blind: false });
+  for (const line of t.frame().split("\n")) expect([...line].length).toBeLessThanOrEqual(90);
+  const short = await open(undefined, { cols: 90, rows: 14 });
+  await short.press("\\");
+  const lines = short.frame().split("\n");
+  expect(lines.some((l) => l.includes("j/k line"))).toBe(true);
+  expect(short.frame()).not.toContain("┌"); // no box: one dim line
+});
+
+test("panelOf: the fewest columns that fit the height; one line when none fits; always within the width", () => {
+  const e = (n: number) => Array.from({ length: n }, (_, i) => ({ keys: String.fromCharCode(97 + i), label: `act${i}` }));
+  const one = panelOf("t", e(4), 80, 40);
+  expect(one).toMatchObject({ boxed: true, height: 7 }); // border, title, four rows
+  const wide = panelOf("t", e(20), 80, 40); // cap 13 → 10 inner rows → two columns
+  expect(wide.boxed).toBe(true);
+  expect(wide.lines.length).toBe(10);
+  expect(wide.width).toBeLessThanOrEqual(80);
+  expect(panelOf("t", e(20), 12, 40)).toMatchObject({ boxed: false, height: 1 }); // no grid fits 12 columns
+  const tiny = panelOf("t", e(20), 30, 12);
+  expect(tiny.boxed).toBe(false);
+  expect(tiny.lines[0]!.length).toBeLessThanOrEqual(29);
+  expect(tiny.lines[0]).toMatch(/…$/);
+  expect(panelCap(40)).toBe(13);
+  expect(panelCap(19)).toBe(1); // never so tall that a box and the code lose their room
+  for (const rows of [19, 24, 30, 40, 80]) expect(rows - panelCap(rows)).toBeGreaterThanOrEqual(18);
+});
+
+test("the opening summary names the key that shows the bindings", async () => {
+  const t = await open(withSummary());
+  expect(t.frame()).toContain("\\ shows the keys for where you are");
 });
 
 // ---------------------------------------------------------------- configurable bindings
 
-test("remapped finding.not_an_issue: the footer and the hints show the new key, the new key acts and the old one does not", async () => {
-  installKeymap(effectiveKeys({ "finding.not_an_issue": "d", "nav.reveal": "R", "finding.hide": "H" }));
+test("remapped keys: the panel, the footer hint and the hints show the new keys, the new keys act and the old ones do not", async () => {
+  installKeymap(effectiveKeys({ "finding.not_an_issue": "d", "nav.reveal": "R", "finding.hide": "H", "nav.bindings": "!" }));
   try {
     const t = await open(three);
+    expect(t.frame().split("\n").at(-1)!.trim()).toBe("! bindings"); // AC1: the hint is the effective binding
     await t.press("]f");
-    expect(findingFooter()).toBe("d not an issue  b block  c comment  u undo  H hide  ]f next  y copy");
-    expect(t.frame()).toContain(findingFooter());
+    expect(listing(entriesOf({ box: "finding" }))).toEqual(["d not an issue", "b block", "c comment", "u undo", "H hide", "]f next", "y copy", "! bindings"]);
+    for (const e of entriesOf({ box: "finding" })) expect(t.frame()).toMatch(row(e.keys, e.label));
     await t.press("n"); // the old key is now nothing at all
     expect(t.frame()).not.toContain("not an issue, why? ›");
     await t.press("d");
     expect(t.frame()).toContain("not an issue, why? ›");
     await t.press("\x1b");
     await t.press("h"); // and h no longer hides
-    expect(t.frame()).toContain(findingFooter());
+    expect(t.frame()).toMatch(row("H", "hide"));
+    await t.press("\\"); // the old bindings key does nothing
+    expect(t.frame()).toMatch(row("H", "hide"));
+    await t.press("!"); // the new one hides the panel, here in a box, and shows it again
+    expect(t.frame()).not.toMatch(row("H", "hide"));
+    await t.press("!");
+    expect(t.frame()).toMatch(row("H", "hide"));
     await t.press("H");
-    expect(t.frame()).not.toContain(findingFooter());
+    expect(t.frame()).not.toMatch(row("H", "hide"));
     expect(keyOf("finding.not_an_issue")).toBe("d");
-    // The box the bindings key opens lists the effective keys too.
-    await t.press("\\");
-    expect(t.frame()).toContain("Key bindings");
-    expect(t.frame()).toMatch(/R\s+Reveal|n\s+Write a comment/);
+    await t.press("!"); // in nav it opens the full list, with the effective keys
+    expect(t.frame()).toMatch(row("]f/f", "find"));
+    expect(t.frame()).toMatch(row("!", "bindings"));
   } finally { installKeymap(DEFAULT_KEYMAP); }
 });
