@@ -77,12 +77,17 @@ export const GUIDE_SYSTEM = `You prepare a code change so a human can review it 
 You are given a pull request and its hunks, each with an id. Arrange the hunks into chapters in the order a careful reader should take them: the heart of the change first (the new type, the changed rule, the fix), then what depends on it (callers, wiring, config), then the tests last, in a chapter called "Proof". A chapter may mix files. Aim for 2 to 6 chapters; a small change may be one.
 Every hunk id you were given must appear in exactly one chapter. Never invent ids.
 Reply with JSON only, no prose around it:
-{"summary": "two plain sentences, at most 50 words: what this change does, and the one thing to keep in mind while reading",
+{"summary": "at most two short sentences: what this change does, and the one thing to keep in mind while reading",
  "chapters": [{"title": "at most 5 words",
-               "check": "at most 12 words, imperative, the one thing to verify here",
+               "check": "at most 12 words: the one concrete thing to check in these hunks",
                "why": "one or two sentences: what goes wrong if that check fails, or what makes it subtle",
                "hunks": ["id", ...]}]}
-Good "check" values: "Seeding happens once per millisecond, dated intents only" · "Every caller passes the new floor" · "The test would fail on the old code". Bad: anything with "verify that", a list, or a second clause.`;
+The "check" is the line the reader sees above every hunk of the chapter, so it must earn its place:
+- Name the thing to look at: a function, field, flag, file, rule or case from these hunks.
+- Say what must hold for it, in one clause. Count the words; 12 is the hard limit.
+- Do not reword the chapter title or the pull request title; say what to look for, not what changed.
+Good: "Seeding runs once per millisecond, only for dated intents" · "Every caller of open_store passes the new floor" · "Expired tokens return 404, never 401" · "The test fails on the old parse_range".
+Bad: "Verify that the changes are correct" (says nothing) · "Adds hub login" (restates the title) · "Check the token is stored and the URL is validated and errors are handled" (a list, too long).`;
 
 export function guidePrompt(src: { title: string; body: string }, hunks: HunkAt[], mechanical: Mechanical[]): string {
   const skip = new Set(mechanical.map((m) => m.id));
@@ -100,33 +105,145 @@ export function jsonIn(text: string): unknown {
   return JSON.parse(t.slice(a, b + 1));
 }
 
+/**
+ * Something the parser had to shorten, kept with what the guide actually said so it can be asked
+ * once to say it shorter itself: a cut made by the model reads better than one made by a word count.
+ */
+export type Cut = { at: "summary" } | { at: "chapter"; index: number; title: string; said: string; why: string };
+
 /** The guide's answer checked against the hunks: unknown ids dropped, repeats kept once, strays collected. */
 export function parseGuide(reply: string, hunks: HunkAt[], mechanical: Mechanical[]): Plan {
-  return checkPlan(jsonIn(reply) as object, hunks, mechanical, "guide");
+  return readGuide(reply, hunks, mechanical).plan;
+}
+
+/** parseGuide, plus the list of lines it had to cut to fit (see Cut). */
+export function readGuide(reply: string, hunks: HunkAt[], mechanical: Mechanical[]): { plan: Plan; cuts: Cut[]; summarySaid: string } {
+  return readPlan(jsonIn(reply) as object, hunks, mechanical, "guide");
 }
 
 /** Any producer's chapters, held to the same rules as the guide's: a document's plan goes through here too. */
 export function checkPlan(j: { summary?: unknown; chapters?: unknown }, hunks: HunkAt[], mechanical: Mechanical[], by: string): Plan {
+  return readPlan(j, hunks, mechanical, by).plan;
+}
+
+function readPlan(j: { summary?: unknown; chapters?: unknown }, hunks: HunkAt[], mechanical: Mechanical[], by: string): { plan: Plan; cuts: Cut[]; summarySaid: string } {
   const skip = new Set(mechanical.map((m) => m.id));
   const want = new Set(hunks.filter((h) => !skip.has(h.id)).map((h) => h.id));
   const seen = new Set<string>();
   const chapters: Chapter[] = [];
+  const cuts: Cut[] = [];
   for (const c of Array.isArray(j.chapters) ? j.chapters as any[] : []) {
     const ids = (Array.isArray(c?.hunks) ? c.hunks as unknown[] : []).filter((x): x is string => typeof x === "string" && want.has(x) && !seen.has(x) && !!seen.add(x));
-    if (ids.length) chapters.push({ title: clip(String(c.title ?? "Untitled").trim(), 60), intent: oneLine(String(c.check ?? c.intent ?? "")), why: clip(String(c.why ?? "").trim(), 400), hunks: ids });
+    if (!ids.length) continue;
+    const said = String(c.check ?? c.intent ?? ""), line = fitLine(said);
+    const chapter = { title: clip(String(c.title ?? "Untitled").trim(), 60), intent: line.text, why: clip(String(c.why ?? "").trim(), 400), hunks: ids };
+    if (line.cut) cuts.push({ at: "chapter", index: chapters.length, title: chapter.title, said: said.trim(), why: chapter.why });
+    chapters.push(chapter);
   }
   const strays = [...want].filter((id) => !seen.has(id));
   if (strays.length) chapters.push({ title: chapters.length ? "Also changed" : "The change", intent: chapters.length ? "Hunks the guide did not place" : "", why: chapters.length ? "The guide left these out of every chapter; read them too." : "", hunks: strays });
   if (!chapters.length) throw new Error("the guide placed no hunks");
-  return { summary: clip(String(j.summary ?? "").trim(), 400), chapters, mechanical, by };
+  const summarySaid = String(j.summary ?? "").trim(), summary = twoSentences(summarySaid);
+  if (summary.cut) cuts.unshift({ at: "summary" });
+  return { plan: { summary: summary.text, chapters, mechanical, by }, cuts, summarySaid };
 }
 
 /** The guide's one-liner, held to one line: no "verify that", no trailing period, at most 12 words. */
 export function oneLine(s: string): string {
+  return fitLine(s).text;
+}
+
+/** oneLine, saying whether it had to drop words (a leading "verify that" is not a cut; it is noise). */
+export function fitLine(s: string): { text: string; cut: boolean } {
   const t = s.trim().replace(/^(please )?(verify|check|confirm|ensure|make sure)( that)?\s+/i, "").replace(/[.\s]+$/, "");
   const words = t.split(/\s+/).filter(Boolean);
-  const out = words.length > 12 ? words.slice(0, 12).join(" ") + "…" : words.join(" ");
-  return out ? out[0]!.toUpperCase() + out.slice(1) : out;
+  const cut = words.length > 12;
+  const out = cut ? words.slice(0, 12).join(" ") + "…" : words.join(" ");
+  // Capitalise a plain word only: "buildClient" or "apply_doc" is a name, and a capital breaks it.
+  return { text: /^[a-z]+(\s|…|$)/.test(out) ? out[0]!.toUpperCase() + out.slice(1) : out, cut };
+}
+
+/**
+ * The summary, held to two sentences and 50 words. It sits above the whole review, so a third
+ * sentence is where the guide starts reviewing instead of orienting.
+ */
+export function twoSentences(s: string): { text: string; cut: boolean } {
+  const t = s.trim().replace(/\s+/g, " ");
+  // A sentence ends at . ! or ? followed by a space and a capital; "e.g. foo" or "v1.2" do not split.
+  const sentences = t.split(/(?<=[.!?])\s+(?=[A-Z"'`(])/).filter(Boolean);
+  let text = sentences.slice(0, 2).join(" "), cut = sentences.length > 2;
+  const words = text.split(" ").filter(Boolean);
+  if (words.length > 50) { text = words.slice(0, 50).join(" ") + "…"; cut = true; }
+  return { text, cut };
+}
+
+export const REASK_SYSTEM = `You wrote a reading guide for a code change, but some lines were too long and had to be cut. Rewrite only those lines, keeping their meaning.
+A "check" is at most 12 words, one clause, and names the concrete thing to look at (a function, field, flag, rule or case). A summary is at most two short sentences.
+Reply with JSON only: {"summary": "only if asked", "chapters": [{"n": 1, "check": "..."}]}`;
+
+/** The one follow-up after a cut: just the lines that were too long, with enough around them to rewrite them. */
+export function reaskPrompt(title: string, cuts: Cut[], summarySaid: string): string {
+  const parts = cuts.map((c) => c.at === "summary"
+    ? `## summary (too long)\n${summarySaid}`
+    : `## chapter n=${c.index + 1}: ${c.title}\ncheck (too long): ${c.said}\nwhy: ${c.why}`);
+  return `# ${title}\n\n${parts.join("\n\n")}`;
+}
+
+/** Apply the rewritten lines where they now fit; anything still too long, or missing, keeps the cut version. */
+export function applyReask(plan: Plan, cuts: Cut[], reply: string): Plan {
+  let j: { summary?: unknown; chapters?: unknown };
+  try { j = jsonIn(reply) as typeof j; } catch { return plan; } // a failed retry leaves the first answer standing
+  const asked = new Set(cuts.flatMap((c) => c.at === "chapter" ? [c.index] : []));
+  const chapters = plan.chapters.map((c) => ({ ...c }));
+  for (const r of Array.isArray(j.chapters) ? j.chapters as any[] : []) {
+    const i = Number(r?.n) - 1;
+    if (!asked.has(i) || !chapters[i]) continue;
+    const line = fitLine(String(r.check ?? ""));
+    if (line.text && !line.cut) chapters[i]!.intent = line.text;
+  }
+  let summary = plan.summary;
+  if (cuts.some((c) => c.at === "summary") && typeof j.summary === "string") {
+    const s = twoSentences(j.summary);
+    if (s.text && !s.cut) summary = s.text;
+  }
+  return { ...plan, summary, chapters };
+}
+
+/**
+ * The intent shown for mechanical hunks. They were classified by rule, so the guide never names them;
+ * the one thing worth checking is that the rule was right.
+ */
+export const MECHANICAL_INTENT = "Skim for a behaviour change the rule may have missed";
+
+// ---------------------------------------------------------------- the intent rubric
+
+// Words that say nothing about what to look at: an intent made only of these is vague.
+const VAGUE = new Set(("a an the this that these those it its is are be been being was were to of in on for with as by and or " +
+  "all any every each everything nothing new old changes change changed code logic correct correctly works work working " +
+  "properly proper handled handles handle behaves behaviour behavior functionality implementation implemented updated update " +
+  "updates fine expected good right still now here there used using also no not tests test pass passes passing").split(" "));
+const tokens = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}_\s-]/gu, " ").split(/\s+/).filter(Boolean);
+const content = (s: string) => tokens(s).filter((w) => !VAGUE.has(w));
+
+/**
+ * Why an intent fails the rubric (empty when it passes). The rubric is the ticket's: at most 12
+ * words, names a concrete thing to check, no "verify that", not a restatement of the title. The
+ * checks are heuristics meant for an eval, not a gate on the review: a failing intent is still shown.
+ */
+export function rubric(intent: string, title: string): string[] {
+  const fails: string[] = [];
+  const t = intent.trim();
+  if (!t) return ["empty"];
+  if (t.split(/\s+/).length > 12 || t.endsWith("…")) fails.push("over 12 words");
+  if (/\b(verify|make sure|ensure)( that)?\b|^(check|confirm)( that)?\s/i.test(t)) fails.push("says verify that");
+  // Concrete: code-shaped (an identifier, a path, a flag, a number) or at least two words that carry meaning.
+  const code = /`|\w[_.:/]\w|\w\(|--?\w|[a-z][A-Z]|\d/.test(t);
+  const mine = content(t);
+  if (!code && mine.length < 2) fails.push("names nothing concrete");
+  // A restatement: nearly every meaningful word of the intent is already in the title.
+  const theirs = new Set(content(title));
+  if (mine.length && theirs.size && mine.filter((w) => theirs.has(w)).length / mine.length >= 0.75) fails.push("restates the title");
+  return fails;
 }
 
 /** With no guide (or a failed one): a chapter per file, in git's order. */

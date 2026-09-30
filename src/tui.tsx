@@ -12,7 +12,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput, useStdout } from "ink";
 import { where, type DiffLine, type FileDiff } from "./diff.ts";
-import { hunksOf, worstFirst, type Finding, type HunkAt } from "./guide.ts";
+import { hunksOf, MECHANICAL_INTENT, worstFirst, type Finding, type HunkAt } from "./guide.ts";
 import { ask, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
 import type { Doc, Verdict } from "./document.ts";
 import { gotoLine, nextFinding, type NavItem } from "./nav.ts";
@@ -161,7 +161,7 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
     else if (ch === "K") goChapter(-1);
     else if (ch === "?") {
       if (!item) return;
-      const body = item.mechanical ? `Mechanical: ${item.mechanical}. Classified by rule, not by a model.` : `${chapter?.intent ? chapter.intent + "\n\n" : ""}${chapter?.why || "The guide gave no reason for this chapter."}`;
+      const body = item.mechanical ? `${MECHANICAL_INTENT}\n\nMechanical: ${item.mechanical}. Classified by rule, not by a model.` : `${chapter?.intent ? chapter.intent + "\n\n" : ""}${chapter?.why || "The guide gave no reason for this chapter."}`;
       setFloat({ title: `${item.chapter + 1} · ${chapterTitle}`, body });
     }
     else if (ch === "f") { // the next finding in this hunk, from the cursor, wrapping
@@ -255,7 +255,7 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
               </Text>
               <Text wrap="truncate">
                 {item.mechanical
-                  ? <Text color="magenta">  mechanical · {item.mechanical}</Text>
+                  ? <Text color="magenta">  ▸ {MECHANICAL_INTENT} · {item.mechanical}</Text>
                   : chapter?.intent ? <Text color="cyan">  ▸ {chapter.intent}</Text> : <Text dimColor>  {chapterTitle}</Text>}
               </Text>
               {shown.map((l, k) => {

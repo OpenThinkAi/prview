@@ -12,9 +12,11 @@ prview open pm-pr-42
 What you get is a full-screen review, not a diff dump:
 
 - **A reading order.** A guide (a model) sorts the hunks into chapters: the core change first,
-  what depends on it next, tests last, with one sentence per chapter on what to verify.
+  what depends on it next, tests last, with one line per chapter (at most 12 words) naming
+  the concrete thing to check there.
   Mechanical hunks (whitespace, lock files, pure moves, unchanged renames) are classified by
-  rule, never by the model, and come last.
+  rule, never by the model, and come last, under a fixed line: skim for a behaviour change the
+  rule may have missed.
 - **Findings in the gutter.** A critic (a model) raises findings anchored to a line; each one is
   handed to a fresh call with more of the file to refute, and only the survivors are shown (`▲`).
   `f` reads one (titled with who raised it: `▲ critic · bug · warn`), `d` dismisses it.
@@ -55,6 +57,27 @@ A document is anchored on its head commit and is refused by a review at any othe
 
 Not yet: posting the verdict anywhere, a blind first pass (findings hidden until you have read
 the chapter), syntax colouring inside hunks.
+
+## Checking the guide's intents
+
+The intent line is what you read most, so its quality is measured, not assumed.
+`scripts/eval-intents.ts` runs the guide on real merged changes and holds every intent to a
+rubric (`rubric` in `src/guide.ts`): at most 12 words, names a concrete thing to check, no
+"verify that", not a rewording of the title. It prints each chapter's title, intent and why, marks
+the failures, and exits 0 when at least 90% pass.
+
+```sh
+bun scripts/eval-intents.ts                          # five pinned merges from pm, stamp-cli, bloom
+bun scripts/eval-intents.ts --ai qwen                # another provider
+bun scripts/eval-intents.ts ~/src/app@abc123         # your own: DIR@MERGE or DIR@BASE..HEAD
+```
+
+The defaults point at the author's clones under `~/Development`; pass your own elsewhere. It calls
+the model for real, one guide call per change, so run it before and after touching `GUIDE_SYSTEM`
+or the limits. When the parser has to cut an intent (over 12 words) or the summary (over two
+sentences), prview asks the guide once more for just those lines; the eval shows when that happened.
+
+## Development
 
 ```sh
 bun install
