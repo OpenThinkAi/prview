@@ -351,3 +351,66 @@ test("votes survive the document: read when a whole number, ignored otherwise", 
   expect(doc(3).findings[0]!.votes).toBe(3);
   for (const bad of [0, 2.5, "3", null, 1000]) expect(doc(bad).findings[0]!.votes).toBeUndefined();
 });
+
+// ---------------------------------------------------------------- model config (no network, no Keychain)
+
+import { ConfigError, parseConfig, parseToml, resolveCredential, resolveRoles, type Lookups } from "../src/config.ts";
+
+const none: Lookups = { env: {}, keychain: () => undefined };
+const CFG = `
+# comment
+[models.sonnet]
+kind = "anthropic"
+model = "claude-sonnet-4-5"   # trailing comment, "# quoted" kept below
+key_env = "SONNET_KEY"
+[models."local-qwen"]
+kind = 'openai-compatible'
+endpoint = "http://localhost:8000/v1/"
+[models.ds]
+kind = "openai-compatible"
+endpoint = "https://api.deepseek.com/v1"
+key_keychain = "DEEPSEEK_API_KEY"
+[roles]
+critic = "sonnet"
+ask = "local-qwen"
+`;
+
+test("toml subset: tables, quoted keys, comments, scalars", () => {
+  expect(parseToml(`a = 1\nb = true\n[x."y z"]\nk = "v # not a comment" # c`)).toEqual({ a: 1, b: true, x: { "y z": { k: "v # not a comment" } } });
+  expect(() => parseToml("a = [1]")).toThrow(/line 1/);
+  expect(() => parseToml("a = 1\na = 2")).toThrow(/duplicate/);
+  expect(() => parseToml("a = bare")).toThrow(ConfigError);
+});
+
+test("config: models, roles, defaults, and errors", () => {
+  const c = parseConfig(CFG);
+  expect(Object.keys(c.models).sort()).toEqual(["claude", "ds", "local-qwen", "sonnet"]);
+  expect(c.models.claude!.kind).toBe("claude-cli");
+  expect(c.roles).toEqual({ critic: "sonnet", ask: "local-qwen" });
+  expect(() => parseConfig(`[models.a]\nkind = "gpt"`)).toThrow(/kind must be one of/);
+  expect(() => parseConfig(`[models.a]\nkind = "openai-compatible"`)).toThrow(/endpoint/);
+  expect(() => parseConfig(`[models.a]\nkind = "claude-cli"\nkey_env = "X"`)).toThrow(/no key/);
+  expect(() => parseConfig(`[roles]\nguide = "ghost"`)).toThrow(/not a \[models.ghost\]/);
+});
+
+test("credentials: env, then keychain, only what the model names", () => {
+  const c = parseConfig(CFG);
+  const sonnet = c.models.sonnet!, ds = c.models.ds!, qwen = c.models["local-qwen"]!;
+  expect(resolveCredential(sonnet, { env: { SONNET_KEY: " k1 " }, keychain: () => "kc" })).toBe("k1");
+  expect(resolveCredential(ds, { env: { DEEPSEEK_API_KEY: "ambient", SONNET_KEY: "x" }, keychain: (s) => (s === "DEEPSEEK_API_KEY" ? "kc" : undefined) })).toBe("kc");
+  expect(() => resolveCredential(sonnet, { env: { ANTHROPIC_API_KEY: "ambient" }, keychain: () => "kc" })).toThrow(/\$SONNET_KEY/);
+  expect(resolveCredential(qwen, { env: { OPENAI_API_KEY: "ambient" }, keychain: () => "kc" })).toBeUndefined();
+  expect(() => resolveCredential({ name: "a", kind: "anthropic", model: "m" }, none)).toThrow(/key_env or key_keychain/);
+});
+
+test("roles: critic on one model and ask on another; --ai overrides all four", () => {
+  const c = parseConfig(CFG);
+  const l: Lookups = { env: { SONNET_KEY: "k" }, keychain: () => undefined };
+  const r = resolveRoles(c, l);
+  expect([r.guide.def.name, r.critic.def.name, r.refute.def.name, r.ask.def.name]).toEqual(["claude", "sonnet", "claude", "local-qwen"]);
+  expect(r.critic.key).toBe("k");
+  const all = resolveRoles(c, l, "local-qwen");
+  expect(new Set(Object.values(all).map((m) => m.def.name))).toEqual(new Set(["local-qwen"]));
+  expect(() => resolveRoles(c, l, "nope")).toThrow(/no model named nope/);
+  expect(() => resolveRoles(c, none)).toThrow(/no credential/);
+});

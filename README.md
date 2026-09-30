@@ -29,11 +29,32 @@ What you get is a full-screen review, not a diff dump:
   notes with file and line, how much of the change you actually read, and the findings you kept.
   Everything is saved as you go; `q` and come back later.
 
-Models: `claude -p` on your subscription by default; `--ai qwen|gemma|deepseek` for the local
-servers or DeepSeek; `--no-ai` to skip the guide and critic. The guide and findings are redone
+Models: named in `~/.config/prview/config.toml` (or `$PRVIEW_CONFIG`) and assigned per role. With no
+config every role is `claude -p` on your subscription. `--ai NAME` uses one named model for all four
+roles for a run; `--no-ai` skips the guide and critic. `prview models` lists them and checks each is
+reachable. A missing credential fails before anything is fetched. The guide and findings are redone
 only when the PR head moves, or with `--fresh`. The critic reads each chapter `--samples N` times
 (default 2) and merges the runs: a finding shows how many runs raised it (`2/3`), and the gutter marks
 the worst by severity, then votes. Each run's time and cost are kept in the review's JSON.
+
+```toml
+[models.claude]              # kinds: claude-cli | anthropic | openai-compatible
+kind = "claude-cli"
+[models.sonnet]
+kind = "anthropic"
+model = "claude-sonnet-4-5"
+key_keychain = "ANTHROPIC_API_KEY"       # or key_env = "NAME"; each model names its own
+[models.qwen]
+kind = "openai-compatible"
+endpoint = "http://localhost:8000/v1"
+model = "mlx-community/Qwen3.8-27B-4bit"  # optional: defaults to the server's first model
+[roles]                      # guide, critic, refute, ask; unnamed roles use "claude"
+critic = "sonnet"
+ask = "qwen"
+```
+
+A credential is read only from the env var or Keychain service the model itself names, never from
+some ambient key, so a local server never gets a cloud key.
 
 State lives under `~/.cache/prview` (`$PRVIEW_HOME`): a worktree per review and one JSON file.
 `prview done <name>` removes both.
