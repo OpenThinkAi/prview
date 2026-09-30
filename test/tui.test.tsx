@@ -634,3 +634,51 @@ test("y: a box with no source text says so instead of copying the hints", async 
   expect(t.copied).toEqual([]);
   expect(t.frame()).toContain("nothing to copy here");
 });
+
+// -- resize ------------------------------------------------------------------------------------------------
+
+import { tooSmall, WIPE } from "../src/resize.ts";
+
+// ink-testing-library's stdout has fixed read-only columns; shadow them, then signal the change as a TTY would.
+function resizeTo(out: { emit: (e: string) => boolean }, columns: number, rows: number) {
+  Object.defineProperty(out, "columns", { value: columns, configurable: true });
+  Object.defineProperty(out, "rows", { value: rows, configurable: true });
+  out.emit("resize");
+}
+
+test("resize: a terminal that changes size recomputes the layout, and wipes the stale frame first", async () => {
+  const r = fixture();
+  const app = render(<App review={r} files={files} onDone={() => {}} />);
+  const out = app.stdout as unknown as { columns: number; rows: number; emit: (e: string) => boolean };
+  const strip = () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "");
+  resizeTo(out, 140, 40);
+  await new Promise((r) => setTimeout(r, 120));
+  expect(strip()).toContain("▸ 1 Core change");
+  resizeTo(out, 80, 24);
+  await new Promise((r) => setTimeout(r, 120));
+  const f = strip();
+  expect(f).not.toContain("▸ 1 Core change"); // the rail collapsed to numbers
+  expect(f.split("\n").every((l) => l.length <= 80)).toBe(true);
+  expect(app.frames.includes(WIPE)).toBe(true);
+});
+
+test("resize: a terminal below 40x10 shows a one-line notice, and the review comes back when it grows", async () => {
+  const r = fixture();
+  const app = render(<App review={r} files={files} onDone={() => {}} />);
+  const out = app.stdout as unknown as { columns: number; rows: number; emit: (e: string) => boolean };
+  const strip = () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "");
+  resizeTo(out, 30, 8);
+  await new Promise((r) => setTimeout(r, 120));
+  expect(strip()).toContain("terminal too small");
+  expect(strip().split("\n").length).toBe(1);
+  resizeTo(out, 120, 40);
+  await new Promise((r) => setTimeout(r, 120));
+  expect(strip()).toContain("Core change");
+  expect(strip()).not.toContain("too small");
+});
+
+test("tooSmall: the limits are 40 columns and 10 rows", () => {
+  expect(tooSmall({ cols: 39, rows: 40 })).toBe(true);
+  expect(tooSmall({ cols: 120, rows: 9 })).toBe(true);
+  expect(tooSmall({ cols: 40, rows: 10 })).toBe(false);
+});
