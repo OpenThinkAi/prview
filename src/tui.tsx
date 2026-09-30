@@ -10,10 +10,10 @@
 //
 // Keys are key map v2 (keys.ts): arrows move, and the prefixes a/f/v/g hold the rest. A review opens in the table of
 // contents, whose cursor walks chapters and blocks (nav.ts) while the content area shows the chapter's intent and why;
-// → enters a block's code and ← comes back out. Deciding on findings is the
-// first pass: `g f` opens the next one, and one key decides it (b block on it, c comment, i ignore; x closes the box
-// without deciding, and deciding again changes the decision). b and c open the ordinary comment line prefilled with the
-// finding's title, so what posts is what the reader saved. Each decision moves straight to the next undecided finding.
+// → enters a block's code and ← comes back out. Every finding has an action (block, comment or ignore), its severity's
+// default until the reader picks one: inside a finding b, c or i picks it, and pressing one again changes it; x only
+// closes the finding. b and c open the comment line in the content area prefilled with the finding's text (or the
+// comment already written for it), so what posts is what the reader saved.
 // The rules live in triage.ts.
 //
 // Everything shown comes from the review document (`review.doc`), whoever produced it; the rest of
@@ -32,7 +32,7 @@ import { boxLines, clampScroll, layoutOf, STATUS_H, pageStep, rowsFor, windowOf,
 import type { Beside } from "./editor.ts";
 import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
 import { describe, planOf } from "./submit.ts";
-import { decide, decisionOf, defaultVerdict, IN_HOUSE, LABEL, linkedComment, nextUndecided, progress, suggestionHint, undecidedNote } from "./triage.ts";
+import { actionOf, actionsNote, bySeverity, decide, decisionOf, DEFAULTS, defaultVerdict, IN_HOUSE, LABEL, linkedComment, suggestionHint, type Defaults } from "./triage.ts";
 import { type KeyState, keyOf, rowById } from "./keys.ts";
 import { pendingText, step, tokenOf, type InkKey, type Pending } from "./chord.ts";
 import { answersBody, answersFor, answerText, type Answer } from "./ask-docs.ts";
@@ -55,15 +55,16 @@ function itemsOf(d: Doc, files: FileDiff[]): Item[] {
   return out;
 }
 
-const SEV = { blocking: "red", warn: "yellow", nit: "blue" } as const;
+const SEV = { high: "red", medium: "yellow", low: "blue" } as const;
 /**
- * What the content area shows. `lead` is bold above the body: a finding's title. `copy` is the source text for `y`: what it
- * means, not the wrapped lines drawn from `lead` and `body`. `finding` is the id of the finding shown: while it is set the
- * finding is open, drawn as a short box on its line with its detail here, and the decision keys act on it.
+ * What the content area shows. `lead` is bold above the body: a finding's title. `tag` is drawn dim after the title (a
+ * finding's "(default)"). `copy` is the source text for `y`: what it means, not the wrapped lines drawn from `lead` and
+ * `body`. `finding` is the id of the finding shown: while it is set the finding is open, drawn as a short box on its line
+ * (its header, its title and at most two lines of `claim`) with its whole detail here, and the action keys act on it.
  */
-type Content = { title: string; lead?: string; body: string; color?: string; copy?: string; finding?: string };
+type Content = { title: string; tag?: string; lead?: string; body: string; color?: string; copy?: string; finding?: string; claim?: string };
 /**
- * `decide`: this comment carries out a block or comment decision on that finding. `reason`: the optional reason for "not an issue".
+ * `decide`: this comment carries out a block or comment action on that finding. `reason`: the optional private note of an ignore.
  * `docs`: the question typed for the offline docs search (`ask` is the one for the model); `results`: its answers, `sel` the selected one.
  */
 type Mode = { kind: "nav" } | { kind: "comment"; decide?: { id: string; kind: "block" | "comment" } } | { kind: "reason"; id: string } | { kind: "ask" } | { kind: "docs" } | { kind: "results"; query: string; answers: Answer[]; sel: number } | { kind: "verdict" } | { kind: "preview"; hook: boolean; coverage: boolean };
@@ -80,6 +81,8 @@ export type AppProps = {
   dryRun?: boolean;
   /** How `y` reaches the clipboard; tests pass one that records instead of touching it. */
   copier?: Copier;
+  /** The action a finding starts with, by severity (the config's [defaults]). */
+  defaults?: Defaults;
 };
 
 /** What the content area opens on: the summary, the suggested verdicts and who prepared it. `a i` shows exactly this again; null when a review has neither. */
@@ -93,7 +96,7 @@ export function summaryContent(review: Review): Content | null {
   return { title: "Summary of this change · not a finding", color: "magenta", copy: d.plan.summary || suggested, body: [d.plan.summary, suggested, preparedBy(review.ai?.runs), hint].filter(Boolean).join("\n\n") };
 }
 
-export function App({ review, files, onDone, beside, size, blind = false, dryRun = false, copier = systemCopier }: AppProps) {
+export function App({ review, files, onDone, beside, size, blind = false, dryRun = false, copier = systemCopier, defaults = DEFAULTS }: AppProps) {
   const { exit } = useApp();
   const term = useTerminalSize(size);
   const cols = term.cols, rows = term.rows - 1;
@@ -158,17 +161,21 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     : content?.finding ? { state: "finding" }
     : focus === "content" && view ? { state: "content" } : { state: tree };
 
-  const live = (f: Finding) => f.status !== "withdrawn";
   // Blind: what the critic found is not shown, counted or reachable until the chapter has been read. Everything below that
   // draws or steps through a finding goes through `unhidden`, so the gate cannot be bypassed by one key.
   const chapters = items.reduce<string[][]>((acc, x) => { (acc[x.chapter] ??= []).push(x.id); return acc; }, []).filter(Boolean);
   const hidden = hiddenHunks(blind, chapters, h);
   const unhidden = (f: Finding) => !hidden.has(f.hunk);
-  // Open: shown and not decided yet. The ▲ counts on the rail and in the status area are what is left to decide.
-  const open = (f: Finding) => live(f) && unhidden(f) && !decisionOf(h, f.id);
-  // What the gutter marks and the go-to keys step through: the live findings the reader may see.
-  const visible = () => d.findings.filter((f) => live(f) && unhidden(f));
-  const withdrawnCount = d.findings.filter((f) => !live(f) && unhidden(f)).length;
+  // What the gutter marks, the counts count and the go-to keys step through: every finding the reader may see, those the
+  // refute step dropped included (they are ignored by default).
+  const visible = () => d.findings.filter(unhidden);
+  const ignored = (f: Finding) => actionOf(h, f, defaults).kind === "ignore";
+  // A ▲ mark or count on the rail, coloured like the gutter: the worst severity among the findings not ignored, dim when
+  // every one is ignored (a refute-dropped finding, say).
+  const mark = (fs: Finding[], text: string) => {
+    const worst = fs.filter((f) => !ignored(f)).sort(worstFirst)[0];
+    return fs.length ? <Text color={worst ? SEV[worst.severity] : undefined} dimColor={!worst}>{text}</Text> : null;
+  };
   const findingsHere = item ? visible().filter((f) => f.hunk === item.id) : [];
   const findingsAt = (l: DiffLine) => findingsHere.filter((f) => f.side === "new" ? l.n !== null && f.line === l.n : l.o !== null && f.line === l.o);
   const notesAt = (l: DiffLine) => h.comments.filter((n) => n.hunk === item?.id && n.line !== null && (n.side === "new" ? n.line === l.n : n.line === l.o));
@@ -210,30 +217,30 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     if (!l) return { side: "new", line: null };
     return l.n !== null ? { side: "new", line: l.n } : { side: "old", line: l.o };
   };
-  // A finding opens in the code, whichever of the two the cursor was in.
+  // A finding's header says who raised it, what it is and its action now; "(default)" is drawn dim while the action is
+  // still the one its severity (or the refute step) gave it. The content area holds the whole of it. A finding opens in
+  // the code, whichever of the two the cursor was in.
   const showFinding = (f: Finding) => {
     setTree("code");
-    const dec = decisionOf(h, f.id), p = progress(visible(), h), mine = linkedComment(h, f.id);
-    const state = dec
-      ? `Decided: ${LABEL[dec.kind]}${dec.reason ? ` (${dec.reason})` : ""}${mine ? `. Your comment: ${mine.text}` : ""}`
-      : "";
-    setContent({ title: `▲ ${f.source} · ${f.kind} · ${f.severity}${f.votes && r.ai?.samples ? ` · ${f.votes}/${r.ai.samples}` : ""} · ${p.decided}/${p.total} decided`, color: dec ? "gray" : SEV[f.severity], lead: titleOf(f), finding: f.id, copy: findingText(f, place(f.hunk, f.line)), body: [claimAddsTo(f) ? f.claim : "", f.evidence, f.refute ? `Second look: ${f.refute}` : "", state].filter(Boolean).join("\n\n") });
+    const a = actionOf(h, f, defaults), mine = linkedComment(h, f.id);
+    const why = !a.isDefault ? "" : f.status === "withdrawn" ? " The second look dropped this finding, so it starts ignored." : ` A ${f.severity} finding starts as ${LABEL[a.kind]}.`;
+    const action = `Action: ${LABEL[a.kind]}${a.isDefault ? " (default)." : "."}${why}${mine ? ` Your comment: ${mine.text}` : ""}${a.note ? ` Private note: ${a.note}` : ""} ${keyOf("finding.block")}, ${keyOf("finding.comment")} or ${keyOf("finding.ignore")} changes it.`;
+    setContent({
+      title: `▲ ${f.source} · ${f.kind} · ${f.severity}${f.votes && r.ai?.samples ? ` · ${f.votes}/${r.ai.samples}` : ""} · ${LABEL[a.kind]}`, ...(a.isDefault ? { tag: " (default)" } : {}),
+      color: a.kind === "ignore" ? "gray" : SEV[f.severity], lead: titleOf(f), finding: f.id, copy: findingText(f, place(f.hunk, f.line)),
+      ...(claimAddsTo(f) ? { claim: f.claim } : {}),
+      body: [claimAddsTo(f) ? f.claim : "", f.evidence, f.refute ? `Second look: ${f.refute}` : "", action].filter(Boolean).join("\n\n"),
+    });
   };
   // What the decision keys act on: the open finding, and only while it is open. Only shown findings can be opened,
   // so a blind chapter's findings cannot be decided before they are revealed.
   const target = (): Finding | undefined => {
     const f = content?.finding ? d.findings.find((x) => x.id === content.finding) : undefined;
-    return f && live(f) && unhidden(f) ? f : undefined;
+    return f && unhidden(f) ? f : undefined;
   };
   const hiddenNote = () => hidden.size ? " Chapters you have not read yet keep theirs hidden until you have been through them." : "";
-  // After a decision: straight on to the next undecided finding, so a whole pass is one key per finding.
-  const decided = (next: Human) => {
-    Object.assign(h, next); redraw();
-    const hit = nextUndecided(items, visible(), h, { item: pos.item, line });
-    if (hit) { setPos({ item: hit.item, line: hit.line }); showFinding(hit.finding); return; }
-    const p = progress(visible(), h);
-    setContent({ title: `Findings · ${p.decided}/${p.total} decided`, color: "green", body: `Every finding${hidden.size ? " you can see" : ""} is decided.${hiddenNote()} Esc closes this, then ${keyOf("review.submit")} submits; ${keyOf("go.next_finding")} and ${keyOf("go.prev_finding")} step back through them, and deciding one again changes it.` });
-  };
+  // After an action is picked the finding stays open, showing its new action; `g f` goes on to the next one.
+  const decided = (f: Finding, next: Human) => { Object.assign(h, next); redraw(); showFinding(f); };
   const land = (hit: (Pos & { finding: Finding }) | undefined) => {
     if (!hit) { setContent({ title: "Findings", body: `There are no findings to go to.${hiddenNote()}` }); return; }
     setPos({ item: hit.item, line: hit.line });
@@ -242,13 +249,13 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const place = (id: string, l: number | null) => `${printable(items.find((x) => x.id === id)?.path ?? id)}${l !== null ? `:${l}` : ""}`;
   // The preview ends with what Enter will do: where the file goes, where it posts, and the document's
   // command, if it has one, which runs only after its own keypress (x) in this preview.
-  // Undecided findings lead the preview, so a pass left unfinished is seen before anything posts.
+  // Every finding and its action lead the preview, so what the review says about each is seen before anything posts.
   const preview = (hook: boolean, coverage: boolean) => {
     const p = planOf(r, files, { coverage });
     setMode({ kind: "preview", hook, coverage });
-    setContent({ title: `${VERDICT[h.verdict!]} · Enter ${dryRun ? "prints the calls" : "submits"}${p.hook ? `, x ${hook ? "disallows" : "allows"} the command` : ""}${p.adapter ? `, v ${coverage ? "drops" : "adds"} the coverage line` : ""}, Esc goes back`, color: "green", body: `${undecidedNote(visible(), h, place, hidden.size > 0)}${writeup(d, files)}\n${describe(p, hook, dryRun)}` });
+    setContent({ title: `${VERDICT[h.verdict!]} · Enter ${dryRun ? "prints the calls" : "submits"}${p.hook ? `, x ${hook ? "disallows" : "allows"} the command` : ""}${p.adapter ? `, v ${coverage ? "drops" : "adds"} the coverage line` : ""}, Esc goes back`, color: "green", body: `${actionsNote(visible(), h, place, defaults, hidden.size > 0)}${writeup(d, files, defaults)}\n${describe(p, hook, dryRun)}` });
   };
-  // Anything blocking makes request changes the verdict Enter picks; without one, Enter keeps the verdict already chosen, if any.
+  // A block you chose makes request changes the verdict Enter picks; without one, Enter keeps the verdict already chosen, if any.
   const verdictDefault = (): Verdict | undefined => defaultVerdict(visible(), h) ?? h.verdict;
 
   // Fast typing or a paste can deliver several plain characters in one chunk ("g12"): take them one at a time. An escape
@@ -316,9 +323,9 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     setMode({ kind: "nav" }); setInput("");
     const f = mode.kind === "reason" ? d.findings.find((x) => x.id === mode.id) : mode.kind === "comment" && mode.decide ? d.findings.find((x) => x.id === mode.decide!.id) : undefined;
     const at = new Date().toISOString();
-    if (mode.kind === "reason") { if (f) decided(decide(h, f, "dismissed", { reason: text, at })); return; }
-    // An emptied comment decides nothing: the finding stays as it was.
-    if (mode.kind === "comment" && mode.decide) { if (f && text) decided(decide(h, f, mode.decide.kind, { text, at })); return; }
+    if (mode.kind === "reason") { if (f) decided(f, decide(h, f, "ignore", { reason: text, at })); return; }
+    // An emptied comment changes nothing: the finding keeps the action it had.
+    if (mode.kind === "comment" && mode.decide) { if (f) { if (text) decided(f, decide(h, f, mode.decide.kind, { text, at })); else showFinding(f); } return; }
     if (mode.kind === "comment" && text) {
       h.comments.push({ hunk: item?.id ?? null, ...anchor(), text, at });
       redraw();
@@ -381,9 +388,9 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       case "finding.block": case "finding.comment": {
         const f = target();
         if (!f) return;
-        // The comment starts as the finding's title (or the comment already written for it) and is saved only on Enter.
+        // The comment starts as the finding's text (or the comment already written for it) and is saved only on Enter.
         setMode({ kind: "comment", decide: { id: f.id, kind: id === "finding.block" ? "block" : "comment" } });
-        setInput(linkedComment(h, f.id)?.text ?? titleOf(f));
+        setInput(linkedComment(h, f.id)?.text ?? f.claim);
         return;
       }
 
@@ -447,14 +454,13 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const { railW, mainW, gutterW, codeW, boxW, boxInner } = L;
   const codeCols = codeW - 1; // the +/- sign takes the first column
   const total = items.filter((i) => !i.mechanical).length, seen = items.filter((i) => !i.mechanical && h.visited.includes(i.id)).length;
-  const anyHidden = d.findings.some((f) => live(f) && !unhidden(f));
+  const anyHidden = d.findings.some((f) => !unhidden(f));
 
   // The status area's second line: separate fields, each whole or dropped, in the order status.ts documents.
-  const openOf = (sev: Finding["severity"]) => d.findings.filter((f) => open(f) && f.severity === sev).length;
   const inHouse = r.suggested?.find((v) => v.by === IN_HOUSE);
   const fields = fitFields(statusFields({
     label: printable(d.target.label), base: d.target.base, head: d.target.head, read: { seen, total },
-    open: { blocking: openOf("blocking"), warn: openOf("warn"), nit: openOf("nit") }, hidden: anyHidden, withdrawn: withdrawnCount,
+    findings: bySeverity(visible()), hidden: anyHidden,
     comments: h.comments.length, suggested: inHouse ? VERDICT[inHouse.verdict] : undefined,
   }), cols - 4);
 
@@ -469,8 +475,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const keyPanel = panelOf(panelTitle(keyState, pending), entriesOf(keyState, pending), L.panelW, L.bottomH);
 
   // An open finding is a short box on its line: its header in the top border, the bold title, and at most two lines of its
-  // text. The whole of it is in the content area.
-  const boxBody = content?.finding ? wrapText(content.body, boxInner).filter(Boolean).slice(0, boxLines(L.middleH)) : [];
+  // claim. The whole of it is in the content area.
+  const boxBody = content?.finding && content.claim ? wrapText(content.claim, boxInner).filter(Boolean).slice(0, Math.min(2, boxLines(L.middleH))) : [];
   const boxH = content?.finding ? 3 + boxBody.length : 0;
   const bodyRows = L.middleH - 2; // the path line and the intent
   const heights = lines.map((l, i) => (wrap ? rowsFor(lengthOf(spans[i] ?? []), codeCols) : 1) + notesAt(l).length);
@@ -491,19 +497,23 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     return [cut ? [...vis, { text: "…", kind: "comment" }] : vis];
   };
 
-  const boxTop = (title: string) => {
-    const t = [...title].length > boxW - 5 ? [...title].slice(0, Math.max(1, boxW - 6)).join("") + "…" : title;
-    return `╭ ${t} ${"─".repeat(Math.max(0, boxW - [...t].length - 4))}╮`;
+  // The top border: `╭ header (default) ───╮`, the header cut with … when it does not fit, the dim tag dropped first.
+  const boxTop = (title: string, tag = "") => {
+    const room = boxW - 5;
+    const fits = [...title].length + [...tag].length <= room;
+    const t = fits ? title : [...title].length > room ? [...title].slice(0, Math.max(1, room - 1)).join("") + "…" : title;
+    const g = fits ? tag : "";
+    return { head: `╭ ${t}`, tag: g, tail: ` ${"─".repeat(Math.max(0, boxW - [...t].length - [...g].length - 4))}╮` };
   };
-  const findingBox = () => content?.finding ? (
+  const findingBox = () => { if (!content?.finding) return null; const top = boxTop(content.title, content.tag); return (
     <Box flexDirection="column" marginLeft={gutterW + 2} width={boxW}>
-      <Text color={content.color ?? "gray"} wrap="truncate">{boxTop(content.title)}</Text>
+      <Text color={content.color ?? "gray"} wrap="truncate">{top.head}{top.tag ? <Text dimColor>{top.tag}</Text> : null}{top.tail}</Text>
       <Box flexDirection="column" width={boxW} borderStyle="round" borderTop={false} borderColor={content.color ?? "gray"} paddingX={1}>
         <Text bold wrap="truncate">{content.lead ?? ""}</Text>
         {boxBody.map((t, j) => <Text key={j} wrap="truncate">{t}</Text>)}
       </Box>
     </Box>
-  ) : null;
+  ); };
 
   // What the content area holds: a prompt or the verdict question while one is open, else what was last shown there.
   const contentView = () => {
@@ -515,7 +525,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
         const title = mode.kind === "docs" ? "Search the docs" : mode.kind === "ask" ? "Ask the model about this block" : mode.kind === "reason" ? "Ignore the finding" : decideKind ? `${decideKind === "block" ? "Block on" : "Comment on"} the finding` : `Your own finding${item ? ` at ${place(item.id, at)}` : ""}`;
         return <>
           <Text bold color="cyan" wrap="truncate">{title}</Text>
-          <Text><Text color="cyan" bold>{label} › </Text>{input}<Text inverse> </Text>{mode.kind === "reason" ? <Text dimColor>  (optional, never posted)</Text> : null}</Text>
+          <Text><Text color="cyan" bold>{label} › </Text>{input}<Text inverse> </Text>{mode.kind === "reason" && !input ? <Text dimColor>private note — never posted</Text> : null}</Text>
         </>;
       }
       case "verdict": {
@@ -534,7 +544,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     const more = contentLines.length > L.contentRows;
     const scrollHint = focused ? "" : view.finding ? ` ${keyOf("finding.page_up")}/${keyOf("finding.page_down")}` : ` ${keyOf("code.focus_content")} to scroll`;
     return <>
-      <Text wrap="truncate"><Text bold color={view.color}>{view.title}</Text>{busy ? <Text dimColor> · {busy}</Text> : null}{more ? <Text dimColor> · {sc + 1}-{Math.min(contentLines.length, sc + L.contentRows)}/{contentLines.length}{scrollHint}</Text> : null}{focused ? <Text color="cyan"> · focused</Text> : null}</Text>
+      <Text wrap="truncate"><Text bold color={view.color}>{view.title}</Text>{view.tag ? <Text dimColor>{view.tag}</Text> : null}{busy ? <Text dimColor> · {busy}</Text> : null}{more ? <Text dimColor> · {sc + 1}-{Math.min(contentLines.length, sc + L.contentRows)}/{contentLines.length}{scrollHint}</Text> : null}{focused ? <Text color="cyan"> · focused</Text> : null}</Text>
       {shownContent.map((t, j) => <Text key={j} bold={sc + j < leadLines.length} wrap="truncate">{t || " "}</Text>)}
     </>;
   };
@@ -562,16 +572,16 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
                 if (row.kind === "block") {
                   // While the cursor is on the chapter's row, its first block (which the code shows) is not marked as well.
                   const x = items[row.item]!, cur = row.item === pos.item && !(tree === "toc" && onChapter), sel = cur && tree === "toc";
-                  return <Text key={`b${row.item}`} color={cur ? "cyan" : undefined} inverse={sel} dimColor={!cur && h.visited.includes(x.id)} wrap="truncate">{L.narrow ? ` ${cur ? "›" : " "}${mine.indexOf(x) + 1}` : `   ${cur ? "›" : " "} ${printable(x.path.split("/").pop()!)}:${x.hunk.newStart}`}{d.findings.some((f) => f.hunk === x.id && open(f)) ? " ▲" : ""}</Text>;
+                  return <Text key={`b${row.item}`} color={cur ? "cyan" : undefined} inverse={sel} dimColor={!cur && h.visited.includes(x.id)} wrap="truncate">{L.narrow ? ` ${cur ? "›" : " "}${mine.indexOf(x) + 1}` : `   ${cur ? "›" : " "} ${printable(x.path.split("/").pop()!)}:${x.hunk.newStart}`}{mark(visible().filter((f) => f.hunk === x.id), " ▲")}</Text>;
                 }
                 const title = c < d.plan.chapters.length ? d.plan.chapters[c]!.title : `Mechanical (${d.plan.mechanical.length})`;
                 const done = mine.every((x) => h.visited.includes(x.id));
-                const fs = d.findings.filter((f) => open(f) && mine.some((x) => x.id === f.hunk)).length;
-                const blindFs = chapterHidden(blind, chapters[c] ?? [], h) && d.findings.some((f) => live(f) && mine.some((x) => x.id === f.hunk));
+                const fs = visible().filter((f) => mine.some((x) => x.id === f.hunk));
+                const blindFs = chapterHidden(blind, chapters[c] ?? [], h) && d.findings.some((f) => mine.some((x) => x.id === f.hunk));
                 // ▾ expanded, ▸ collapsed; ✓ every block read.
                 return (
                   <Text key={`c${c}`} color={here ? "cyan" : done ? "green" : undefined} bold={here} inverse={here && tree === "toc" && onChapter} wrap="truncate">
-                    {L.narrow ? "" : done ? "✓" : " "}{expanded ? "▾" : "▸"}{L.narrow ? "" : " "}{c + 1}{L.narrow ? "" : ` ${printable(title)}`}{fs ? <Text color="yellow">{L.narrow ? "" : " "}▲{fs}</Text> : blindFs ? <Text color="yellow">{L.narrow ? "" : " "}▲?</Text> : null}
+                    {L.narrow ? "" : done ? "✓" : " "}{expanded ? "▾" : "▸"}{L.narrow ? "" : " "}{c + 1}{L.narrow ? "" : ` ${printable(title)}`}{fs.length ? mark(fs, `${L.narrow ? "" : " "}▲${fs.length}`) : blindFs ? <Text color="yellow">{L.narrow ? "" : " "}▲?</Text> : null}
                   </Text>
                 );
               })}
@@ -593,9 +603,9 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
                   const i = start + k;
                   const cur = i === line, lit = cur && tree === "code"; // the cursor line is lit only while the arrows act in the code
                   const fs = findingsAt(l), ns = notesAt(l);
-                  const worst = fs.filter(open).sort(worstFirst)[0];
-                  // ▲ open, △ decided, ▽ withdrawn.
-                  const mark = worst ? <Text color={SEV[worst.severity]}>▲</Text> : fs.some(live) ? <Text dimColor>△</Text> : fs.length ? <Text dimColor>▽</Text> : ns.length ? <Text color="cyan">»</Text> : <Text> </Text>;
+                  const worst = fs.filter((f) => !ignored(f)).sort(worstFirst)[0];
+                  // ▲ in its severity's colour, △ dim when every finding on the line is ignored.
+                  const mark = worst ? <Text color={SEV[worst.severity]}>▲</Text> : fs.length ? <Text dimColor>△</Text> : ns.length ? <Text color="cyan">»</Text> : <Text> </Text>;
                   const num = String(l.n ?? l.o ?? "").padStart(gutterW);
                   const color = l.t === "+" ? "green" : l.t === "-" ? "red" : undefined;
                   const changed = l.t !== " ";
@@ -639,11 +649,11 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
 }
 
 /** Run the app once; resolves with what the reader wants next. State lives on the review object and is saved as it changes. */
-export function show(review: Review, files: FileDiff[], beside?: Beside, blind = false, dryRun = false): Promise<Outcome> {
+export function show(review: Review, files: FileDiff[], beside?: Beside, blind = false, dryRun = false, defaults: Defaults = DEFAULTS): Promise<Outcome> {
   return new Promise((resolve) => {
     let outcome: Outcome = { kind: "quit" };
     process.stdout.write("\x1b[?1049h\x1b[H");
-    const app = render(<App review={review} files={files} beside={beside} blind={blind} dryRun={dryRun} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
+    const app = render(<App review={review} files={files} beside={beside} blind={blind} dryRun={dryRun} defaults={defaults} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
     app.waitUntilExit().then(() => { app.clear(); process.stdout.write("\x1b[?1049l"); save(review); resolve(outcome); });
   });
 }

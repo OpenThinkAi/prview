@@ -8,8 +8,8 @@
 // a shell; the only thing prview puts into it is the written file's path, for `{file}`; one trailing
 // `> path` sends its stdout to that file (prview writes it, no shell does) and must land inside the head
 // worktree, symlinks followed, or the hook is refused before it runs; it runs in the head worktree and is
-// stopped after HOOK_TIMEOUT_MS. `{file}` is a copy of the document without the reader's "not an issue"
-// reasons. The preview shows exactly that before anything runs.
+// stopped after HOOK_TIMEOUT_MS. `{file}` is a copy of the document without the reader's private ignore
+// notes. The preview shows exactly that before anything runs.
 
 import { lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
@@ -18,6 +18,7 @@ import { hunksOf } from "./guide.ts";
 import { exportDocument, Fail, home, save, VERDICT, writeup, type Review } from "./build.ts";
 import type { Doc, Submission, Target } from "./document.ts";
 import { adapterFor, postingOf, spawn, type Adapter, type Posting, type Runner } from "./platform.ts";
+import type { Defaults } from "./triage.ts";
 
 export const HOOK_TIMEOUT_MS = 60_000;
 
@@ -67,7 +68,7 @@ export type Plan = { file: string; md: string; hookFile: string; target: Target;
 
 export const submittedDir = () => join(home(), "submitted");
 
-/** What the human opted into at submit: a coverage line, off by default. Findings post only as the comments their decisions wrote. */
+/** What the human opted into at submit: a coverage line, off by default. Findings post only as the comments their block or comment actions wrote. */
 export type Choices = { coverage?: boolean };
 
 /** The coverage line, in the reader's own voice: how much of the change they read. */
@@ -100,7 +101,7 @@ export function describe(p: Plan, allowed: boolean, dryRun = false): string {
       `     ${shown(p.hook.argv)}`,
       ...(p.hook.stdout ? [`     stdout to ${p.hook.stdout}`] : []),
       `   in ${p.hook.cwd}, no shell, stopped after ${Math.round(p.hook.timeoutMs / 1000)}s.`,
-      `   {file} is ${p.hookFile}: your review without the reasons you gave for "not an issue".`, "",
+      `   {file} is ${p.hookFile}: your review without your private ignore notes.`, "",
       ...(p.hook.refused ? [`   REFUSED: ${p.hook.refused}. It will not run.`] : []),
       ...(p.hook.refused ? [] : [allowed ? "   [x] Allowed for this submit (x takes it back)." : "   [ ] Not allowed: it will not run. Press x to allow it for this submit."]),
     );
@@ -128,7 +129,7 @@ export type Result = { submission: Submission; summary: string; ok: boolean };
  * Submit the review. Throws only if the document itself cannot be written (step 1); anything after
  * that is caught, recorded in `submissions`, and summed up in one line.
  */
-export function submit(r: Review, files: FileDiff[], opts: Choices & { allowHook: boolean; run?: Runner; hook?: HookRunner; now?: () => Date; dryRun?: boolean }): Result {
+export function submit(r: Review, files: FileDiff[], opts: Choices & { allowHook: boolean; run?: Runner; hook?: HookRunner; now?: () => Date; dryRun?: boolean; defaults?: Defaults }): Result {
   const d = r.doc;
   if (!d.human.verdict) throw new Fail("pick a verdict before submitting");
   const p = planOf(r, files, opts);
@@ -143,7 +144,7 @@ export function submit(r: Review, files: FileDiff[], opts: Choices & { allowHook
   // 1. The document, before anything that can fail for reasons outside this machine.
   try {
     mkdirSync(submittedDir(), { recursive: true });
-    writeFileSync(p.md, writeup(d, files));
+    writeFileSync(p.md, writeup(d, files, opts.defaults));
     writeFileSync(p.file, exportDocument(r));
   } catch (e) { throw new Fail(`could not write ${p.file}: ${(e as Error).message}`); }
   const sub: Submission = { at, verdict: d.human.verdict, file: p.file };
@@ -172,7 +173,7 @@ export function submit(r: Review, files: FileDiff[], opts: Choices & { allowHook
     if (!opts.allowHook) parts.push("on_submit not run (not allowed)");
     else if (h.refused) { rec.error = h.refused; parts.push(`on_submit REFUSED, not run: ${h.refused}`); ok = false; }
     else {
-      // The hook gets its own copy, minus the reasons behind "not an issue": those are the reader's, not the producer's.
+      // The hook gets its own copy, minus the private ignore notes: those are the reader's, not the producer's.
       let copyError = "";
       try { writeFileSync(p.hookFile, exportDocument(r, { redact: true })); } catch (e) { copyError = `could not write ${p.hookFile}: ${(e as Error).message}`; }
       const res = copyError ? { exit: null, stdout: "", stderr: "", timedOut: false, error: copyError } : (opts.hook ?? runHook)(h);

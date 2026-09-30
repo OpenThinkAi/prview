@@ -8,7 +8,7 @@
 // commit; it never merges with, or opens against, another head.
 
 import type { FileDiff } from "./diff.ts";
-import { anchorLine, checkPlan, classify, clip, filePlan, fitLine, hunksOf, SEVERITIES, type Chapter, type Finding, type Mechanical, type Plan, type Severity } from "./guide.ts";
+import { anchorLine, checkPlan, classify, clip, filePlan, fitLine, hunksOf, severityOf, type Chapter, type Finding, type Mechanical, type Plan } from "./guide.ts";
 import { clean, isClean } from "./sanitize.ts";
 import { withLegacy } from "./triage.ts";
 
@@ -19,20 +19,21 @@ export class Fail extends Error {}
 
 export type Verdict = "approve" | "request_changes" | "comment";
 export type Target = { repo: string; base: string; head: string; url?: string; platform?: string; title: string; body: string; label: string };
-/** `id` is only set on a comment something points at: the one a finding decision (block or comment) wrote. */
+/** `id` is only set on a comment something points at: the one a finding's block or comment action wrote. */
 export type Comment = { id?: string; hunk: string | null; side: "new" | "old"; line: number | null; text: string; at: string };
 /**
- * What the reader decided about one finding. `block` and `comment` made a line comment of the
- * reader's own (`comment` is its id); `dismissed` is "not an issue", with an optional reason that
- * stays in the document and is never posted. A stored `ignored` (an older document) reads as `dismissed`.
+ * The reader's action on one finding, when they chose one (a finding without one is on its default, see
+ * triage.ts). `block` and `comment` made a line comment of the reader's own (`comment` is its id); `ignore`
+ * leaves the finding as it is, with an optional private note (`reason`) that stays in the document and is
+ * never posted. A stored `dismissed` or `ignored` (older documents) reads as `ignore`.
  */
-export type DecisionKind = "block" | "comment" | "dismissed";
+export type DecisionKind = "block" | "comment" | "ignore";
 export type Decision = { kind: DecisionKind; reason?: string; comment?: string };
 /** Finding id to decision. */
 export type Decisions = Record<string, Decision>;
 /**
  * `revealed` and `decisions` are optional so older documents load unchanged: chapters (by first hunk) whose findings were
- * shown before being read, and the reader's decision per finding. A document's legacy `dismissals` are read as decisions.
+ * shown before being read, and the action the reader chose per finding. A document's legacy `dismissals` are read as ignore.
  */
 export type Human = { comments: Comment[]; visited: string[]; decisions?: Decisions; revealed?: string[]; verdict?: Verdict };
 /**
@@ -63,7 +64,7 @@ const sha = (v: unknown) => typeof v === "string" && /^([0-9a-f]{40}|[0-9a-f]{64
 const side = (v: unknown): "new" | "old" => v === "old" ? "old" : "new";
 const VERDICTS = new Set<Verdict>(["approve", "request_changes", "comment"]);
 const STATUSES = new Set<Finding["status"]>(["upheld", "withdrawn", "unrefuted"]);
-const KINDS = new Set<string>(["block", "comment", "dismissed", "ignored"]);
+const KINDS = new Set<string>(["block", "comment", "ignore", "dismissed", "ignored"]);
 
 /** A document from a file, stdin or the store. Refuses only what cannot be a review at all: another schema, or no commits to anchor on. */
 export function parseDocument(input: unknown): Doc {
@@ -98,7 +99,7 @@ export function parseDocument(input: unknown): Doc {
     ids.add(id);
     findings.push({
       id, source: str(f.source, 40) || "unknown", hunk: f.hunk, side: side(f.side), line,
-      severity: SEVERITIES.has(f.severity as Severity) ? f.severity as Severity : "warn", kind: str(f.kind, 30).toLowerCase() || "finding",
+      severity: severityOf(f.severity), kind: str(f.kind, 30).toLowerCase() || "finding",
       // A producer's title is held to 12 words like the critic's; one it did not give is derived on display.
       ...(title ? { title } : {}),
       claim, evidence: str(f.evidence, 500), status: STATUSES.has(f.status as Finding["status"]) ? f.status as Finding["status"] : "unrefuted",
@@ -124,8 +125,8 @@ export function parseDocument(input: unknown): Doc {
   const decisions: Decisions = {};
   for (const [id, v] of Object.entries(isObj(h.decisions) ? h.decisions : {})) {
     if (!ids.has(id) || !isObj(v) || !KINDS.has(v.kind as string)) continue;
-    const kind: DecisionKind = v.kind === "ignored" ? "dismissed" : v.kind as DecisionKind, reason = v.kind === "dismissed" ? str(v.reason, 200) : "";
-    decisions[id] = { kind, ...(reason && kind === "dismissed" ? { reason } : {}), ...(typeof v.comment === "string" && cids.has(v.comment) && (kind === "block" || kind === "comment") ? { comment: v.comment } : {}) };
+    const kind: DecisionKind = v.kind === "ignored" || v.kind === "dismissed" ? "ignore" : v.kind as DecisionKind, reason = kind === "ignore" ? str(v.reason, 200) : "";
+    decisions[id] = { kind, ...(reason ? { reason } : {}), ...(typeof v.comment === "string" && cids.has(v.comment) && (kind === "block" || kind === "comment") ? { comment: v.comment } : {}) };
   }
   const all = withLegacy(decisions, arr(h.dismissals).map(String).filter((d) => ids.has(d)));
   if (Object.keys(all).length) human.decisions = all;
@@ -261,7 +262,7 @@ export function suggestions(doc: Doc, files: FileDiff[]): { doc: Doc; suggested?
     while (ids.has(id)) id = `comment-${++n}`;
     ids.add(id);
     findings.push({
-      id, source: by, hunk, side: c.side, line: c.line ?? 0, severity: "warn", kind: "comment",
+      id, source: by, hunk, side: c.side, line: c.line ?? 0, severity: "medium", kind: "comment",
       claim: clip(c.text, 300), evidence: c.hunk ? "A comment from an imported review." : "A comment on the whole change, from an imported review.", status: "unrefuted",
     });
   }

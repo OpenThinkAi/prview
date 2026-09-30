@@ -91,7 +91,7 @@ test("fencing contract: a hostile PR still yields the planted finding, upheld, t
   expect(errors).toEqual([]);
   expect(doc.plan.by).toBe("guide");
   expect(doc.plan.chapters.map((c) => c.title)).toEqual(["Handler"]);
-  expect(doc.findings.map((f) => [f.line, f.severity, f.kind, f.status])).toEqual([[3, "blocking", "security", "upheld"]]);
+  expect(doc.findings.map((f) => [f.line, f.severity, f.kind, f.status])).toEqual([[3, "high", "security", "upheld"]]);
   expect(doc.findings[0]!.refute).toContain("(cites n3)");
   // Every role was asked, every system prompt carried the data rule, and no prompt left the injection outside a fence.
   expect(new Set(calls.map((c) => c.system))).toEqual(new Set([GUIDE_SYSTEM, CRITIC_SYSTEM, REFUTE_SYSTEM]));
@@ -139,7 +139,7 @@ test("fence: zero-width, bidi, tag and full-width spellings of the tag are caugh
 test("every prompt fences what the PR controls: title, body, paths, hunks, file text, and what a model wrote about them", () => {
   const h = hunks[0]!;
   const chapter = { title: `Handler ${INJECTION}`, intent: INJECTION, why: INJECTION, hunks: [h.id] };
-  const f: Finding = { id: "1", source: "critic", hunk: h.id, side: "new", line: 3, severity: "blocking", kind: `security ${INJECTION}`, claim: INJECTION, evidence: INJECTION, status: "unrefuted" };
+  const f: Finding = { id: "1", source: "critic", hunk: h.id, side: "new", line: 3, severity: "high", kind: `security ${INJECTION}`, claim: INJECTION, evidence: INJECTION, status: "unrefuted" };
   const prompts = [
     guidePrompt(target, hunks, []),
     criticPrompt(target, chapter, hunks),
@@ -157,7 +157,7 @@ test("every prompt fences what the PR controls: title, body, paths, hunks, file 
 
 test("refute citations: only lines the prompt numbered count; bare numbers mean the new file; junk is ignored", () => {
   const h = hunks[0]!;
-  const f: Finding = { id: "1", source: "critic", hunk: h.id, side: "new", line: 3, severity: "blocking", kind: "security", claim: "eval", evidence: "", status: "unrefuted" };
+  const f: Finding = { id: "1", source: "critic", hunk: h.id, side: "new", line: 3, severity: "high", kind: "security", claim: "eval", evidence: "", status: "unrefuted" };
   const shown = refutable(f, h.hunk!, FILE);
   expect([...shown].sort()).toEqual(["n1", "n2", "n3", "n4", "n5", "n6", "o1", "o2", "o3"]);
   const w = (lines: unknown) => applyRefute(f, JSON.stringify({ verdict: "withdraw", reason: "handled", lines }), shown);
@@ -171,13 +171,13 @@ test("refute citations: only lines the prompt numbered count; bare numbers mean 
   // Without the set of shown lines, no citation can be checked, so none is trusted.
   expect(applyRefute(f, JSON.stringify({ verdict: "withdraw", reason: "handled", lines: ["n3"] })).status).toBe("upheld");
   // A downgrade needs a shown line too, or the original severity stands; uphold needs none.
-  const d = (lines: unknown, sev: Finding["severity"] = "blocking") => applyRefute({ ...f, severity: sev }, JSON.stringify({ verdict: "downgrade", reason: "minor", lines }), shown);
-  expect(d(["n3"])).toMatchObject({ status: "upheld", severity: "warn", refute: "minor (cites n3)" });
-  expect(d(["n3"], "warn")).toMatchObject({ severity: "nit" });
-  expect(d(undefined)).toMatchObject({ status: "upheld", severity: "blocking", refute: "Downgrade cited no line, so the severity stands. minor" });
-  expect(d(["n999"])).toMatchObject({ severity: "blocking" });
-  expect(applyRefute(f, JSON.stringify({ verdict: "downgrade", reason: "minor", lines: ["n3"] })).severity).toBe("blocking"); // no shown set: nothing trusted
-  expect(applyRefute(f, JSON.stringify({ verdict: "uphold", reason: "real" }), shown)).toMatchObject({ status: "upheld", severity: "blocking", refute: "real" });
+  const d = (lines: unknown, sev: Finding["severity"] = "high") => applyRefute({ ...f, severity: sev }, JSON.stringify({ verdict: "downgrade", reason: "minor", lines }), shown);
+  expect(d(["n3"])).toMatchObject({ status: "upheld", severity: "medium", refute: "minor (cites n3)" });
+  expect(d(["n3"], "medium")).toMatchObject({ severity: "low" });
+  expect(d(undefined)).toMatchObject({ status: "upheld", severity: "high", refute: "Downgrade cited no line, so the severity stands. minor" });
+  expect(d(["n999"])).toMatchObject({ severity: "high" });
+  expect(applyRefute(f, JSON.stringify({ verdict: "downgrade", reason: "minor", lines: ["n3"] })).severity).toBe("high"); // no shown set: nothing trusted
+  expect(applyRefute(f, JSON.stringify({ verdict: "uphold", reason: "real" }), shown)).toMatchObject({ status: "upheld", severity: "high", refute: "real" });
   // A long reason still fits the document's 300 characters with its citation.
   expect(w(["n3"]).refute!.length).toBeLessThanOrEqual(300);
   expect(applyRefute(f, JSON.stringify({ verdict: "withdraw", reason: "x".repeat(400), lines: ["n1", "n2", "n3", "n4", "n5", "n6", "o1"] }), shown).refute!.length).toBeLessThanOrEqual(300);

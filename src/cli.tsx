@@ -4,7 +4,7 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { all, build, preparedBy, checkHead, exportDocument, Fail, filesOf, importDocument, load, remove, reopen, repoFor, writeup, type BuildOpts, type Review } from "./build.ts";
-import { ConfigError, configPath, loadConfig, realLookups, resolveModel, ROLES } from "./config.ts";
+import { ConfigError, configPath, loadConfig, realLookups, resolveModel, ROLES, type Config } from "./config.ts";
 import { describeKeymap, installKeymap } from "./keys.ts";
 import { probe } from "./llm.ts";
 import { besideIn, editor, editorArgs } from "./editor.ts";
@@ -31,7 +31,7 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   Keys (the defaults; [keys] in the config remaps them, prview keys prints yours). Arrows move; the prefixes
   a (AI), f (filter), v (view) and g (go to) hold the rest, and the key panel (bottom right, always there) lists
   the keys for where you are, or a prefix's second keys once it is pressed. Esc backs out of anything.
-  The screen: a status area (title, then PR, branches, read, findings to decide, comments, suggested verdict), the
+  The screen: a status area (title, then PR, branches, read, findings by severity, comments, suggested verdict), the
   table of contents and the code, and a bottom panel: the content area (the summary, a chapter's why, a finding's
   detail, docs results, answers, prompts) beside the key panel. Below 60x20 it asks for a larger terminal.
     A review opens in the table of contents, on the first block; the content area shows its chapter's intent and why.
@@ -41,8 +41,8 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
     Code: ↓/↑ (j/k) line, running on into the next block   ⇧↓/⇧↑ (J/K) chapter
       → (l) open the finding on this line   ← (h) back to the table of contents   Enter your own finding on this line
     Tab into the content area to scroll it, and back
-    s submit: pick a verdict (Enter takes request changes when anything is blocking), preview the review, the
-      findings still undecided and what submit will do, Enter. Findings post only as the b/c comments you saved.
+    s submit: pick a verdict (Enter takes request changes when you blocked on a finding), preview every finding
+      with its action, the write-up and what submit will do, Enter. Findings post only as the b/c comments you saved.
       The document is written to $PRVIEW_HOME/submitted/<slug>.json (+ .md), then posted through the adapter
       for its target's platform (github: gh api), then, if the document declares on_submit, its command runs
       only if you press x in the preview to allow it (shown in full first; no shell); v in the preview adds
@@ -57,12 +57,14 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
     g then: f/F next/previous finding (wrapping) · h/H next/previous by severity · g/e top/end of the file
             · <digits> Enter that line of this file (these land in the code)
             · c <digits> Enter that chapter's first block in the table of contents
-    Inside a finding (→ or g f opens one; each decision moves on to the next undecided one, and its header shows
-    how many are decided, e.g. 3/9 decided):
-      b block on it: your line comment at the finding's line, prefilled with its title (or your comment);
+    Findings are high, medium or low severity, and each has an action: block, comment or ignore. Until you pick
+    one it is its severity's default ([defaults] in the config: high = "block", medium and low = "comment"), shown
+    as "(default)"; a finding the second look (refute) dropped is shown too, ignored by default, with its reason.
+    Inside a finding (→ or g f opens one; its detail fills the content area, a short box stays on its line):
+      b block on it: your line comment at the finding's line, prefilled with its text (or your comment);
         edit, Enter saves (ctrl-u clears the line, Esc cancels); submit then defaults to request changes
       c comment: the same, not blocking   i ignore, with an optional private note (never posted)
-      x or ← close it without deciding   y copy it   PgUp/PgDn page it   deciding again changes the decision
+      pressing b, c or i again changes the action   x or ← close it   y copy it   PgUp/PgDn page it
     Coming with later changes (they say so when pressed): \\ settings, a s drafts, f h/m/a filters.
 
   prview prepare <target>     build it (fetch, guide, critic) without opening the screen; open it later
@@ -79,16 +81,16 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
                               c/b adopt one as your own comment to edit, i ignores it. Its verdict is shown
                               in the opening summary, never picked for you; nothing of it is posted as is.
   prview import --mine <file | ->
-                              restore your own export: comments, decisions and verdict kept as they were
+                              restore your own export: comments, actions and verdict kept as they were
   prview show [--mine] <file | ->
                               import a document, then open it
   prview done <name>          remove it (worktree, fetched refs, state)`;
 
-async function review(r: Review, blind: boolean, dryRun = false): Promise<void> {
+async function review(r: Review, cfg: Config, blind: boolean, dryRun = false): Promise<void> {
   checkHead(r);
   const files = filesOf(r);
   for (;;) {
-    const o = await show(r, files, besideIn(r.worktree), blind, dryRun);
+    const o = await show(r, files, besideIn(r.worktree), blind, dryRun, cfg.defaults);
     if (o.kind === "edit") {
       const cmd = editor();
       const p = Bun.spawnSync(editorArgs(cmd, o.path, o.line), { cwd: r.worktree, stdio: ["inherit", "inherit", "inherit"] });
@@ -96,8 +98,8 @@ async function review(r: Review, blind: boolean, dryRun = false): Promise<void> 
       continue;
     }
     if (o.kind === "submit") {
-      const res = submit(r, files, { allowHook: o.hook, coverage: o.coverage, dryRun });
-      process.stdout.write((dryRun ? "" : writeup(r.doc, files) + "\n") + `${res.summary}\n`);
+      const res = submit(r, files, { allowHook: o.hook, coverage: o.coverage, dryRun, defaults: cfg.defaults });
+      process.stdout.write((dryRun ? "" : writeup(r.doc, files, cfg.defaults) + "\n") + `${res.summary}\n`);
       if (!res.ok) process.exitCode = 1;
     }
     return;
@@ -115,6 +117,12 @@ async function models(): Promise<void> {
   }));
   for (const r of [["name", "kind", "endpoint", "model", "status"], ...rows]) console.log(r.join("\t"));
   console.log(`roles: ${ROLES.map((r) => `${r}=${cfg.roles[r] ?? "claude"}`).join(" ")}`);
+}
+
+/** `3 findings`, and how many of them the second look dropped (they open as ignored). */
+function findingCount(r: Review): string {
+  const n = r.doc.findings.length, dropped = r.doc.findings.filter((f) => f.status === "withdrawn").length;
+  return `${n} finding${n === 1 ? "" : "s"}${dropped ? ` (${dropped} dropped by the second look, ignored by default)` : ""}`;
 }
 
 /** What opens the screen reads the config first, so a bad [keys] stops prview before any model has been called. */
@@ -160,17 +168,17 @@ async function main(args: string[]): Promise<void> {
     case "models": return models();
     case "keys": console.log(describeKeymap(loadConfig().keymap)); return;
     case "list": console.log(all().map(({ slug, doc: { target: t, human: h } }) => `${slug}\t${t.label}\t${h.visited.length} read · ${h.comments.length} notes\t${t.title}`).join("\n")); return;
-    case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r.doc, filesOf(r))); const by = preparedBy(r.ai?.runs); if (by) process.stderr.write(`${by}\n`); return; }
+    case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r.doc, filesOf(r), loadConfig().defaults)); const by = preparedBy(r.ai?.runs); if (by) process.stderr.write(`${by}\n`); return; }
     case "export": { if (!a1) throw new Fail("usage: prview export <name>"); process.stdout.write(exportDocument(load(a1))); return; }
-    case "import": { const r = importDocument(await doc(), opts.repo, opts.mine); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
-    case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); const cfg = start(); return review(importDocument(await doc(), opts.repo, opts.mine), opts.blind ?? cfg.blind, opts.dryRun); }
+    case "import": { const r = importDocument(await doc(), opts.repo, opts.mine); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${findingCount(r)}. Open it with: prview open ${r.slug}`); return; }
+    case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); const cfg = start(); return review(importDocument(await doc(), opts.repo, opts.mine), cfg, opts.blind ?? cfg.blind, opts.dryRun); }
     case "done": { if (!a1) throw new Fail("usage: prview done <name>"); console.log(remove(a1)); return; }
-    case "open": { if (!a1) throw new Fail("usage: prview open <name> (prview list)"); const cfg = start(); return review(await reopen(a1, opts), opts.blind ?? cfg.blind, opts.dryRun); }
-    case "prepare": { const r = await build(repoFor(a1, opts.repo), a1, opts); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
+    case "open": { if (!a1) throw new Fail("usage: prview open <name> (prview list)"); const cfg = start(); return review(await reopen(a1, opts), cfg, opts.blind ?? cfg.blind, opts.dryRun); }
+    case "prepare": { const r = await build(repoFor(a1, opts.repo), a1, opts); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${findingCount(r)}. Open it with: prview open ${r.slug}`); return; }
   }
   const cfg = start();
   if (!process.stdout.isTTY) throw new Fail("prview needs a terminal");
-  return review(await build(repoFor(cmd, opts.repo), cmd, opts), opts.blind ?? cfg.blind, opts.dryRun);
+  return review(await build(repoFor(cmd, opts.repo), cmd, opts), cfg, opts.blind ?? cfg.blind, opts.dryRun);
 }
 
 main(process.argv.slice(2)).then(() => process.exit(Number(process.exitCode ?? 0)), (e) => {

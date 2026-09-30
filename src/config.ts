@@ -7,6 +7,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { effectiveKeys, KeysError, type Binding, type Keymap } from "./keys.ts";
+import { ACTION_KINDS, DEFAULTS, type Defaults } from "./triage.ts";
+import type { DecisionKind } from "./document.ts";
+import type { Severity } from "./guide.ts";
 
 export const ROLES = ["guide", "critic", "refute", "ask"] as const;
 export type Role = (typeof ROLES)[number];
@@ -14,7 +17,8 @@ export const KINDS = ["claude-cli", "anthropic", "openai-compatible"] as const;
 export type Kind = (typeof KINDS)[number];
 
 export type ModelDef = { name: string; kind: Kind; endpoint?: string; model?: string; keyEnv?: string; keyKeychain?: string };
-export type Config = { models: Record<string, ModelDef>; roles: Partial<Record<Role, string>>; /** Blind first pass: findings stay hidden in a chapter until it has been read. */ blind: boolean; /** The default bindings with the [keys] table laid over them, already validated. */ keymap: Keymap; path: string | null };
+export type Config = { models: Record<string, ModelDef>; roles: Partial<Record<Role, string>>; /** Blind first pass: findings stay hidden in a chapter until it has been read. */ blind: boolean; /** The default bindings with the [keys] table laid over them, already validated. */ keymap: Keymap;
+  /** The action each finding starts with, by severity: DEFAULTS with the [defaults] table laid over it. */ defaults: Defaults; path: string | null };
 /** A model whose credential has been looked up and is ready to call. */
 export type Resolved = { def: ModelDef; key?: string };
 export type Lookups = { env: Record<string, string | undefined>; keychain: (service: string) => string | undefined };
@@ -187,7 +191,14 @@ export function parseConfig(text: string, path: string | null = null): Config {
   }
   let keymap: Keymap;
   try { keymap = effectiveKeys(overrides); } catch (e) { throw e instanceof KeysError ? new ConfigError(e.message) : e; }
-  return { models, roles, blind: t.blind === true, keymap, path };
+  // [defaults]: high = "block", medium = "comment", low = "comment"; a severity left out keeps its built-in default.
+  const defaults: Defaults = { ...DEFAULTS };
+  for (const [sev, v] of Object.entries(table("defaults"))) {
+    if (!(sev in DEFAULTS)) throw new ConfigError(`[defaults]: ${sev} is not a severity; use high, medium or low`);
+    if (typeof v !== "string" || !(ACTION_KINDS as readonly string[]).includes(v)) throw new ConfigError(`[defaults]: ${sev} must be one of ${ACTION_KINDS.map((k) => `"${k}"`).join(", ")}`);
+    defaults[sev as Severity] = v as DecisionKind;
+  }
+  return { models, roles, blind: t.blind === true, keymap, defaults, path };
 }
 
 /** The user's config, or the built-in (claude -p for everything) when there is no file. */

@@ -174,13 +174,14 @@ test("github: refused before sending when GitHub would refuse it", () => {
   expect(() => github.post(t, postingOf("approve", [], () => undefined), down, "/wt")).toThrow("gh api failed (exit 1): gh: HTTP 404");
 });
 
-test("a finding posts only as the comment its block or comment decision wrote; ignored and not-an-issue post nothing; coverage only when chosen", () => {
-  const f = { id: "1", source: "stamp:security", hunk: h1!.id, side: "new" as const, line: 11, severity: "blocking" as const, kind: "bug", claim: "This can overflow when the count is zero.", evidence: "see the loop", status: "upheld" as const };
+test("a finding posts only as the comment its block or comment action wrote; ignored ones and defaults post nothing; coverage only when chosen", () => {
+  const f = { id: "1", source: "stamp:security", hunk: h1!.id, side: "new" as const, line: 11, severity: "high" as const, kind: "bug", claim: "This can overflow when the count is zero.", evidence: "see the loop", status: "upheld" as const };
   let human: Doc["human"] = { comments: [], visited: [h1!.id], verdict: "request_changes" };
   human = decide(human, f, "block", { text: "Guard the zero count here", at: "now" });
-  human = decide(human, { ...f, id: "2", line: 12 }, "dismissed", { at: "now" });
-  human = decide(human, { ...f, id: "3", line: 12 }, "dismissed", { reason: "the critic misread the loop", at: "now" });
-  const r = review({ findings: [f, { ...f, id: "2", line: 12 }, { ...f, id: "3", line: 12 }], human }, { url: PR, platform: "github" });
+  human = decide(human, { ...f, id: "2", line: 12 }, "ignore", { at: "now" });
+  human = decide(human, { ...f, id: "3", line: 12 }, "ignore", { reason: "the critic misread the loop", at: "now" });
+  // "4" is left on its default action (block, it is high): with no comment of the reader's, it posts nothing.
+  const r = review({ findings: [f, { ...f, id: "2", line: 12 }, { ...f, id: "3", line: 12 }, { ...f, id: "4", line: 12 }], human }, { url: PR, platform: "github" });
   expect(planOf(r, files).posting).toEqual({ verdict: "request_changes", body: "", comments: [{ path: "src/a.rs", side: "new", line: 11, text: "Guard the zero count here" }] });
   const plan = planOf(r, files, { coverage: true });
   expect(plan.posting!.coverage).toBe("I read 1 of 1 hunk.");
@@ -188,7 +189,7 @@ test("a finding posts only as the comment its block or comment decision wrote; i
   github.post(r.doc.target, plan.posting!, run, "/wt");
   expect(calls[1]!.body.comments).toEqual([{ path: "src/a.rs", line: 11, side: "RIGHT", body: "Guard the zero count here" }]);
   // Nothing but the reader's words: no source, claim, evidence, reason or comment id reaches GitHub.
-  expect(JSON.stringify(calls.map((c) => c.body))).not.toMatch(/stamp|security|prview|critic|evidence|see the loop|overflow|misread|"c1"|blocking/i);
+  expect(JSON.stringify(calls.map((c) => c.body))).not.toMatch(/stamp|security|prview|critic|evidence|see the loop|overflow|misread|"c1"|blocking|default|high/i);
   expect(calls[2]!.body.body).toBe("I read 1 of 1 hunk.");
 });
 
@@ -273,7 +274,7 @@ test("the preview spells out all three steps, the exact command, and whether it 
   expect(text).toContain(`     notify --file ${p.hookFile}`);
   expect(text).toContain("     stdout to /tmp/x y");
   expect(text).toContain("REFUSED: the redirect to /tmp/x y would write outside the worktree");
-  expect(text).toContain("without the reasons you gave");
+  expect(text).toContain("without your private ignore notes");
   expect(text).toContain(`in ${r.worktree}, no shell, stopped after 60s.`);
   const ok = describe(planOf(review({ on_submit: { run: ["notify", "{file}", ">", "out.txt"] } }), files), false);
   expect(ok).toContain("[ ] Not allowed");
@@ -317,13 +318,13 @@ test("a link planted by the hook itself is caught before stdout is written throu
   expect(existsSync(join(outside, "stolen"))).toBe(false);
 });
 
-test("the hook's copy of the document has the not-an-issue reasons removed; the kept document keeps them", () => {
-  const r = review({ on_submit: { run: ["cat", "{file}", ">", "copy.json"] }, findings: [{ id: "f1", source: "s", hunk: h1!.id, side: "new", line: 11, severity: "warn", kind: "bug", claim: "c", evidence: "", status: "upheld" }], human: { comments: [], visited: [], decisions: { f1: { kind: "dismissed", reason: "SECRET-REASON" } }, verdict: "comment" } });
+test("the hook's copy of the document has the private ignore notes removed; the kept document keeps them", () => {
+  const r = review({ on_submit: { run: ["cat", "{file}", ">", "copy.json"] }, findings: [{ id: "f1", source: "s", hunk: h1!.id, side: "new", line: 11, severity: "medium", kind: "bug", claim: "c", evidence: "", status: "upheld" }], human: { comments: [], visited: [], decisions: { f1: { kind: "ignore", reason: "SECRET-REASON" } }, verdict: "comment" } });
   const res = submit(r, files, { allowHook: true, run: noNet });
   expect(res.ok).toBe(true);
   const seen = readFileSync(join(r.worktree, "copy.json"), "utf8");
   expect(seen).not.toContain("SECRET-REASON");
-  expect(parseDocument(seen).human.decisions!.f1!.kind).toBe("dismissed");
+  expect(parseDocument(seen).human.decisions!.f1!.kind).toBe("ignore");
   expect(readFileSync(res.submission.file, "utf8")).toContain("SECRET-REASON");
-  expect(describe(planOf(r, files), true)).toContain("without the reasons you gave");
+  expect(describe(planOf(r, files), true)).toContain("without your private ignore notes");
 });

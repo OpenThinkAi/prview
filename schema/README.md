@@ -16,7 +16,7 @@ wrote a document; the only trace of a producer is the `source` on each finding.
               "title": "The PR title" },
   "findings": [
     { "id": "1", "source": "mylinter", "hunk": "src/auth.ts@40:42", "side": "new", "line": 57,
-      "severity": "blocking", "kind": "security", "title": "Token is logged on auth failure",
+      "severity": "high", "kind": "security", "title": "Token is logged on auth failure",
       "claim": "The token is logged on failure.",
       "evidence": "Line 57 passes the whole request, headers included, to the logger." }
   ]
@@ -32,7 +32,9 @@ wrote a document; the only trace of a producer is the `source` on each finding.
 - **`line`** is a line number in the new file (`side: "new"`) or the old one (`side: "old"`).
   One the hunk does not show is moved to the hunk's first line; a finding on a hunk that is not
   in the diff is dropped.
-- **`source`** is your tool's name, short. It is shown next to the finding (`▲ mylinter · security · blocking`)
+- **`severity`** is `high`, `medium` or `low` (the older `blocking`, `warn` and `nit` are still read, as those).
+  It sets the finding's default action for the reader: high blocks, medium and low comment.
+- **`source`** is your tool's name, short. It is shown next to the finding (`▲ mylinter · security · high · block`)
   and used to recognise a finding you already sent: importing the same finding twice (same
   source, hunk, side, line and claim) keeps one.
 - **`id`** only has to be unique within your document; prview renames one that clashes with a
@@ -47,7 +49,9 @@ wrote a document; the only trace of a producer is the `source` on each finding.
   (lock files, whitespace, pure moves) itself, by rule.
 - **`on_submit`**: `{ "run": ["argv", "..."] }` (or one string, `"cat {file} > /tmp/x"`), a command
   you want run once the human submits, e.g. to take a copy of the finished review. See below.
-- **`human`**: the reader's comments, dismissals, coverage and verdict. prview writes this;
+- **`status`**: `withdrawn` for a finding your own second look dropped. It is still shown, ignored by default,
+  with `refute` as the reason, so the reader can disagree.
+- **`human`**: the reader's comments, actions on findings, coverage and verdict. prview writes this;
   a producer normally leaves it out. Whatever a producer puts here is never taken as the reader's
   own, since anything posted is the reader's words: each comment becomes a finding (kind `comment`,
   its text as the claim, anchored at its hunk and line, or at the diff's first hunk when it has
