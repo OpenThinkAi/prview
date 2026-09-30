@@ -98,22 +98,105 @@ test("what is posted is the human's words only: verdict, summary as the body, li
   expect(adapterFor(undefined)).toBeUndefined();
 });
 
-test("github: one review through gh api with the payload on stdin; refused before sending when GitHub would refuse it", () => {
-  const t = review({}, { url: PR, platform: "github" }).doc.target;
-  const calls: { argv: string[]; stdin?: string }[] = [];
-  const ok: Runner = (argv, o) => { calls.push({ argv, stdin: o.stdin }); return { exit: 0, stdout: JSON.stringify({ html_url: `${PR}#pullrequestreview-1` }), stderr: "" }; };
-  const p = postingOf("comment", [{ hunk: h1!.id, side: "old", line: 11, text: "was this used?", at: "now" }], () => "src/a.rs");
-  expect(github.post(t, p, ok, "/wt")).toEqual({ url: `${PR}#pullrequestreview-1` });
-  expect(calls[0]!.argv).toEqual(["gh", "api", "--method", "POST", "repos/o/r/pulls/7/reviews", "--input", "-"]);
-  expect(JSON.parse(calls[0]!.stdin!)).toEqual({ commit_id: B, event: "COMMENT", body: "", comments: [{ path: "src/a.rs", line: 11, side: "LEFT", body: "was this used?" }] });
-  expect(github.describe(t, p)).toContain("posts to https://github.com/o/r/pull/7");
+// A fake gh: answers the calls the adapter makes, and remembers them.
+type Call = { argv: string[]; body?: any };
+function fakeGh(head = B, over: { submit?: { exit: number; stdout: string; stderr: string } } = {}) {
+  const calls: Call[] = [];
+  const run: Runner = (argv, o) => {
+    const body = o.stdin === undefined ? undefined : JSON.parse(o.stdin);
+    calls.push({ argv, body });
+    const path = argv[4]!, method = argv[3]!;
+    if (method === "GET") return { exit: 0, stdout: JSON.stringify({ head: { sha: head } }), stderr: "" };
+    if (path.endsWith("/reviews")) return { exit: 0, stdout: JSON.stringify({ id: 99, state: "PENDING" }), stderr: "" };
+    if (path.endsWith("/events")) return over.submit ?? { exit: 0, stdout: JSON.stringify({ html_url: `${PR}#pullrequestreview-99` }), stderr: "" };
+    return { exit: 0, stdout: "{}", stderr: "" };
+  };
+  return { calls, run };
+}
 
+test("github: checks the head, makes a pending review with the line comments, then submits it with the verdict and summary", () => {
+  const t = review({}, { url: PR, platform: "github" }).doc.target;
+  const { calls, run } = fakeGh();
+  const p = postingOf("comment", [
+    { hunk: h1!.id, side: "old", line: 11, text: "was this used?", at: "now" },
+    { hunk: h1!.id, side: "new", line: 12, text: "why two?", at: "now" },
+    { hunk: null, side: "new", line: null, text: "Mostly fine.", at: "now" },
+  ], () => "src/a.rs");
+  expect(github.post(t, p, run, "/wt")).toEqual({ url: `${PR}#pullrequestreview-99` });
+  expect(calls.map((c) => c.argv.slice(0, 5).join(" "))).toEqual([
+    "gh api --method GET repos/o/r/pulls/7",
+    "gh api --method POST repos/o/r/pulls/7/reviews",
+    "gh api --method POST repos/o/r/pulls/7/reviews/99/events",
+  ]);
+  // No event on the create: GitHub keeps it pending. Sides: old is LEFT, new is RIGHT. Anchored on the document's head.
+  expect(calls[1]!.body).toEqual({ commit_id: B, comments: [
+    { path: "src/a.rs", line: 11, side: "LEFT", body: "was this used?" },
+    { path: "src/a.rs", line: 12, side: "RIGHT", body: "why two?" },
+  ] });
+  expect(calls[2]!.body).toEqual({ event: "COMMENT", body: "Mostly fine." });
+  expect(github.describe(t, p)).toContain("posts to https://github.com/o/r/pull/7");
+});
+
+test("github: every verdict maps to its review event", () => {
+  const t = review({}, { url: PR, platform: "github" }).doc.target;
+  for (const [verdict, event] of [["approve", "APPROVE"], ["request_changes", "REQUEST_CHANGES"], ["comment", "COMMENT"]] as const) {
+    const { calls, run } = fakeGh();
+    github.post(t, postingOf(verdict, [{ hunk: null, side: "new", line: null, text: "words", at: "now" }], () => undefined), run, "/wt");
+    expect(calls[2]!.body.event).toBe(event);
+  }
+});
+
+test("github: refuses when the pull request has moved off the reviewed head; nothing is created", () => {
+  const t = review({}, { url: PR, platform: "github" }).doc.target;
+  const { calls, run } = fakeGh("c".repeat(40));
+  expect(() => github.post(t, postingOf("approve", [], () => undefined), run, "/wt")).toThrow("head is now cccccccc, but this review is of bbbbbbbb");
+  expect(calls).toHaveLength(1); // only the GET
+});
+
+test("github: a failed submit deletes the pending review rather than leaving it on the PR", () => {
+  const t = review({}, { url: PR, platform: "github" }).doc.target;
+  const { calls, run } = fakeGh(B, { submit: { exit: 1, stdout: JSON.stringify({ message: "Unprocessable Entity", errors: ["Can not approve your own pull request"] }), stderr: "gh: HTTP 422" } });
+  expect(() => github.post(t, postingOf("approve", [], () => undefined), run, "/wt")).toThrow("gh api failed (exit 1): Unprocessable Entity: Can not approve your own pull request");
+  expect(calls.at(-1)!.argv.slice(3, 5)).toEqual(["DELETE", "repos/o/r/pulls/7/reviews/99"]);
+});
+
+test("github: refused before sending when GitHub would refuse it", () => {
+  const t = review({}, { url: PR, platform: "github" }).doc.target;
   const silent = postingOf("request_changes", [], () => undefined);
   expect(() => github.post(t, silent, noNet, "/wt")).toThrow("needs a summary comment (N)");
   expect(github.describe(t, silent)).toStartWith("not posted:");
-  expect(() => github.post({ ...t, url: undefined }, p, noNet, "/wt")).toThrow("no GitHub pull request URL");
-  const refused: Runner = () => ({ exit: 1, stdout: JSON.stringify({ message: "Unprocessable Entity", errors: ["Can not approve your own pull request"] }), stderr: "gh: HTTP 422" });
-  expect(() => github.post(t, postingOf("approve", [], () => undefined), refused, "/wt")).toThrow("gh api failed (exit 1): Unprocessable Entity: Can not approve your own pull request");
+  // A coverage line is not words of your own.
+  expect(() => github.post(t, postingOf("comment", [], () => undefined, { coverage: "I read 1 of 2 hunks." }), noNet, "/wt")).toThrow("needs a summary comment");
+  expect(() => github.post(t, postingOf("approve", [], () => undefined, { coverage: "I read 1 of 2 hunks." }), noNet, "/wt")).toThrow("coverage line needs a summary comment");
+  expect(() => github.post({ ...t, url: undefined }, postingOf("approve", [], () => undefined), noNet, "/wt")).toThrow("no GitHub pull request URL");
+  const down: Runner = () => ({ exit: 1, stdout: "", stderr: "gh: HTTP 404" });
+  expect(() => github.post(t, postingOf("approve", [], () => undefined), down, "/wt")).toThrow("gh api failed (exit 1): gh: HTTP 404");
+});
+
+test("kept findings are posted only when chosen, as their claim alone; the coverage line only when chosen", () => {
+  const f = { id: "1", source: "stamp:security", hunk: h1!.id, side: "new" as const, line: 11, severity: "blocking" as const, kind: "bug", claim: "This can overflow when the count is zero.", evidence: "see the loop", status: "upheld" as const };
+  const gone = { ...f, id: "2", status: "withdrawn" as const };
+  const r = review({ findings: [f, gone, { ...f, id: "3", line: 12, claim: "dismissed one" }], human: { comments: [], dismissals: ["3"], visited: [h1!.id], verdict: "comment" } }, { url: PR, platform: "github" });
+  expect(planOf(r, files).posting).toEqual({ verdict: "comment", body: "", comments: [] });
+  // Even if asked for, a withdrawn or dismissed finding is not posted.
+  const plan = planOf(r, files, { findings: ["1", "2", "3"], coverage: true });
+  expect(plan.posting).toEqual({ verdict: "comment", body: "", coverage: "I read 1 of 1 hunk.", comments: [{ path: "src/a.rs", side: "new", line: 11, text: "This can overflow when the count is zero." }] });
+  const { calls, run } = fakeGh();
+  github.post(r.doc.target, plan.posting!, run, "/wt");
+  expect(JSON.stringify(calls.map((c) => c.body))).not.toMatch(/stamp|security|prview|critic|evidence|see the loop/i);
+  expect(calls[2]!.body.body).toBe("I read 1 of 1 hunk.");
+});
+
+test("dry run: prints the API calls, writes nothing, posts nothing, records nothing", () => {
+  const r = review({ human: { comments: [{ hunk: h1!.id, side: "old", line: 11, text: "was this used?", at: "now" }], dismissals: [], visited: [], verdict: "comment" } }, { url: PR, platform: "github" });
+  const res = submit(r, files, { allowHook: true, run: noNet, hook: noHook, dryRun: true });
+  expect(res.ok).toBe(true);
+  expect(res.summary).toContain("Dry run (Comment): nothing written or posted.");
+  expect(res.summary).toContain("gh api --method POST repos/o/r/pulls/7/reviews --input -");
+  expect(res.summary).toContain('"side": "LEFT"');
+  expect(res.summary).toContain("repos/o/r/pulls/7/reviews/<review id>/events");
+  expect(existsSync(join(tmp, "home", "submitted", `${r.slug}.json`))).toBe(false);
+  expect(r.doc.submissions).toBeUndefined();
 });
 
 test("no platform and no hook: submit writes the document and its markdown, and says where", () => {
@@ -162,9 +245,9 @@ test("a failing hook, a missing command, or a failed post is in the summary and 
   expect(gone.summary).toContain("on_submit FAILED (Executable not found");
   expect(existsSync(gone.submission.file)).toBe(true);
 
-  const posted = submit(review({}, { url: PR, platform: "github" }), files, { allowHook: false, run: () => ({ exit: 0, stdout: "{}", stderr: "" }) });
-  expect(posted.summary).toContain(`posted to ${PR}`);
-  expect(posted.submission.posted).toEqual({ platform: "github", ok: true, url: PR });
+  const posted = submit(review({}, { url: PR, platform: "github" }), files, { allowHook: false, run: fakeGh().run });
+  expect(posted.summary).toContain(`posted to ${PR}#pullrequestreview-99`);
+  expect(posted.submission.posted).toEqual({ platform: "github", ok: true, url: `${PR}#pullrequestreview-99` });
 });
 
 test("a hook that runs too long is stopped and reported as timed out", () => {

@@ -10,7 +10,7 @@ import { besideIn, editor, editorArgs } from "./editor.ts";
 import { show } from "./tui.tsx";
 import { submit } from "./submit.ts";
 
-const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [--context N] [--ai MODEL | --no-ai] [--samples N] [--blind | --no-blind] [--fresh]
+const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [--context N] [--ai MODEL | --no-ai] [--samples N] [--blind | --no-blind] [--fresh] [--dry-run]
   Opens the change in a full-screen review: a guide (a model) has ordered the hunks into chapters,
   core change first, tests last, and says what to verify in each; mechanical hunks (whitespace, lock
   files, pure moves, classified by rule) come last; a critic (a model) has raised findings, each
@@ -21,6 +21,7 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   head; the guide and findings are redone only when the head moved (or with --fresh).
   --blind hides findings in a chapter until you have visited every hunk in it (F reveals early, and the
   write-up says so); blind = true in the config makes that the default, --no-blind turns it off for a run.
+  --dry-run prints the API calls a submit would make and posts nothing (nothing is written or run either).
   --samples N runs the critic N times per chapter (default 2) and keeps what the runs agree on, with votes shown.
   Models are named in ~/.config/prview/config.toml ($PRVIEW_CONFIG) and assigned per role (guide, critic,
   refute, ask); with no config every role is claude -p on your subscription. --ai MODEL uses one named
@@ -32,10 +33,12 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
          e open the file here in your editor (inside tmux: in a split pane, this screen stays up)
          n comment on this line   N summary comment   w wrap long lines   H/L pan them sideways
          PgUp/PgDn (ctrl-u/ctrl-d) page an open box   below 100 columns the rail shows chapter numbers only
-         s submit: pick a verdict, preview the review and what submit will do, Enter. The document is
+         s submit: pick a verdict, say whether to add your kept findings as comments (y/N; only the claim is
+           posted, as your own comment), preview the review and what submit will do, Enter. The document is
            written to $PRVIEW_HOME/submitted/<slug>.json (+ .md), then posted through the adapter for its
            target's platform (github: gh api), then, if the document declares on_submit, its command runs
-           only if you press x in the preview to allow it (shown in full first; no shell)
+           only if you press x in the preview to allow it (shown in full first; no shell); v in the preview
+           adds a line saying how much you read to the posted summary (off by default)
          q quit (everything is kept)
 
   prview prepare <target>     build it (fetch, guide, critic) without opening the screen; open it later
@@ -49,11 +52,11 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   prview show <file | ->      import a document, then open it
   prview done <name>          remove it (worktree, fetched refs, state)`;
 
-async function review(r: Review, blind: boolean): Promise<void> {
+async function review(r: Review, blind: boolean, dryRun = false): Promise<void> {
   checkHead(r);
   const files = filesOf(r);
   for (;;) {
-    const o = await show(r, files, besideIn(r.worktree), blind);
+    const o = await show(r, files, besideIn(r.worktree), blind, dryRun);
     if (o.kind === "edit") {
       const cmd = editor();
       const p = Bun.spawnSync(editorArgs(cmd, o.path, o.line), { cwd: r.worktree, stdio: ["inherit", "inherit", "inherit"] });
@@ -61,8 +64,8 @@ async function review(r: Review, blind: boolean): Promise<void> {
       continue;
     }
     if (o.kind === "submit") {
-      const res = submit(r, files, { allowHook: o.hook });
-      process.stdout.write(writeup(r.doc, files) + `\n${res.summary}\n`);
+      const res = submit(r, files, { allowHook: o.hook, findings: o.findings, coverage: o.coverage, dryRun });
+      process.stdout.write((dryRun ? "" : writeup(r.doc, files) + "\n") + `${res.summary}\n`);
       if (!res.ok) process.exitCode = 1;
     }
     return;
@@ -83,7 +86,7 @@ async function models(): Promise<void> {
 }
 
 async function main(args: string[]): Promise<void> {
-  const opts: BuildOpts & { repo?: string; blind?: boolean } = { context: 3, fresh: false };
+  const opts: BuildOpts & { repo?: string; blind?: boolean; dryRun?: boolean } = { context: 3, fresh: false };
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
@@ -92,6 +95,7 @@ async function main(args: string[]): Promise<void> {
     else if (a === "--no-ai") opts.ai = null;
     else if (a === "--blind") opts.blind = true;
     else if (a === "--no-blind") opts.blind = false;
+    else if (a === "--dry-run") opts.dryRun = true;
     else if (a === "--fresh") opts.fresh = true;
     else if (a === "--samples") {
       const n = Number(args[++i]);
@@ -118,13 +122,13 @@ async function main(args: string[]): Promise<void> {
     case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r.doc, filesOf(r))); return; }
     case "export": { if (!a1) throw new Fail("usage: prview export <name>"); process.stdout.write(exportDocument(load(a1))); return; }
     case "import": { const r = importDocument(await doc(), opts.repo); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
-    case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); return review(importDocument(await doc(), opts.repo), blind()); }
+    case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); return review(importDocument(await doc(), opts.repo), blind(), opts.dryRun); }
     case "done": { if (!a1) throw new Fail("usage: prview done <name>"); console.log(remove(a1)); return; }
-    case "open": { if (!a1) throw new Fail("usage: prview open <name> (prview list)"); return review(await reopen(a1, opts), blind()); }
+    case "open": { if (!a1) throw new Fail("usage: prview open <name> (prview list)"); return review(await reopen(a1, opts), blind(), opts.dryRun); }
     case "prepare": { const r = await build(repoFor(a1, opts.repo), a1, opts); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
   }
   if (!process.stdout.isTTY) throw new Fail("prview needs a terminal");
-  return review(await build(repoFor(cmd, opts.repo), cmd, opts), blind());
+  return review(await build(repoFor(cmd, opts.repo), cmd, opts), blind(), opts.dryRun);
 }
 
 main(process.argv.slice(2)).then(() => process.exit(Number(process.exitCode ?? 0)), (e) => {
