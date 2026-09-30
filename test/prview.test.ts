@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDiff } from "../src/diff.ts";
-import { applyRefute, classify, filePlan, hunksOf, mergeFindings, oneLine, parseCritic, parseGuide, sameClaim, worstFirst, type Finding } from "../src/guide.ts";
+import { applyReask, applyRefute, classify, filePlan, fitLine, hunksOf, MECHANICAL_INTENT, mergeFindings, oneLine, parseCritic, parseGuide, readGuide, reaskPrompt, rubric, sameClaim, twoSentences, worstFirst, type Finding } from "../src/guide.ts";
 import { blank, fit, merge, parseDocument, SCHEMA, type Doc } from "../src/document.ts";
 import { gotoLine, nextFinding } from "../src/nav.ts";
 
@@ -155,6 +155,55 @@ test("the guide's one-liner is held to one line", () => {
   expect(oneLine("make sure every caller passes the new floor")).toBe("Every caller passes the new floor");
   expect(oneLine("one two three four five six seven eight nine ten eleven twelve thirteen fourteen")).toBe("One two three four five six seven eight nine ten eleven twelve…");
   expect(oneLine("  ")).toBe("");
+});
+
+test("a name at the start of the one-liner keeps its case; a cut is reported", () => {
+  expect(oneLine("buildClient throws before fetch")).toBe("buildClient throws before fetch");
+  expect(oneLine("apply_doc_persisted errors on a pending import")).toBe("apply_doc_persisted errors on a pending import");
+  expect(fitLine("Every caller passes the floor").cut).toBe(false);
+  expect(fitLine("Verify that every caller passes the floor.").cut).toBe(false); // noise stripped, not a cut
+  expect(fitLine("one two three four five six seven eight nine ten eleven twelve thirteen").cut).toBe(true);
+});
+
+test("the summary is held to two sentences and fifty words", () => {
+  expect(twoSentences("Adds x. Keep y in mind.")).toEqual({ text: "Adds x. Keep y in mind.", cut: false });
+  expect(twoSentences("Adds x, e.g. v1.2 of it. Keep y. Also z.")).toEqual({ text: "Adds x, e.g. v1.2 of it. Keep y.", cut: true });
+  const long = Array.from({ length: 60 }, (_, i) => `w${i}`).join(" ");
+  expect(twoSentences(long).cut).toBe(true);
+  expect(twoSentences(long).text.split(" ")).toHaveLength(50);
+});
+
+test("a cut line is asked for once more; the answer is used only where it now fits", () => {
+  const files = parseDiff(MECH), hunks = hunksOf(files), mech = classify(files);
+  const long = "the new floor is passed by every single caller of open_store in the crate now";
+  const { plan, cuts, summarySaid } = readGuide(JSON.stringify({ summary: "One. Two. Three.", chapters: [{ title: "Floor", check: long, why: "Callers drift.", hunks: ["src/real.rs@1:1"] }] }), hunks, mech);
+  expect(cuts.map((c) => c.at)).toEqual(["summary", "chapter"]);
+  expect(plan.chapters[0]!.intent.endsWith("…")).toBe(true);
+  expect(plan.summary).toBe("One. Two.");
+  const prompt = reaskPrompt("Raise the floor", cuts, summarySaid);
+  expect(prompt).toContain(long);
+  expect(prompt).toContain("One. Two. Three.");
+  expect(prompt).toContain("n=1");
+  const fixed = applyReask(plan, cuts, '{"summary":"Raises the floor. Callers first.","chapters":[{"n":1,"check":"Every open_store caller passes the new floor"},{"n":7,"check":"stray"}]}');
+  expect(fixed.chapters[0]!.intent).toBe("Every open_store caller passes the new floor");
+  expect(fixed.summary).toBe("Raises the floor. Callers first.");
+  // Still too long, or not JSON at all: the first, cut answer stands.
+  expect(applyReask(plan, cuts, JSON.stringify({ chapters: [{ n: 1, check: long }] })).chapters[0]!.intent).toBe(plan.chapters[0]!.intent);
+  expect(applyReask(plan, cuts, "sorry")).toBe(plan);
+  expect(readGuide('{"summary":"Short.","chapters":[{"title":"T","check":"Every caller passes it","hunks":["src/real.rs@1:1"]}]}', hunks, mech).cuts).toEqual([]);
+});
+
+test("the intent rubric: short, concrete, no verify-that, not the title again", () => {
+  const title = "pm hub login: store the hub URL and token per workspace";
+  expect(rubric("Token reaches `security -i` only on stdin, never argv", title)).toEqual([]);
+  expect(rubric("Every caller passes the new floor", title)).toEqual([]);
+  expect(rubric("Expired tokens return 404, never 401", title)).toEqual([]);
+  expect(rubric("", title)).toEqual(["empty"]);
+  expect(rubric("one two three four five six seven eight nine ten eleven twelve…", title)).toContain("over 12 words");
+  expect(rubric("Verify that the parser rejects blank ids", title)).toContain("says verify that");
+  expect(rubric("The changes are correct", title)).toEqual(["names nothing concrete"]);
+  expect(rubric("Store the hub URL and token per workspace", title)).toEqual(["restates the title"]);
+  expect(rubric(MECHANICAL_INTENT, "anything")).toEqual([]);
 });
 
 test("123G finds the hunk holding that file line, or the nearest one; ]f walks findings in reading order", () => {

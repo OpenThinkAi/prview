@@ -14,8 +14,8 @@ import { basename, join } from "node:path";
 import { parseDiff, type FileDiff } from "./diff.ts";
 import { blank, Fail, fit, merge, parseDocument, SCHEMA, type Comment, type Doc, type Target } from "./document.ts";
 import {
-  applyRefute, classify, CRITIC_SYSTEM, criticPrompt, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, numbered,
-  mergeFindings, parseCritic, parseGuide, REFUTE_SYSTEM, refutePrompt, type Finding, type Plan,
+  applyReask, applyRefute, classify, CRITIC_SYSTEM, criticPrompt, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, numbered,
+  mergeFindings, parseCritic, readGuide, REASK_SYSTEM, reaskPrompt, REFUTE_SYSTEM, refutePrompt, type Finding, type HunkAt, type Mechanical, type Plan,
 } from "./guide.ts";
 import { complete, pool, type Provider, type Usage } from "./llm.ts";
 
@@ -99,6 +99,18 @@ export const isPR = (target: string | undefined) => !!target && (/^#?\d+$/.test(
 
 export type Progress = (s: string) => void;
 
+/**
+ * The guide's pass: one call, and one more only if the parser had to cut a line to fit. A failed
+ * re-ask keeps the cut plan; a failed first call throws, and the caller falls back to file order.
+ */
+export async function runGuide(provider: Provider, src: { title: string; body: string }, hunks: HunkAt[], mechanical: Mechanical[], say: Progress = () => {}, usage?: (u: Usage) => void): Promise<{ plan: Plan; reasked: number; errors: string[] }> {
+  const { plan, cuts, summarySaid } = readGuide(await complete(provider, GUIDE_SYSTEM, guidePrompt(src, hunks, mechanical), usage), hunks, mechanical);
+  if (!cuts.length) return { plan, reasked: 0, errors: [] };
+  say(`guide: ${cuts.length} line${cuts.length === 1 ? "" : "s"} too long, asking once more…`);
+  try { return { plan: applyReask(plan, cuts, await complete(provider, REASK_SYSTEM, reaskPrompt(src.title, cuts, summarySaid), usage)), reasked: cuts.length, errors: [] }; }
+  catch (e) { return { plan, reasked: cuts.length, errors: [`guide re-ask: ${(e as Error).message}`] }; }
+}
+
 /** The default producer: the guide orders the hunks, the critic raises findings, refute re-checks them. */
 async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, provider: Provider, samples: number, say: Progress): Promise<{ doc: Doc; errors: string[]; runs: Run[] }> {
   const errors: string[] = [], runs: Run[] = [];
@@ -107,7 +119,7 @@ async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, 
   const hunks = hunksOf(files);
   let plan: Plan;
   say(`guide: reading ${hunks.length - mechanical.length} hunks (${mechanical.length} mechanical)…`);
-  try { plan = parseGuide(await complete(provider, GUIDE_SYSTEM, guidePrompt(src, hunks, mechanical), timed("guide")), hunks, mechanical); }
+  try { const g = await runGuide(provider, src, hunks, mechanical, say, timed("guide")); plan = g.plan; errors.push(...g.errors); }
   catch (e) { errors.push(`guide: ${(e as Error).message}`); plan = filePlan(files, mechanical); }
   say(`guide: ${plan.chapters.length} chapters${plan.by === "files" ? " (by file: the guide failed)" : ""}`);
 
