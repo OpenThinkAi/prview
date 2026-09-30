@@ -63,6 +63,8 @@ export function loadIndex(path = INDEX_PATH, docs: Doc[] = buildCorpus()): Loade
 }
 
 let loaded: Loaded | undefined;
+/** The committed index, read and checked once. */
+export const defaultIndex = (): Loaded => (loaded ??= loadIndex());
 
 /** What a doc is deduped by: a recipe's phrasings are one answer, an action's doc is its own. */
 const groupOf = (d: Doc): string => d.kind === "recipe" ? d.id.split(".").slice(0, 2).join(".") : d.id;
@@ -72,7 +74,7 @@ const groupOf = (d: Doc): string => d.kind === "recipe" ? d.id.split(".").slice(
  * contains; docs of one recipe collapse to the best-scoring phrasing, and an action found twice keeps its best score.
  * `doc` is the id of the doc that put the action there.
  */
-export function search(query: string, n = 5, index: Loaded = (loaded ??= loadIndex())): Hit[] {
+export function search(query: string, n = 5, index: Loaded = defaultIndex()): Hit[] {
   const { idx, docs, vecs, words } = index;
   const q = embed(query);
   const qwords = [...new Set(wordsOf(query).filter((w) => w.length > 1 && !STOP.has(w)))];

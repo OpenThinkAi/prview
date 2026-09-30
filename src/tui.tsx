@@ -30,6 +30,7 @@ import { askText, confirmation, findingText, systemCopier, whyText, type Copier 
 import { describe, planOf } from "./submit.ts";
 import { decide, decisionOf, defaultVerdict, LABEL, linkedComment, nextUndecided, progress, undecidedNote, undo } from "./triage.ts";
 import { actionOf, BINDINGS_ACTION, bindingsHint, type KeyState, keyOf, startsChord } from "./keys.ts";
+import { answersBody, answersFor, answerText, type Answer } from "./ask-docs.ts";
 import { entriesOf, panelOf, panelTitle } from "./panel.ts";
 import { MIN_COLS, MIN_ROWS, tooSmall, useTerminalSize } from "./resize.ts";
 
@@ -56,8 +57,11 @@ const SEV = { blocking: "red", warn: "yellow", nit: "blue" } as const;
  * drawn at the top of the hunk, in its own border, never under a cursor line where a finding sits.
  */
 type Float = { title: string; lead?: string; body: string; color?: string; tall?: boolean; copy?: string; finding?: string; summary?: boolean };
-/** `decide`: this comment carries out a block or comment decision on that finding. `reason`: the optional reason for "not an issue". */
-type Mode = { kind: "nav" } | { kind: "comment"; general: boolean; decide?: { id: string; kind: "block" | "comment" } } | { kind: "reason"; id: string } | { kind: "ask" } | { kind: "verdict" } | { kind: "preview"; hook: boolean; coverage: boolean };
+/**
+ * `decide`: this comment carries out a block or comment decision on that finding. `reason`: the optional reason for "not an issue".
+ * `docs`: the question typed for the offline docs search (`ask` is the one for the model); `results`: its answers, `sel` the selected one.
+ */
+type Mode = { kind: "nav" } | { kind: "comment"; general: boolean; decide?: { id: string; kind: "block" | "comment" } } | { kind: "reason"; id: string } | { kind: "ask" } | { kind: "docs" } | { kind: "results"; query: string; answers: Answer[]; sel: number } | { kind: "verdict" } | { kind: "preview"; hook: boolean; coverage: boolean };
 
 export type AppProps = {
   review: Review; files: FileDiff[]; onDone: (o: Outcome) => void;
@@ -106,6 +110,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   // open) is remembered against the state it was made in, and forgotten when the state changes.
   const keyState: KeyState = mode.kind === "verdict" ? { box: "verdict" }
     : mode.kind === "preview" ? (() => { const p = planOf(r, files, { coverage: mode.coverage }); return { box: "preview" as const, dryRun, hook: p.hook ? mode.hook : null, coverage: p.adapter ? mode.coverage : null }; })()
+    : mode.kind === "results" ? { box: "results" }
     : mode.kind !== "nav" ? { box: "prompt", kind: mode.kind, decide: mode.kind === "comment" && !!mode.decide }
     : float ? (float.finding ? { box: "finding" } : { box: "info", copyable: !!float.copy }) : { box: null, blind };
   const stateId = keyState.box ?? "nav";
@@ -229,10 +234,25 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       scrollFloat(ch, key);
       return;
     }
+    if (mode.kind === "results") {
+      setNote(null);
+      if (key.escape) { setMode({ kind: "nav" }); setFloat(null); return; }
+      const id = actionOf(keyState, ch) ?? (key.downArrow ? "results.down" : key.upArrow ? "results.up" : undefined);
+      if (id === BINDINGS_ACTION) toggleBindings();
+      else if (id === "results.down" || id === "results.up") { const at = Math.max(0, Math.min(mode.answers.length - 1, mode.sel + (id === "results.down" ? 1 : -1))); showResults(mode.query, mode.answers, at); }
+      else if (id === "results.copy") { const a = mode.answers[mode.sel]; setNote(a ? confirmation(copier(answerText(a))) : "nothing to copy here"); }
+      return;
+    }
     if (mode.kind !== "nav") {
       if (key.escape) { setMode({ kind: "nav" }); setInput(""); return; }
       if (key.return) {
         const text = input.trim();
+        if (mode.kind === "docs") {
+          setInput("");
+          if (!text) { setMode({ kind: "nav" }); return; }
+          try { showResults(text, answersFor(text), 0); } catch (e) { setMode({ kind: "nav" }); setFloat({ title: "ask the docs failed", body: String((e as Error).message), color: "red" }); }
+          return;
+        }
         setMode({ kind: "nav" }); setInput("");
         const f = mode.kind === "reason" ? d.findings.find((x) => x.id === mode.id) : mode.kind === "comment" && mode.decide ? d.findings.find((x) => x.id === mode.decide!.id) : undefined;
         const at = new Date().toISOString();
@@ -283,6 +303,12 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     if (startsChord(state, ch)) { setPending(ch); return; }
     const id = actionOf(state, ch) ?? (key.downArrow ? "nav.line_down" : key.upArrow ? "nav.line_up" : key.rightArrow ? "nav.next_hunk" : key.leftArrow ? "nav.prev_hunk" : undefined);
     if (id) act(id, n); else scrollFloat(ch, key);
+  };
+
+  // The answers to a docs question, as a box over the diff; the same box is redrawn as the selection moves.
+  const showResults = (query: string, answers: Answer[], sel: number) => {
+    setMode({ kind: "results", query, answers, sel });
+    setFloat({ title: `Ask the docs · ${query}`, color: "cyan", tall: true, body: answersBody(answers, sel) });
   };
 
   // What each action does. Every id in the key tables has a case here (a test holds the two together).
@@ -349,6 +375,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       case "nav.note": setMode({ kind: "comment", general: false }); return;
       case "nav.general_note": setMode({ kind: "comment", general: true }); return;
       case "nav.ask": setMode({ kind: "ask" }); return;
+      case "nav.ask_docs": setMode({ kind: "docs" }); setInput(""); return;
       case "nav.wrap": setWrap(!wrap); setPanX(0); return;
       case "nav.pan_left": case "nav.pan_right": if (!wrap) setPanX(clampX(panX + (id === "nav.pan_right" ? PAN : -PAN), longest, codeCols)); return;
     }
@@ -404,11 +431,12 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       }
       case "reason": return <Text><Text color="cyan" bold> not an issue, why? › </Text>{input}<Text inverse> </Text><Text dimColor>  (optional, never posted)</Text></Text>;
       case "preview": return <Text dimColor> </Text>;
+      case "results": return note ? <Text wrap="truncate" color="green"> {note}</Text> : <Text dimColor> </Text>;
       case "nav": if (note) return <Text wrap="truncate" color="green"> {note}</Text>;
         return <Text wrap="truncate" dimColor> {busy ? `${busy} keys wait until it answers` : ""}{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
       default: {
         const decideKind = mode.kind === "comment" ? mode.decide?.kind : undefined;
-        const label = mode.kind === "ask" ? "ask" : decideKind === "block" ? "block on it" : decideKind ? "comment on the finding" : mode.general ? "summary comment" : "comment";
+        const label = mode.kind === "docs" ? "ask the docs" : mode.kind === "ask" ? "ask" : decideKind === "block" ? "block on it" : decideKind ? "comment on the finding" : mode.general ? "summary comment" : "comment";
         return <Text><Text color="cyan" bold> {label} › </Text>{input}<Text inverse> </Text></Text>;
       }
     }

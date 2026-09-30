@@ -46,6 +46,11 @@ What you get is a full-screen review, not a diff dump:
   exactly what acts. It takes its rows out of the screen, so it never covers the cursor line or a box's text: a third of
   the height at most, laid out in as many columns as the width needs (below 100 columns too), and on a short terminal it
   collapses to one line.
+- **Ask the docs.** `/` opens a one-line question box (listed in the nav panel as `/ ask the docs`): type what you want
+  to do, in your own words ("mark this finding as wrong"), and Enter shows the best three actions, each with its label,
+  the key it has for you now, the state it works in and a line on how it works. `j`/`k` select, `y` copies the selected
+  answer as plain text, Esc closes. It searches a small index committed with prview, so it is offline, calls no model
+  and needs no config or models; a remapped key shows as you mapped it. (`a` is different: it asks a model about the hunk.)
 - **A floating box** for whatever wants explaining: `?` the chapter's intent, `f` a finding,
   `a` a question about the hunk in front of you. A review with a summary opens on it: a double-ruled
   magenta box titled "Summary of this change · not a finding" at the top of the hunk (findings are round

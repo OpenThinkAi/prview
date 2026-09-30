@@ -9,9 +9,9 @@ export type Entry = { keys: string; label: string };
 /** What a state lists, in table order; rows with the same label share an entry (j/k line). */
 export const entriesOf = (s: KeyState): Entry[] => groups(rowsOf(s)).map((g) => ({ keys: g.map((r) => r.key).join("/"), label: g[0]!.label }));
 
-const TITLES: Record<string, string> = { finding: "finding", info: "box", verdict: "verdict", preview: "submit" };
+const TITLES: Record<string, string> = { finding: "finding", info: "box", results: "ask the docs", verdict: "verdict", preview: "submit" };
 export const panelTitle = (s: KeyState): string =>
-  s.box === null ? "keys" : s.box === "prompt" ? (s.kind === "reason" ? "not an issue" : s.kind) : TITLES[s.box]!;
+  s.box === null ? "keys" : s.box === "prompt" ? (s.kind === "reason" ? "not an issue" : s.kind === "docs" ? "ask the docs" : s.kind) : TITLES[s.box]!;
 
 /**
  * A bordered grid (`boxed`) of `lines`, or, when even the widest grid the width allows is too tall, one dim line cut

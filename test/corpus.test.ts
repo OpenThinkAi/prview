@@ -45,10 +45,10 @@ test("corpus: one doc per action plus one per phrasing, and no doc's text carrie
   expect(docs.length).toBe(ALL_ACTIONS.length + recipes.reduce((n, r) => n + r.q.length, 0));
   expect(new Set(docs.map((d) => d.id)).size).toBe(docs.length);
   const keys = [...new Set(ALL_ACTIONS.map((a) => a.key))];
-  // Punctuation keys (] [ ? and the backslash) must not appear at all, which also catches a chord like ]f. Letter keys are words in prose,
+  // Punctuation keys (] [ ? / and the backslash) must not appear at all, which also catches a chord like ]f. Letter keys are words in prose,
   // so they are checked as the forms a writer would use to name one: quoted, or "key x".
   const punct = [...new Set(keys.join("").replace(/[A-Za-z0-9\s]/g, ""))];
-  expect(punct.sort()).toEqual(["?", "[", "\\", "]"]);
+  expect(punct.sort()).toEqual(["/", "?", "[", "\\", "]"]);
   for (const d of docs) {
     const text = d.text + "\n" + (d.kind === "recipe" ? d.why : "");
     for (const ch of punct) expect({ id: d.id, ch, has: text.includes(ch) }).toEqual({ id: d.id, ch, has: false });

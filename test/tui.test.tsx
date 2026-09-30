@@ -11,7 +11,7 @@ import type { Doc } from "../src/document.ts";
 import { chapterHidden, earlyTitles, hiddenHunks, revealBody, revealEarly } from "../src/blind.ts";
 import { writeup } from "../src/build.ts";
 import { entriesOf, panelCap, panelOf } from "../src/panel.ts";
-import { actionOf, ALL_ACTIONS, DEFAULT_KEYMAP, effectiveKeys, installKeymap, keyOf, bindingsHint, FINDING_KEYS, INFO_KEYS, NAV_ALIASES, NAV_KEYS, PREVIEW_KEYS, PROMPT_KEYS, VERDICT_KEYS, startsChord } from "../src/keys.ts";
+import { actionOf, ALL_ACTIONS, DEFAULT_KEYMAP, effectiveKeys, installKeymap, keyOf, bindingsHint, FINDING_KEYS, INFO_KEYS, NAV_ALIASES, NAV_KEYS, PREVIEW_KEYS, PROMPT_KEYS, RESULT_KEYS, VERDICT_KEYS, startsChord } from "../src/keys.ts";
 import { parseDocument, SCHEMA } from "../src/document.ts";
 import { parseConfig } from "../src/config.ts";
 import { App, type Outcome } from "../src/tui.tsx";
@@ -857,13 +857,13 @@ test("nav: the panel comes from NAV_KEYS, every listed key acts, b/c/u are not i
   expect(wide.frame()).not.toMatch(row("j/k", "line")); // nothing open: only the footer's hint
   await wide.press("\\");
   for (const e of entriesOf({ box: null, blind: false })) expect(wide.frame()).toMatch(row(e.keys, e.label));
-  expect(listing(entriesOf({ box: null, blind: false }))).toEqual(["j/k line", "h/l hunk", "J/K chapter", "]f/f find", "? why", "y copy", "a ask", "e edit", "n/N note", "w wrap", "H/L pan", "s submit", "\\ bindings", "q quit"]);
+  expect(listing(entriesOf({ box: null, blind: false }))).toEqual(["j/k line", "h/l hunk", "J/K chapter", "]f/f find", "? why", "y copy", "a ask", "/ ask the docs", "e edit", "n/N note", "w wrap", "H/L pan", "s submit", "\\ bindings", "q quit"]);
   expect(listing(entriesOf({ box: null, blind: false })).join("|")).not.toMatch(/decide|F reveal/);
   expect(listing(entriesOf({ box: null, blind: true }))).toContain("F reveal");
   expect(NAV_KEYS.some((k) => /[bcu]/.test(k.key.replace("]f", "")) && k.key !== "q")).toBe(false);
   // Every listed key does something, from a state where it can.
   const prelude: Record<string, string> = { H: "L", k: "j", h: "l", K: "J" };
-  const keys = NAV_KEYS.filter((k) => !k.blind).flatMap((k) => k.key.split("/"));
+  const keys = NAV_KEYS.filter((k) => !k.blind).flatMap((k) => k.key === "/" ? ["/"] : k.key.split("/"));
   for (const ch of keys) {
     const t = await open(undefined, { cols: 140, beside: () => undefined });
     await t.press(ch === "K" ? "J" : prelude[ch] ?? "");
@@ -1135,4 +1135,114 @@ test("remapped keys: the panel, the footer hint and the hints show the new keys,
     expect(t.frame()).toMatch(row("]f/f", "find"));
     expect(t.frame()).toMatch(row("!", "bindings"));
   } finally { installKeymap(DEFAULT_KEYMAP); }
+});
+
+// ---------------------------------------------------------------- / ask the docs
+
+/** An App whose clipboard records what `y` copies. */
+async function openCopying() {
+  const copied: string[] = [];
+  const copier = (t: string) => { copied.push(t); return { ok: true as const, chars: t.length, via: "test" }; };
+  const r = fixture();
+  const app = render(<App review={r} files={files} onDone={() => {}} copier={copier} size={{ cols: 120, rows: 40 }} />);
+  await settle();
+  const press = async (keys: string) => { for (const k of keys.match(/\x1b\[\d+~|./gsu) ?? []) { app.stdin.write(k); await settle(); } };
+  return { app, press, copied, frame: () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "") };
+}
+
+test("/ is listed in the nav panel as ask the docs, and opens a one-line question box that Esc closes", async () => {
+  const t = await open();
+  await t.press("\\");
+  expect(t.frame()).toMatch(row("/", "ask the docs"));
+  await t.press("\\/");
+  expect(t.frame()).toContain("ask the docs › ");
+  expect(listing(entriesOf({ box: "prompt", kind: "docs" }))).toEqual(["Enter search", "ctrl-u clear line", "ctrl-w delete word", "Esc cancel"]);
+  shown(t, { box: "prompt", kind: "docs" });
+  await t.press("mark /\\");
+  expect(t.frame()).toContain("ask the docs › mark /\\"); // text goes in as typed
+  await t.press("\x1b");
+  expect(t.frame()).not.toContain("ask the docs ›");
+  expect(t.frame()).toContain("\\ bindings");
+  // An empty question closes without searching.
+  await t.press("/\r");
+  expect(t.frame()).not.toContain("ask the docs ›");
+  expect(t.frame()).not.toContain("Ask the docs ·");
+});
+
+test("/ a question: the top answers show the action, the user's key, where it works and the why; Esc closes", async () => {
+  const t = await open();
+  await t.press("/mark this finding as wrong\r");
+  const f = t.frame();
+  expect(f).toContain("Ask the docs · mark this finding as wrong");
+  expect(f).toMatch(/1\. not an issue: n, in a finding's box/);
+  expect(f).toMatch(/[2-4]\. /); // several answers, not one
+  expect(f).not.toMatch(/5\. /);
+  expect(f).toMatch(/dismiss|not an issue/i); // the recipe's why
+  expect(listing(entriesOf({ box: "results" }))).toEqual(["j/k select", "y copy", "Esc close", "\\ bindings"]);
+  shown(t, { box: "results" }); // the panel opens with the results
+  await t.press("\x1b");
+  expect(t.frame()).not.toContain("Ask the docs ·");
+  expect(t.frame()).not.toMatch(row("y", "copy"));
+  await t.press("n");
+  expect(t.frame()).toContain("comment › "); // back in nav: n is a note again
+});
+
+test("/ results: j and k move the selection, y copies the selected answer as plain text, only the listed keys act", async () => {
+  const t = await openCopying();
+  await t.press("/mark this finding as wrong\r");
+  expect(t.frame()).toContain("› 1. ");
+  await t.press("y");
+  expect(t.copied).toHaveLength(1);
+  expect(t.copied[0]).toMatch(/^not an issue: n, in a finding's box\n\S/);
+  expect(t.copied[0]).not.toMatch(/[›│╭]/); // no marker, no box
+  await t.press("j");
+  expect(t.frame()).toContain("› 2. ");
+  expect(t.frame()).not.toContain("› 1. ");
+  await t.press("y");
+  expect(t.copied[1]).not.toBe(t.copied[0]);
+  await t.press("k");
+  expect(t.frame()).toContain("› 1. ");
+  await t.press("k");
+  expect(t.frame()).toContain("› 1. "); // stops at the first
+  await t.press("n"); // a nav key: does nothing here
+  expect(t.frame()).toContain("Ask the docs ·");
+  expect(t.frame()).not.toContain("comment › ");
+  await t.press("\\");
+  expect(t.frame()).not.toMatch(row("y", "copy")); // \ hides the panel, as in every box
+  await t.press("\x1b");
+  expect(t.frame()).not.toContain("Ask the docs ·");
+});
+
+test("/ results show the key as bound now: a remap reaches the answer", async () => {
+  installKeymap(effectiveKeys({ "finding.not_an_issue": "d", "nav.ask_docs": "Q" }));
+  try {
+    const t = await open();
+    await t.press("/"); // the old key is gone
+    expect(t.frame()).not.toContain("ask the docs ›");
+    await t.press("Q");
+    expect(t.frame()).toContain("ask the docs › ");
+    await t.press("mark this finding as wrong\r");
+    expect(t.frame()).toMatch(/1\. not an issue: d, in a finding's box/);
+    await t.press("\x1b\\");
+    expect(t.frame()).toMatch(row("Q", "ask the docs"));
+  } finally { installKeymap(DEFAULT_KEYMAP); }
+});
+
+test("/ with no match and with nothing typed: a plain answer, no crash", async () => {
+  const t = await open();
+  await t.press("/   \r");
+  expect(t.frame()).not.toContain("Ask the docs ·");
+  await t.press("/zzzzqqqq\r");
+  expect(t.frame()).toContain("Ask the docs · zzzzqqqq");
+  await t.press("y");
+  await t.press("\x1b");
+  expect(t.frame()).not.toContain("Ask the docs ·");
+});
+
+test("result keys are tabled like the other steps: unique, described, not remappable", () => {
+  expect(new Set(RESULT_KEYS.map((a) => a.key)).size).toBe(RESULT_KEYS.length);
+  for (const a of RESULT_KEYS) { expect(a.id).toMatch(/^results\.[a-z_]+$/); expect(a.description.trim()).not.toBe(""); }
+  expect(() => effectiveKeys({ "results.copy": "z" })).toThrow(/unknown action/);
+  expect(() => effectiveKeys({ "nav.ask_docs": "a" })).toThrow(/both "a"/); // collides with the model's ask
+  expect(effectiveKeys({ "nav.ask_docs": "" }).nav.find((a) => a.id === "nav.ask_docs")!.key).toBe("");
 });

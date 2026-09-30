@@ -145,6 +145,11 @@ q = ["how do I see the key bindings", "list the keys I can use here", "remind me
 actions = ["nav.bindings"]
 why = "Opens a box listing every binding for the state you are in, drawn from your own configuration."
 
+[[recipe]]
+q = ["how do I search these docs", "ask a question about how to use prview", "find the action for what I want to do", "look up a shortcut in my own words"]
+actions = ["nav.ask_docs"]
+why = "Type a question and see the matching actions with your current keys; it runs offline and calls no model. To question the model about a hunk, use the ask action."
+
 # ---- finishing
 
 [[recipe]]

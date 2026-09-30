@@ -32,9 +32,13 @@ export type KeyState =
   | { box: "finding" }
   | { box: "info"; copyable: boolean }
   | { box: null; blind: boolean }
-  | { box: "prompt"; kind: "ask" | "comment" | "reason"; decide?: boolean }
+  | { box: "prompt"; kind: PromptKind; decide?: boolean }
+  | { box: "results" }
   | { box: "verdict" }
   | { box: "preview"; dryRun: boolean; hook: boolean | null; coverage: boolean | null };
+
+/** The line being typed: `docs` is the question put to the offline docs search (`ask` is the one put to a model). */
+export type PromptKind = "ask" | "comment" | "reason" | "docs";
 
 /** Consecutive visible rows with the same label read as one panel entry: j and k, both "line", show as "j/k line". */
 export function groups<R extends Action>(rows: R[]): R[][] {
@@ -87,6 +91,7 @@ export const NAV_KEYS: NavAction[] = [
   { id: "nav.why", key: "?", label: "why", description: "Explain why this chapter is here and what to check in it." },
   { id: "nav.copy", key: "y", label: "copy", description: "Copy the cursor line's path:line reference." },
   { id: "nav.ask", key: "a", label: "ask", description: "Ask the model a question about this hunk." },
+  { id: "nav.ask_docs", key: "/", label: "ask the docs", description: "Ask how to do something in your own words and see the actions that answer it, with your keys; offline, no model." },
   { id: "nav.edit", key: "e", label: "edit", description: "Open the file in the editor at the cursor line." },
   { id: "nav.note", key: "n", label: "note", description: "Write a comment on the cursor line." },
   { id: "nav.general_note", key: "N", label: "note", description: "Write a general comment on the whole pull request." },
@@ -108,11 +113,19 @@ export const PROMPT_KEYS: Action[] = [
   { id: "prompt.word", key: "ctrl-w", label: "delete word", description: "Delete the last word." },
   { id: "prompt.cancel", key: "Esc", label: "cancel", description: "Cancel; nothing is recorded." },
 ];
-const promptRows = (s: { kind: "ask" | "comment" | "reason"; decide?: boolean }): Action[] => {
-  const send = s.kind === "ask" ? "ask" : s.kind === "reason" ? "decide" : s.decide ? "save" : "send";
+const promptRows = (s: { kind: PromptKind; decide?: boolean }): Action[] => {
+  const send = s.kind === "ask" ? "ask" : s.kind === "docs" ? "search" : s.kind === "reason" ? "decide" : s.decide ? "save" : "send";
   return PROMPT_KEYS.filter((r) => s.kind !== "reason" || r.id !== "prompt.word").map((r) =>
     r.id === "prompt.send" ? { ...r, label: send } : r.id === "prompt.cancel" && s.decide ? { ...r, label: "cancel decision" } : r);
 };
+
+/** The answers to a docs question: pick one, copy it, close. Not remappable, like the other steps. */
+export const RESULT_KEYS: Action[] = [
+  { id: "results.down", key: "j", label: "select", description: "Select the next result." },
+  { id: "results.up", key: "k", label: "select", description: "Select the previous result." },
+  { id: "results.copy", key: "y", label: "copy", description: "Copy the selected result as plain text." },
+  { id: "results.close", key: "Esc", label: "close", description: "Close the results." },
+];
 
 /** The verdict step after `s`. Enter takes the default: request changes when anything is blocking. */
 export const VERDICT_KEYS: Action[] = [
@@ -145,7 +158,7 @@ const bindingsRow = (): Action => active.nav.find((r) => r.id === BINDINGS_ACTIO
 /** The rows that act in a state: an unbound row (key "") does nothing and is not listed. A prompt takes text, so it has no bindings row. */
 export const rowsOf = (s: KeyState): Action[] => {
   const rows: Action[] = s.box === "finding" ? active.finding : s.box === "info" ? infoRows(s.copyable) : s.box === "prompt" ? promptRows(s)
-    : s.box === "verdict" ? VERDICT_KEYS : s.box === "preview" ? previewRows(s) : navRows(s.blind);
+    : s.box === "results" ? RESULT_KEYS : s.box === "verdict" ? VERDICT_KEYS : s.box === "preview" ? previewRows(s) : navRows(s.blind);
   return [...rows, ...(s.box === null || s.box === "prompt" ? [] : [bindingsRow()])].filter((r) => r.key);
 };
 
@@ -160,7 +173,7 @@ export const startsChord = (s: KeyState, ch: string): boolean =>
 /** Every remappable action, for the uniqueness check and anything that lists them (docs). */
 export const ALL_ACTIONS: Action[] = [...NAV_KEYS, ...FINDING_KEYS, ...INFO_KEYS];
 /** The prompt, verdict and preview steps: listed in the key panel and acted on there, not remappable and not in the docs, since they are the last step of a flow the docs already describe. */
-export const STEP_ACTIONS: Action[] = [...PROMPT_KEYS, ...VERDICT_KEYS, ...PREVIEW_KEYS];
+export const STEP_ACTIONS: Action[] = [...PROMPT_KEYS, ...RESULT_KEYS, ...VERDICT_KEYS, ...PREVIEW_KEYS];
 
 // ---------------------------------------------------------------- the user's bindings
 
@@ -171,7 +184,8 @@ export const installKeymap = (km: Keymap): void => { active = km; };
 export const currentKeymap = (): Keymap => active;
 
 /** The key an action is bound to right now, for hints that name a key in a sentence. */
-export const keyOf = (id: string): string => [...active.nav, ...active.finding, ...active.info].find((a) => a.id === id)?.key || "(unbound)";
+export const rowById = (id: string): Action | undefined => [...active.nav, ...active.finding, ...active.info].find((a) => a.id === id);
+export const keyOf = (id: string): string => rowById(id)?.key || "(unbound)";
 
 /** The action that shows the bindings: it can be rebound but never unbound, or the user could not find the others. */
 export const BINDINGS_ACTION = "nav.bindings";
