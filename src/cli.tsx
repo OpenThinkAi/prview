@@ -30,6 +30,8 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   Keys:  j/k line   h/l hunk   J/K chapter   123G go to file line   gg/G first/last   ]f [f next/previous finding
          F reveal this chapter's findings early (--blind only)
          ? why this chapter matters   f finding under the cursor   d dismiss it   a ask about this hunk
+         y copy the open box (finding, ? why, ask answer) as clean text; with none open, the line's path:line
+           (pbcopy, wl-copy, xclip, else OSC 52; PRVIEW_CLIPBOARD=osc52 forces the terminal route)
          e open the file here in your editor (inside tmux: in a split pane, this screen stays up)
          n comment on this line   N summary comment   w wrap long lines   H/L pan them sideways
          PgUp/PgDn (ctrl-u/ctrl-d) page an open box   below 100 columns the rail shows chapter numbers only
