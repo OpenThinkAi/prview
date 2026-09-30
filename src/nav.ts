@@ -77,3 +77,61 @@ export function chapterStart(items: NavItem[], n: number): At | undefined {
   const i = items.findIndex((it) => it.chapter === n - 1);
   return i < 0 ? undefined : { item: i, line: 0 };
 }
+
+// ---------------------------------------------------------------- the table of contents
+
+/**
+ * Where the table of contents' cursor is: on block `item`, or (`onChapter`) on the row of the chapter holding it, and
+ * then `item` is that chapter's first block, which is what the code shows meanwhile.
+ */
+export type TocAt = { item: number; onChapter: boolean };
+/** A row the table of contents draws: every chapter's own row, then its blocks while it is expanded. `item` is the block, or the chapter's first. */
+export type TocRow = { kind: "chapter" | "block"; chapter: number; item: number };
+export type TocMove = "down" | "up" | "next_chapter" | "prev_chapter" | "expand" | "collapse";
+
+export function tocRows(items: NavItem[], collapsed: ReadonlySet<number>): TocRow[] {
+  const rows: TocRow[] = [];
+  items.forEach((it, i) => {
+    if (i === 0 || items[i - 1]!.chapter !== it.chapter) rows.push({ kind: "chapter", chapter: it.chapter, item: i });
+    if (!collapsed.has(it.chapter)) rows.push({ kind: "block", chapter: it.chapter, item: i });
+  });
+  return rows;
+}
+
+/** The row the cursor is on; a block of a collapsed chapter (the code got there some other way) is its chapter's row. */
+export function tocIndex(rows: TocRow[], items: NavItem[], at: TocAt): number {
+  const chapter = items[at.item]?.chapter;
+  const block = at.onChapter ? -1 : rows.findIndex((r) => r.kind === "block" && r.item === at.item);
+  return block >= 0 ? block : rows.findIndex((r) => r.kind === "chapter" && r.chapter === chapter);
+}
+
+/**
+ * One key in the table of contents. ↓/↑ go block to block, and a collapsed chapter is one stop (its blocks are
+ * skipped); ⇧↓/⇧↑ go to the next or previous chapter's row. → expands a collapsed chapter, goes down from an
+ * expanded one to its first block, and on a block `enter`s its code; ← collapses an expanded chapter, and on a block
+ * goes up to its chapter's row. Nowhere to go leaves the cursor where it is.
+ */
+export function tocMove(items: NavItem[], collapsed: ReadonlySet<number>, at: TocAt, move: TocMove): { at: TocAt; collapsed: ReadonlySet<number>; enter?: true } {
+  const rows = tocRows(items, collapsed);
+  const i = tocIndex(rows, items, at);
+  const row = rows[i];
+  const stay = { at, collapsed };
+  if (!row) return stay;
+  const to = (r: TocRow | undefined) => (r ? { at: { item: r.item, onChapter: r.kind === "chapter" }, collapsed } : stay);
+  const toggled = (c: number, fold: boolean) => { const s = new Set(collapsed); if (fold) s.add(c); else s.delete(c); return s; };
+  switch (move) {
+    case "down": case "up": {
+      const stop = (r: TocRow) => r.kind === "block" || collapsed.has(r.chapter);
+      return to(move === "down" ? rows.slice(i + 1).find(stop) : rows.slice(0, i).reverse().find(stop));
+    }
+    case "next_chapter": return to(rows.find((r) => r.kind === "chapter" && r.chapter > row.chapter));
+    case "prev_chapter": return to(rows.filter((r) => r.kind === "chapter" && r.chapter < row.chapter).pop());
+    case "expand":
+      if (row.kind === "block") return { ...stay, enter: true };
+      if (collapsed.has(row.chapter)) return { at: { item: row.item, onChapter: true }, collapsed: toggled(row.chapter, false) };
+      return to(rows[i + 1]);
+    case "collapse":
+      if (row.kind === "block") return to(rows.find((r) => r.kind === "chapter" && r.chapter === row.chapter));
+      return collapsed.has(row.chapter) ? stay : { at: { item: row.item, onChapter: true }, collapsed: toggled(row.chapter, true) };
+  }
+}

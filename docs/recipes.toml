@@ -35,24 +35,24 @@ why = "Opens the finding on the cursor line; the go to prefix finds the next one
 [[recipe]]
 q = ["why is this chapter here", "what should I check in this chapter", "go back to the table of contents", "what is this group of changes for"]
 actions = ["code.to_toc"]
-why = "Goes back out of the code to the chapter, which shows its intent and why it is there."
+why = "Goes back out of the code to the table of contents at this block; the content area shows the chapter's intent and why."
 
 # ---- the table of contents
 
 [[recipe]]
 q = ["how do I move through the table of contents", "go to the next block in the contents", "pick another block from the list of chapters"]
 actions = ["toc.down", "toc.up"]
-why = "Moves block by block through the table of contents, skipping collapsed chapters."
+why = "Moves block by block through the table of contents; a collapsed chapter is one stop, its blocks skipped."
 
 [[recipe]]
 q = ["how do I expand a chapter", "open a chapter in the contents", "enter the code of this block"]
 actions = ["toc.expand"]
-why = "Expands a collapsed chapter, or on a block moves into its code."
+why = "Expands a collapsed chapter, or on a block moves into its code; the other arrow comes back out."
 
 [[recipe]]
 q = ["how do I collapse a chapter", "fold a chapter away in the contents", "hide the blocks of a chapter"]
 actions = ["toc.collapse"]
-why = "Collapses the chapter under the cursor in the table of contents."
+why = "Collapses the chapter under the cursor in the table of contents; on a block it first goes up to the chapter."
 
 # ---- the content area
 

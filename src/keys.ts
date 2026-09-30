@@ -58,16 +58,15 @@ export type KeyState =
 
 const TOC: readonly State[] = ["toc"], CODE: readonly State[] = ["code"], FINDING: readonly State[] = ["finding"], CONTENT: readonly State[] = ["content"];
 const OUTSIDE: readonly State[] = ["toc", "code"], READING: readonly State[] = ["toc", "code", "finding"];
-const TOC_COMING = "the table of contents";
 
 export const DEFAULT_ACTIONS: readonly Action[] = [
-  // ---- the table of contents (drawn with navigation v2; until then the code is where you are)
-  { id: "toc.down", states: TOC, key: "down", secondary: "j", label: "block", description: "Move to the next block in the table of contents.", coming: TOC_COMING },
-  { id: "toc.up", states: TOC, key: "up", secondary: "k", label: "block", description: "Move to the previous block in the table of contents.", coming: TOC_COMING },
-  { id: "toc.next_chapter", states: TOC, key: "shift-down", secondary: "J", label: "chapter", description: "Move to the next chapter in the table of contents.", coming: TOC_COMING },
-  { id: "toc.prev_chapter", states: TOC, key: "shift-up", secondary: "K", label: "chapter", description: "Move to the previous chapter in the table of contents.", coming: TOC_COMING },
-  { id: "toc.expand", states: TOC, key: "right", secondary: "l", label: "expand / enter", description: "Expand the chapter under the cursor, or enter the block's code.", coming: TOC_COMING },
-  { id: "toc.collapse", states: TOC, key: "left", secondary: "h", label: "collapse", description: "Collapse the chapter under the cursor.", coming: TOC_COMING },
+  // ---- the table of contents, where a review opens: the cursor is on a chapter or one of its blocks
+  { id: "toc.down", states: TOC, key: "down", secondary: "j", label: "block", description: "Move to the next block in the table of contents; a collapsed chapter is one stop." },
+  { id: "toc.up", states: TOC, key: "up", secondary: "k", label: "block", description: "Move to the previous block in the table of contents; a collapsed chapter is one stop." },
+  { id: "toc.next_chapter", states: TOC, key: "shift-down", secondary: "J", label: "chapter", description: "Move to the next chapter in the table of contents." },
+  { id: "toc.prev_chapter", states: TOC, key: "shift-up", secondary: "K", label: "chapter", description: "Move to the previous chapter in the table of contents." },
+  { id: "toc.expand", states: TOC, key: "right", secondary: "l", label: "expand / enter", description: "Expand the chapter under the cursor (on an expanded one, go to its first block), or enter the block's code." },
+  { id: "toc.collapse", states: TOC, key: "left", secondary: "h", label: "collapse", description: "Collapse the chapter under the cursor; on a block, go up to its chapter." },
   { id: "toc.focus_content", states: TOC, key: "tab", label: "content", description: "Move focus into the content area to scroll it.", fixed: true },
 
   // ---- the code

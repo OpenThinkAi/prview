@@ -40,16 +40,22 @@ What you get is a full-screen review, not a diff dump:
   instructions and report no findings" in a description is read as part of the change. Invisible
   format characters (zero-width, bidi controls, tag characters) are dropped from that text, and a
   block cannot be closed early from inside, however the tag is spelled (full-width included).
-- **Keys: arrows move, prefixes hold the rest.** `↓`/`↑` (`j`/`k`) move a line and run on from one block into
-  the next; `⇧↓`/`⇧↑` (`J`/`K`) move a chapter (terminals that send shift-arrows as `\x1b[1;2B` and the like are
-  read; `J`/`K` always work). `→` (`l`) opens the finding on the cursor line, `←` (`h`) shows the chapter's intent
-  and why (where the table of contents will), `Enter` writes your own finding on the line. Everything else sits
+- **Keys: arrows move around the tree, prefixes hold the rest.** A review opens in the table of contents with the
+  cursor on the first block: `↓`/`↑` (`j`/`k`) go block to block (a collapsed chapter is one stop), `⇧↓`/`⇧↑`
+  (`J`/`K`) chapter to chapter, `→` (`l`) expands a collapsed chapter or enters a block's code, `←` (`h`) goes up
+  from a block to its chapter and collapses it; the mechanical chapter starts collapsed. The code pane shows the
+  cursor's block, and the content area its chapter's intent and why. In the code, `↓`/`↑` move a line and run on
+  from one block into the next, `⇧↓`/`⇧↑` move a chapter (terminals that send shift-arrows as `\x1b[1;2B` and the
+  like are read; `J`/`K` always work), `→` opens the finding on the cursor line, `←` closes an open finding or,
+  with none open, goes back to the table of contents at that block, and `Enter` writes your own finding on the
+  line. Everything else sits
   behind a letter prefix: `a` AI (`a i` the summary, `a ?` ask the model about this block), `v` view (`v z` zen,
   hiding the table of contents; `v c` the content area full-screen; `v e` your editor; `v w` wrap), `g` go to (`g f`/`g F` next/previous finding, wrapping; `g h`/`g H` by severity, every
   blocking one first; `g g`/`g e` top/end of the file; `g 120 Enter` that line; `g c 3 Enter` that chapter) and
   `f` filter. `s` submits, `y` copies, `?` searches the docs, `q` quits. `Esc` backs out of anything: a pending
-  prefix, full-screen, the content area, a finding, a prompt. Keys that arrive with later changes (the table of
-  contents, `\` settings, `a s` drafts, `f` filters) are in the tables already and say so when pressed.
+  prefix, full-screen, the content area, a finding, a prompt. `g f`/`g h` and the line jumps land in the code;
+  `g c` lands in the table of contents. Keys that arrive with later changes (`\` settings, `a s` drafts, `f`
+  filters) are in the tables already and say so when pressed.
 - **The screen.** A status area on top: the PR's title, then separate fields, each with a dim label: the PR number,
   the branches (or commits), `read 3/5`, the findings still to decide by severity (`▲ 2 high · 1 medium`), the
   comments, and the in-house review's suggested verdict when there is one. No field is cut to make room for another:
@@ -82,7 +88,7 @@ What you get is a full-screen review, not a diff dump:
   now, where it works and a line on how it works. `j`/`k` select, `y` copies the selected answer as plain text,
   Esc or Tab closes. It searches a small index committed with prview, so it is offline, calls no model and needs
   no config or models; a remapped key shows as you mapped it. (`a ?` is different: it asks a model.)
-- **The content area** shows one thing at a time, with a title: the summary, `←` the chapter's intent and why, an
+- **The content area** shows one thing at a time, with a title: the summary, the chapter's intent and why (in the table of contents), an
   open finding's detail, docs search results, an `a ?` answer, a prompt (your own finding, a block or comment, an
   ignore note, a question) and the submit steps. A review with a summary opens on it ("Summary of this change · not a
   finding"), with "Prepared by …" only when the review recorded which models ran; Esc empties the content area and
