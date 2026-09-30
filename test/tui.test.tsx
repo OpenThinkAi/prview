@@ -771,10 +771,10 @@ test("no box open: h goes to the previous hunk and n opens a line comment", asyn
 });
 
 test("an imported review's verdict is in the opening summary as information only; submit does not start from it", async () => {
-  const t = await open({}, { suggested: [{ by: "hal9k", verdict: "request_changes" }, { by: "imported", verdict: "approve" }] });
+  const t = await open({}, { suggested: [{ by: "mylinter", verdict: "request_changes" }, { by: "imported", verdict: "approve" }] });
   const f = t.frame();
   expect(f).toContain("Summary of this change · not a finding");
-  expect(f).toContain("hal9k's review suggested Request changes.");
+  expect(f).toContain("mylinter's review suggested Request changes.");
   expect(f).toContain("An imported review suggested Approve.");
   expect(f).toContain("information only");
   await t.press("h");

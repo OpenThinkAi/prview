@@ -231,10 +231,10 @@ const A = "a".repeat(40), B = "b".repeat(40), C = "c".repeat(40);
 const foreign = (over: Record<string, unknown> = {}) => ({
   schema: SCHEMA, target: { repo: "o/r", base: A, head: B, title: "Bump n" },
   findings: [
-    { id: 1, source: "hal9k", hunk: "src/real.rs@1:1", side: "new", line: 1, severity: "blocking", kind: "bug", claim: "n is wrong", evidence: "because" },
-    { id: 1, source: "hal9k", hunk: "src/real.rs@1:1", side: "new", line: 1, severity: "loud", claim: "same id twice" },
-    { source: "hal9k", hunk: "src/real.rs@1:1", line: "x", claim: "no line" },
-    { source: "hal9k", hunk: "src/real.rs@1:1", line: 2, claim: "" },
+    { id: 1, source: "mylinter", hunk: "src/real.rs@1:1", side: "new", line: 1, severity: "blocking", kind: "bug", claim: "n is wrong", evidence: "because" },
+    { id: 1, source: "mylinter", hunk: "src/real.rs@1:1", side: "new", line: 1, severity: "loud", claim: "same id twice" },
+    { source: "mylinter", hunk: "src/real.rs@1:1", line: "x", claim: "no line" },
+    { source: "mylinter", hunk: "src/real.rs@1:1", line: 2, claim: "" },
     "junk",
   ],
   ...over,
@@ -245,7 +245,7 @@ test("a document is parsed defensively: another schema or no commits refused, ba
   expect(() => parseDocument({ schema: "prview-review/2" })).toThrow("(it says prview-review/2)");
   expect(() => parseDocument({ schema: SCHEMA, target: { base: A, head: "main" } })).toThrow("commit ids");
   const d = parseDocument(JSON.stringify(foreign({ human: { dismissals: [1, "nope"], verdict: "ship it" }, on_submit: { run: ["notify"] } })));
-  expect(d.findings.map((f) => [f.id, f.source, f.severity, f.kind])).toEqual([["1", "hal9k", "blocking", "bug"], ["1.2", "hal9k", "warn", "finding"]]);
+  expect(d.findings.map((f) => [f.id, f.source, f.severity, f.kind])).toEqual([["1", "mylinter", "blocking", "bug"], ["1.2", "mylinter", "warn", "finding"]]);
   expect(d.plan.by).toBe("files");
   expect(d.human).toEqual({ comments: [], visited: [], decisions: { "1": { kind: "dismissed" } } }); // a legacy dismissal is "not an issue"
   expect(d.on_submit).toEqual({ run: ["notify"] }); // kept, but only ever run when the human allows it at submit
@@ -255,10 +255,10 @@ test("a document is parsed defensively: another schema or no commits refused, ba
 test("a document is held to its diff: mechanical by rule, chapters checked, findings anchored; fitting twice changes nothing", () => {
   const files = parseDiff(MECH);
   const d = parseDocument(foreign({
-    plan: { summary: "s", by: "hal9k", chapters: [{ title: "All", intent: "Verify that n is two.", hunks: ["Cargo.lock@1:1", "src/real.rs@1:1", "gone@1:1"] }], mechanical: [{ id: "src/real.rs@1:1", why: "trust me" }] },
+    plan: { summary: "s", by: "mylinter", chapters: [{ title: "All", intent: "Verify that n is two.", hunks: ["Cargo.lock@1:1", "src/real.rs@1:1", "gone@1:1"] }], mechanical: [{ id: "src/real.rs@1:1", why: "trust me" }] },
     findings: [
-      { id: "x", source: "hal9k", hunk: "src/real.rs@1:1", side: "new", line: 40, claim: "off the hunk" },
-      { id: "y", source: "hal9k", hunk: "gone@1:1", side: "new", line: 1, claim: "no such hunk" },
+      { id: "x", source: "mylinter", hunk: "src/real.rs@1:1", side: "new", line: 40, claim: "off the hunk" },
+      { id: "y", source: "mylinter", hunk: "gone@1:1", side: "new", line: 1, claim: "no such hunk" },
     ],
     human: { visited: ["src/real.rs@1:1", "gone@1:1"], dismissals: ["y"] },
   }));
@@ -278,15 +278,15 @@ test("import merges: a finding seen before is kept once, a taken id is renamed, 
   ] }, files);
   mine.human.comments.push({ hunk: null, side: "new", line: null, text: "mine", at: "t" });
   const theirs = fit(parseDocument(foreign({
-    plan: { by: "hal9k", chapters: [{ title: "Bump", intent: "n", hunks: ["src/real.rs@1:1"] }] },
+    plan: { by: "mylinter", chapters: [{ title: "Bump", intent: "n", hunks: ["src/real.rs@1:1"] }] },
     human: { dismissals: [1], comments: [{ hunk: null, text: "mine" }, { hunk: null, text: "theirs" }], verdict: "comment" },
   })), files);
   const m = merge(mine, theirs);
-  expect(m.findings.map((f) => [f.id, f.source, f.claim])).toEqual([["1", "critic", "n is wrong"], ["1.2", "hal9k", "n is wrong"], ["1.2.2", "hal9k", "same id twice"]]);
+  expect(m.findings.map((f) => [f.id, f.source, f.claim])).toEqual([["1", "critic", "n is wrong"], ["1.2", "mylinter", "n is wrong"], ["1.2.2", "mylinter", "same id twice"]]);
   expect(m.human.decisions).toEqual({ "1.2": { kind: "dismissed" } });
   expect(m.human.comments.map((c) => c.text)).toEqual(["mine", "theirs"]);
   expect(m.human.verdict).toBe("comment");
-  expect(m.plan.by).toBe("hal9k"); // the by-file fallback gives way to a producer's chapters
+  expect(m.plan.by).toBe("mylinter"); // the by-file fallback gives way to a producer's chapters
   expect(merge(m, theirs)).toEqual(m); // importing the same document again changes nothing
   expect(() => merge(mine, { ...theirs, target: { ...theirs.target, head: C } })).toThrow("only opens against its own head");
 });
@@ -295,10 +295,10 @@ test("round trip: export, import --mine into a fresh clone with its own store, t
   const repo = join(tmp, "repo"), clone = join(tmp, "clone");
   expect(Bun.spawnSync(["git", "clone", "-q", "--no-local", repo, clone]).exitCode).toBe(0);
   const r = load((await build(repo, "main..feature", { ai: null })).slug);
-  r.doc.findings.push({ id: "h1", source: "hal9k", hunk: "keep.txt@1:1", side: "new", line: 2, severity: "nit", kind: "style", claim: "shouting", evidence: "", status: "unrefuted" });
+  r.doc.findings.push({ id: "h1", source: "mylinter", hunk: "keep.txt@1:1", side: "new", line: 2, severity: "nit", kind: "style", claim: "shouting", evidence: "", status: "unrefuted" });
   r.doc.human.decisions = { h1: { kind: "dismissed" } };
   r.doc.human.verdict = "request_changes";
-  r.doc.plan = { ...r.doc.plan, summary: "Makes two loud.", by: "hal9k", chapters: [{ title: "Loud", intent: "Two is loud", why: "", hunks: ["keep.txt@1:1"] }] };
+  r.doc.plan = { ...r.doc.plan, summary: "Makes two loud.", by: "mylinter", chapters: [{ title: "Loud", intent: "Two is loud", why: "", hunks: ["keep.txt@1:1"] }] };
   save(r);
   const out = exportDocument(load(r.slug));
   expect((JSON.parse(out) as Doc).human.comments.length).toBeGreaterThan(0);
@@ -330,7 +330,7 @@ test("import without --mine: their comments become findings to triage, their ver
   const mine = load((await build(repo, "main..feature", { ai: null })).slug);
   const theirs = JSON.parse(exportDocument(mine)) as Doc;
   theirs.target = { ...theirs.target, url: "https://github.com/o/r/pull/8", platform: "github" };
-  theirs.findings = [{ id: "1", source: "hal9k", hunk: "keep.txt@1:1", side: "new", line: 2, severity: "warn", kind: "bug", claim: "two is loud", evidence: "", status: "unrefuted" }];
+  theirs.findings = [{ id: "1", source: "mylinter", hunk: "keep.txt@1:1", side: "new", line: 2, severity: "warn", kind: "bug", claim: "two is loud", evidence: "", status: "unrefuted" }];
   theirs.human = {
     comments: [
       { id: "c1", hunk: "keep.txt@1:1", side: "new", line: 2, text: "THEIRS: rename this before merging.", at: "then" },
@@ -342,11 +342,11 @@ test("import without --mine: their comments become findings to triage, their ver
   try {
     const r = importDocument(JSON.stringify(theirs), clone);
     expect(r.doc.human).toEqual({ comments: [], visited: [] }); // nothing of theirs is in your layer
-    expect(r.suggested).toEqual([{ by: "hal9k", verdict: "request_changes" }]);
+    expect(r.suggested).toEqual([{ by: "mylinter", verdict: "request_changes" }]);
     const suggested = r.doc.findings.filter((f) => f.kind === "comment");
     expect(suggested.map((f) => [f.source, f.hunk, f.line, f.claim, titleOf(f)])).toEqual([
-      ["hal9k", "keep.txt@1:1", 2, "THEIRS: rename this before merging.", "THEIRS: rename this before merging"],
-      ["hal9k", "keep.txt@1:1", 1, "THEIRS: overall not ready.", "THEIRS: overall not ready"], // a comment on the whole change sits at the first hunk
+      ["mylinter", "keep.txt@1:1", 2, "THEIRS: rename this before merging.", "THEIRS: rename this before merging"],
+      ["mylinter", "keep.txt@1:1", 1, "THEIRS: overall not ready.", "THEIRS: overall not ready"], // a comment on the whole change sits at the first hunk
     ]);
     expect(load(r.slug).suggested).toEqual(r.suggested);
     expect(exportDocument(importDocument(JSON.stringify(theirs), clone))).toBe(exportDocument(r)); // importing it again changes nothing
@@ -508,8 +508,8 @@ test("titleOf: the finding's own title, else the claim's first sentence cut to 1
 
   const d = parseDocument(JSON.stringify(foreign({ findings: [
     { source: "stamp:security", hunk: "src/real.rs@1:1", line: 1, claim: prose },
-    { source: "hal9k", hunk: "src/real.rs@1:1", line: 1, title: "one two three four five six seven eight nine ten eleven twelve thirteen", claim: "x" },
-    { source: "hal9k", hunk: "src/real.rs@1:1", line: 1, title: "  ", claim: "y" },
+    { source: "mylinter", hunk: "src/real.rs@1:1", line: 1, title: "one two three four five six seven eight nine ten eleven twelve thirteen", claim: "x" },
+    { source: "mylinter", hunk: "src/real.rs@1:1", line: 1, title: "  ", claim: "y" },
   ] })));
   expect(d.findings.map((f) => f.title)).toEqual([undefined, "One two three four five six seven eight nine ten eleven twelve…", undefined]);
   expect(d.findings.map(titleOf)[0]).toBe("The retry loop never backs off, so a failing upstream is hit…");
