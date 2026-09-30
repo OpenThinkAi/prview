@@ -108,6 +108,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   // Long lines either scroll sideways (H/L) or wrap onto more rows (w).
   const [wrap, setWrap] = useState(false);
   const [panX, setPanX] = useState(0);
+  // Withdrawn findings (the second look knocked them down) are out of the way unless asked for: W shows them dimmed, to be read, never decided.
+  const [showWithdrawn, setShowWithdrawn] = useState(false);
 
   // The key panel: a state with keys of its own (a box, a prompt, the verdict and preview steps) opens it by itself and
   // closing the state closes it; with nothing open it is only there when `\` asks. A press of `\` (or Esc, with nothing
@@ -142,7 +144,10 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   // Open: shown and not decided yet. The ▲ counts on the rail and header are what is left to decide.
   const open = (f: Finding) => live(f) && unhidden(f) && !decisionOf(h, f.id);
   const visible = () => d.findings.filter((f) => live(f) && unhidden(f));
-  const findingsHere = item ? d.findings.filter((f) => f.hunk === item.id && live(f) && unhidden(f)) : [];
+  // What the gutter marks and f / ]f step through: the live findings, plus the withdrawn ones while W shows them.
+  const listed = (f: Finding) => (live(f) || showWithdrawn) && unhidden(f);
+  const withdrawnCount = d.findings.filter((f) => !live(f) && unhidden(f)).length;
+  const findingsHere = item ? d.findings.filter((f) => f.hunk === item.id && listed(f)) : [];
   const findingsAt = (l: DiffLine) => findingsHere.filter((f) => f.side === "new" ? l.n !== null && f.line === l.n : l.o !== null && f.line === l.o);
   const notesAt = (l: DiffLine) => h.comments.filter((n) => n.hunk === item?.id && n.line !== null && (n.side === "new" ? n.line === l.n : n.line === l.o));
 
@@ -162,6 +167,11 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     return l.n !== null ? { side: "new", line: l.n } : { side: "old", line: l.o };
   };
   const showFinding = (f: Finding) => {
+    // A withdrawn finding is shown to be read, in a plain notice: it takes no decision, so the decision keys are not offered.
+    if (!live(f)) {
+      setFloat({ title: `▽ withdrawn · ${f.source} · ${f.kind} · ${f.severity}`, color: "gray", lead: titleOf(f), copy: findingText(f, place(f.hunk, f.line)), body: [claimAddsTo(f) ? f.claim : "", f.evidence, `Withdrawn by the second look: ${f.refute || "no reason given"}`].filter(Boolean).join("\n\n") });
+      return;
+    }
     const dec = decisionOf(h, f.id), p = progress(visible(), h), mine = linkedComment(h, f.id);
     const state = dec
       ? `Decided: ${LABEL[dec.kind]}${dec.reason ? ` (${dec.reason})` : ""}${mine ? `. Your comment: ${mine.text}` : ""}`
@@ -183,7 +193,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     setFloat({ title: `Findings · ${p.decided}/${p.total} decided`, color: "green", body: `Every finding${hidden.size ? " you can see" : ""} is decided.${hidden.size ? ` Chapters you have not read yet keep theirs hidden; ${keyOf("nav.reveal")} reveals one.` : ""} ${keyOf("finding.hide")} closes this, then ${keyOf("nav.submit")} submits; ${keyOf("finding.next")} and ${keyOf("finding.prev")} step back through them, ${keyOf("finding.undo")} undoes one.` });
   };
   const jumpFinding = (dir: 1 | -1) => {
-    const hit = nextFinding(items, d.findings.filter((f) => live(f) && unhidden(f)), { item: pos.item, line }, dir);
+    const hit = nextFinding(items, d.findings.filter(listed), { item: pos.item, line }, dir);
     if (!hit) { setFloat({ title: "Findings", body: (dir > 0 ? "No more findings after this point." : "No findings before this point.") + (hidden.size ? ` Chapters you have not read yet keep theirs hidden; close this with ${keyOf("info.hide")}, then ${keyOf("nav.reveal")} reveals one.` : "") }); return; }
     setPos({ item: hit.item, line: hit.line });
     showFinding(hit.finding);
@@ -381,6 +391,10 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       case "nav.ask": setMode({ kind: "ask" }); return;
       case "nav.ask_docs": setMode({ kind: "docs" }); setInput(""); return;
       case "nav.wrap": setWrap(!wrap); setPanX(0); return;
+      case "nav.withdrawn":
+        setShowWithdrawn(!showWithdrawn);
+        setNote(showWithdrawn ? "withdrawn findings hidden" : withdrawnCount ? `showing ${withdrawnCount} withdrawn finding${withdrawnCount === 1 ? "" : "s"}, dimmed ▽` : "no findings were withdrawn");
+        return;
       case "nav.pan_left": case "nav.pan_right": if (!wrap) setPanX(clampX(panX + (id === "nav.pan_right" ? PAN : -PAN), longest, codeCols)); return;
     }
   };
@@ -392,6 +406,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const total = items.filter((i) => !i.mechanical).length, seen = items.filter((i) => !i.mechanical && h.visited.includes(i.id)).length;
   const liveFindings = d.findings.filter(open).length;
   const anyHidden = d.findings.some((f) => live(f) && !unhidden(f));
+  // The counts on the right of the header: read, open ▲, withdrawn (when any were), comments. The title gets the rest.
+  const countsW = Math.max(32, `${seen}/${total} read · ${liveFindings} ▲${anyHidden ? "?" : ""}${withdrawnCount ? ` · ${withdrawnCount} withdrawn` : ""} · ${h.comments.length} comments `.length);
 
   // A finding's float sits right under the cursor line (the summary at the top of the hunk), so the window keeps that many rows free.
   const leadLines = float?.lead ? wrapText(float.lead, floatInner) : [];
@@ -451,8 +467,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   return (
     <Box flexDirection="column" width={cols} height={rows}>
       <Box justifyContent="space-between">
-        <Box width={cols - 34}><Text wrap="truncate"><Text bold> {d.target.title}</Text><Text dimColor>  {d.target.url ?? d.target.label}</Text></Text></Box>
-        <Box width={32} justifyContent="flex-end"><Text>{seen}/{total} read · <Text color="yellow">{liveFindings} ▲{anyHidden ? "?" : ""}</Text> · {h.comments.length} comment{h.comments.length === 1 ? "" : "s"} </Text></Box>
+        <Box width={cols - countsW - 2}><Text wrap="truncate"><Text bold> {d.target.title}</Text><Text dimColor>  {d.target.url ?? d.target.label}</Text></Text></Box>
+        <Box width={countsW} justifyContent="flex-end"><Text>{seen}/{total} read · <Text color="yellow">{liveFindings} ▲{anyHidden ? "?" : ""}</Text>{withdrawnCount ? <Text dimColor> · {withdrawnCount} withdrawn</Text> : null} · {h.comments.length} comment{h.comments.length === 1 ? "" : "s"} </Text></Box>
       </Box>
       <Box flexGrow={1}>
         <Box width={railW} flexDirection="column" borderStyle="single" borderRight borderTop={false} borderBottom={false} borderLeft={false} borderColor="gray" paddingRight={1}>
@@ -494,7 +510,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
                 const cur = i === line;
                 const fs = findingsAt(l), ns = notesAt(l);
                 const worst = fs.filter(open).sort(worstFirst)[0];
-                const mark = worst ? <Text color={SEV[worst.severity]}>▲</Text> : fs.length ? <Text dimColor>△</Text> : ns.length ? <Text color="cyan">»</Text> : <Text> </Text>;
+                // ▲ open, △ decided, ▽ withdrawn (only while W shows them).
+                const mark = worst ? <Text color={SEV[worst.severity]}>▲</Text> : fs.some(live) ? <Text dimColor>△</Text> : fs.length ? <Text dimColor>▽</Text> : ns.length ? <Text color="cyan">»</Text> : <Text> </Text>;
                 const num = String(l.n ?? l.o ?? "").padStart(gutterW);
                 const color = l.t === "+" ? "green" : l.t === "-" ? "red" : undefined;
                 const changed = l.t !== " ";

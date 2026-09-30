@@ -88,6 +88,7 @@ export const NAV_KEYS: NavAction[] = [
   { id: "nav.finding_here", key: "f", label: "find", description: "Open the next finding in this hunk, from the cursor, wrapping." },
   { id: "nav.prev_finding", key: "[f", label: "find", description: "Go to the previous finding anywhere in the review and open it.", hidden: true },
   { id: "nav.reveal", key: "F", label: "reveal", blind: true, description: "Reveal this chapter's findings before you have been through it." },
+  { id: "nav.withdrawn", key: "W", label: "withdrawn", description: "Show or hide the findings the second look withdrew, dimmed in the gutter with its reason; they are never decided or posted." },
   { id: "nav.why", key: "?", label: "why", description: "Explain why this chapter is here and what to check in it." },
   { id: "nav.copy", key: "y", label: "copy", description: "Copy the cursor line's path:line reference." },
   { id: "nav.ask", key: "a", label: "ask", description: "Ask the model a question about this hunk." },
