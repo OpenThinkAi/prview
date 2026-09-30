@@ -147,7 +147,17 @@ prview export pm-pr-42 > review.json    # the whole review, yours included
 prview import review.json               # merge into the review at that head, or start one here
 other-reviewer --json | prview import - # another producer's findings, beside the critic's
 prview show review.json                 # import, then open
+prview import --mine review.json        # restore your own export, your comments and verdict with it
 ```
+
+A document's `human` layer is whoever wrote it, and anything posted to the pull request is your
+own words. So importing never merges someone else's comments, decisions or verdict into yours:
+each of their comments arrives as a finding (kind `comment`, source the document's producer, or
+`imported` when its findings name more than one) that you decide on like any other, `c` or `b`
+to adopt it as your own comment (prefilled with its title, yours to edit) and `n` to reject it.
+Their verdict is shown in the opening summary box as information; submit never picks it for you.
+Their coverage, reveals and decisions are dropped. Only `--mine`, for your own export, keeps the
+`human` layer as it is.
 
 A document is anchored on its head commit and is refused by a review at any other head.
 [`schema/`](./schema/) has the JSON Schema and what a producer needs to emit.

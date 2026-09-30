@@ -2,8 +2,8 @@
 
 prview reads one document format, described by
 [`prview-review-1.schema.json`](./prview-review-1.schema.json). Any reviewer that writes it
-can feed prview: `prview import review.json` (or `-` for stdin) merges it into the review at
-that head, `prview show review.json` imports it and opens it. prview never asks which tool
+can feed prview: `prview import review.json` (or `-` for stdin) merges its findings and chapters
+into the review at that head, `prview show review.json` imports it and opens it. prview never asks which tool
 wrote a document; the only trace of a producer is the `source` on each finding.
 
 ## The least a producer writes
@@ -48,8 +48,14 @@ wrote a document; the only trace of a producer is the `source` on each finding.
 - **`on_submit`**: `{ "run": ["argv", "..."] }` (or one string, `"cat {file} > /tmp/x"`), a command
   you want run once the human submits, e.g. to take a copy of the finished review. See below.
 - **`human`**: the reader's comments, dismissals, coverage and verdict. prview writes this;
-  a producer normally leaves it out. `prview export <name>` prints a whole document, `human`
-  included, so a review moves between clones with `export` and `import`.
+  a producer normally leaves it out. Whatever a producer puts here is never taken as the reader's
+  own, since anything posted is the reader's words: each comment becomes a finding (kind `comment`,
+  its text as the claim, anchored at its hunk and line, or at the diff's first hunk when it has
+  none; source your findings' `source` when they all share one, else `imported`) that the reader
+  adopts as their own editable comment or rejects; the verdict is shown to them as information and
+  never picked; decisions, `visited` and `revealed` are dropped. `prview export <name>` prints a
+  whole document, `human` included, and `prview import --mine <file>` restores it as it was, so a
+  reader moves their own review between clones with `export` and `import --mine`.
 
 ## Submission and `on_submit`
 

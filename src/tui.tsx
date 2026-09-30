@@ -88,7 +88,10 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const redraw = () => { save(r); bump((n) => n + 1); };
   const [pos, setPosRaw] = useState<Pos>(() => ({ item: Math.min(r.pos.item, Math.max(0, items.length - 1)), line: r.pos.line }));
   const setPos = (p: Pos) => { r.pos = p; setPosRaw(p); };
-  const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary ? { title: "Summary of this change · not a finding", summary: true, color: "magenta", copy: d.plan.summary, body: [d.plan.summary, preparedBy(review.ai?.runs), `${keyOf(BINDINGS_ACTION)} shows the keys for where you are; ${keyOf("info.hide")} closes this.`].filter(Boolean).join("\n\n") } : null);
+  // An imported review's verdict is only ever information here: submit never starts from it.
+  const verdicts = (review.suggested ?? []).map((v) => `${v.by === "imported" ? "An imported review" : `${v.by}'s review`} suggested ${VERDICT[v.verdict]}.`);
+  const suggested = verdicts.length ? [...verdicts, "That is information only: you pick your own verdict at submit."].join("\n") : "";
+  const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary || suggested ? { title: "Summary of this change · not a finding", summary: true, color: "magenta", copy: d.plan.summary || suggested, body: [d.plan.summary, suggested, preparedBy(review.ai?.runs), `${keyOf(BINDINGS_ACTION)} shows the keys for where you are; ${keyOf("info.hide")} closes this.`].filter(Boolean).join("\n\n") } : null);
   const [scroll, setScroll] = useState(0);
   // What `y` just did, shown in the footer until the next key.
   const [note, setNote] = useState<string | null>(null);

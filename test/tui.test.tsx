@@ -71,10 +71,11 @@ const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const row = (keys: string, label: string) => new RegExp(`(?:│ |   )${esc(keys)} +${esc(label)}(?: |\\s*│)`);
 const listing = (e: { keys: string; label: string }[]) => e.map((x) => `${x.keys} ${x.label}`);
 const settle = () => new Promise((r) => setTimeout(r, 30));
-async function open(over?: Over, props: { ai?: Review["ai"]; blind?: boolean; dryRun?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined } = {}) {
+async function open(over?: Over, props: { ai?: Review["ai"]; suggested?: Review["suggested"]; blind?: boolean; dryRun?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined } = {}) {
   const outcomes: Outcome[] = [];
   const r = fixture(over);
   r.ai = props.ai;
+  if (props.suggested) r.suggested = props.suggested;
   const app = render(<App review={r} files={files} onDone={(o) => outcomes.push(o)} beside={props.beside} blind={props.blind} dryRun={props.dryRun} size={{ cols: props.cols ?? 120, rows: props.rows ?? 40 }} />);
   await settle();
   // One key at a time: a handler closes over the state of its render, so two keys in one chunk would both see the old cursor.
@@ -767,6 +768,20 @@ test("no box open: h goes to the previous hunk and n opens a line comment", asyn
   await t.press("d");
   await t.press("i");
   expect(t.r.doc.human.decisions).toBeUndefined();
+});
+
+test("an imported review's verdict is in the opening summary as information only; submit does not start from it", async () => {
+  const t = await open({}, { suggested: [{ by: "hal9k", verdict: "request_changes" }, { by: "imported", verdict: "approve" }] });
+  const f = t.frame();
+  expect(f).toContain("Summary of this change · not a finding");
+  expect(f).toContain("hal9k's review suggested Request changes.");
+  expect(f).toContain("An imported review suggested Approve.");
+  expect(f).toContain("information only");
+  await t.press("h");
+  await t.press("s");
+  expect(t.frame()).toContain("verdict ›");
+  expect(t.frame()).not.toContain("Enter takes");
+  expect(t.r.doc.human.verdict).toBeUndefined();
 });
 
 // ---------------------------------------------------------------- every box and the nav footer: the footer is the truth

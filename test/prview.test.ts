@@ -291,24 +291,27 @@ test("import merges: a finding seen before is kept once, a taken id is renamed, 
   expect(() => merge(mine, { ...theirs, target: { ...theirs.target, head: C } })).toThrow("only opens against its own head");
 });
 
-test("round trip: export, import into a fresh clone with its own store, the same review; a document for another head is refused", async () => {
+test("round trip: export, import --mine into a fresh clone with its own store, the same review; a document for another head is refused", async () => {
   const repo = join(tmp, "repo"), clone = join(tmp, "clone");
   expect(Bun.spawnSync(["git", "clone", "-q", "--no-local", repo, clone]).exitCode).toBe(0);
   const r = load((await build(repo, "main..feature", { ai: null })).slug);
   r.doc.findings.push({ id: "h1", source: "hal9k", hunk: "keep.txt@1:1", side: "new", line: 2, severity: "nit", kind: "style", claim: "shouting", evidence: "", status: "unrefuted" });
   r.doc.human.decisions = { h1: { kind: "dismissed" } };
+  r.doc.human.verdict = "request_changes";
   r.doc.plan = { ...r.doc.plan, summary: "Makes two loud.", by: "hal9k", chapters: [{ title: "Loud", intent: "Two is loud", why: "", hunks: ["keep.txt@1:1"] }] };
   save(r);
   const out = exportDocument(load(r.slug));
+  expect((JSON.parse(out) as Doc).human.comments.length).toBeGreaterThan(0);
 
   process.env.PRVIEW_HOME = join(tmp, "store2");
   try {
-    const there = importDocument(out, clone);
+    const there = importDocument(out, clone, true);
     expect(there.repo.endsWith("/clone")).toBe(true);
     expect(there.doc).toEqual(load(there.slug).doc);
     expect(exportDocument(there)).toBe(out);
+    expect(there.suggested).toBeUndefined(); // your own verdict is yours, not a suggestion
     expect(Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: there.worktree }).stdout.toString().trim()).toBe(there.doc.target.head);
-    expect(exportDocument(importDocument(out, clone))).toBe(out); // a second import merges into it and changes nothing
+    expect(exportDocument(importDocument(out, clone, true))).toBe(out); // a second import merges into it and changes nothing
 
     // A PR's document names the PR; a second document for that PR at another head is refused.
     const doc = JSON.parse(out) as Doc;
@@ -317,6 +320,52 @@ test("round trip: export, import into a fresh clone with its own store, the same
     const first = importDocument(JSON.stringify({ ...pr, target: { ...pr.target, base, head: base } }), clone);
     expect(first.slug).toBe("clone-pr-7");
     expect(() => importDocument(JSON.stringify({ ...pr, target: { ...pr.target, head: C } }), clone)).toThrow("only opens against its own head");
+  } finally { process.env.PRVIEW_HOME = join(tmp, "store"); }
+});
+
+test("import without --mine: their comments become findings to triage, their verdict information only; a dry-run submit posts none of it", async () => {
+  const repo = join(tmp, "repo"), clone = join(tmp, "clone");
+  const { submit } = await import("../src/submit.ts");
+  const { decide } = await import("../src/triage.ts");
+  const mine = load((await build(repo, "main..feature", { ai: null })).slug);
+  const theirs = JSON.parse(exportDocument(mine)) as Doc;
+  theirs.target = { ...theirs.target, url: "https://github.com/o/r/pull/8", platform: "github" };
+  theirs.findings = [{ id: "1", source: "hal9k", hunk: "keep.txt@1:1", side: "new", line: 2, severity: "warn", kind: "bug", claim: "two is loud", evidence: "", status: "unrefuted" }];
+  theirs.human = {
+    comments: [
+      { id: "c1", hunk: "keep.txt@1:1", side: "new", line: 2, text: "THEIRS: rename this before merging.", at: "then" },
+      { hunk: null, side: "new", line: null, text: "THEIRS: overall not ready.", at: "then" },
+    ],
+    visited: ["keep.txt@1:1"], decisions: { "1": { kind: "block", comment: "c1" } }, revealed: ["keep.txt@1:1"], verdict: "request_changes",
+  };
+  process.env.PRVIEW_HOME = join(tmp, "store3");
+  try {
+    const r = importDocument(JSON.stringify(theirs), clone);
+    expect(r.doc.human).toEqual({ comments: [], visited: [] }); // nothing of theirs is in your layer
+    expect(r.suggested).toEqual([{ by: "hal9k", verdict: "request_changes" }]);
+    const suggested = r.doc.findings.filter((f) => f.kind === "comment");
+    expect(suggested.map((f) => [f.source, f.hunk, f.line, f.claim, titleOf(f)])).toEqual([
+      ["hal9k", "keep.txt@1:1", 2, "THEIRS: rename this before merging.", "THEIRS: rename this before merging"],
+      ["hal9k", "keep.txt@1:1", 1, "THEIRS: overall not ready.", "THEIRS: overall not ready"], // a comment on the whole change sits at the first hunk
+    ]);
+    expect(load(r.slug).suggested).toEqual(r.suggested);
+    expect(exportDocument(importDocument(JSON.stringify(theirs), clone))).toBe(exportDocument(r)); // importing it again changes nothing
+    expect(load(r.slug).suggested).toEqual(r.suggested);
+
+    // No decisions: nothing is pre-set, and once you pick a verdict the calls carry none of their words.
+    const files = filesOf(r);
+    expect(() => submit(r, files, { allowHook: false, dryRun: true })).toThrow("pick a verdict");
+    r.doc.human.verdict = "approve";
+    const dry = submit(r, files, { allowHook: false, dryRun: true }).summary;
+    expect(dry).toContain("APPROVE");
+    expect(dry).not.toContain("THEIRS");
+    expect(dry).not.toContain("REQUEST_CHANGES");
+
+    // Adopting one with c makes it your comment, in the words you saved; only those are posted.
+    r.doc.human = { ...decide(r.doc.human, suggested[0]!, "comment", { text: "Please rename this.", at: "now" }), verdict: "comment" };
+    const adopted = submit(r, files, { allowHook: false, dryRun: true }).summary;
+    expect(adopted).toContain("Please rename this.");
+    expect(adopted).not.toContain("THEIRS");
   } finally { process.env.PRVIEW_HOME = join(tmp, "store"); }
 });
 

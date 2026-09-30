@@ -71,7 +71,7 @@
       }
     },
     "human": {
-      "description": "The reader's layer. A producer normally leaves it out.",
+      "description": "The reader's layer. A producer normally leaves it out. On import its comments become findings of kind comment for the reader to adopt or reject, its verdict is shown as information only, and the rest is dropped; only prview import --mine (the reader restoring their own export) keeps it as it is.",
       "type": "object",
       "properties": {
         "comments": {
