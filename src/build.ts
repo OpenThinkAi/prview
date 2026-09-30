@@ -13,9 +13,8 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { earlyTitles } from "./blind.ts";
 import { clean, visible } from "./sanitize.ts";
-import { LABEL } from "./triage.ts";
+import { IN_HOUSE, LABEL, suggestVerdict } from "./triage.ts";
 import { parseDiff, type FileDiff } from "./diff.ts";
-import { suggestVerdict, IN_HOUSE } from "./triage.ts";
 import { blank, Fail, fit, merge, parseDocument, SCHEMA, suggestions, type Comment, type Doc, type Suggested, type Target } from "./document.ts";
 import {
   applyReask, applyRefute, classify, CRITIC_SYSTEM, criticPrompt, DATA_RULE, fence, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, numbered, refutable,
