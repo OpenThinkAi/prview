@@ -435,7 +435,7 @@ export function writeup(d: Doc, files: FileDiff[], defaults: Defaults = DEFAULTS
   const place = (c: Comment) => {
     if (!c.hunk) return "General";
     const x = hunks.find((y) => y.id === c.hunk);
-    return `${visible(x?.file.path ?? c.hunk)}${c.line !== null ? `:${c.line}` : ""}`;
+    return `${visible(x?.file.path ?? c.hunk)}${c.file ? " (whole file)" : c.line !== null ? `:${c.line}` : ""}`;
   };
   const out = [`# ${t.title}`, ``, `${h.verdict ? `**${VERDICT[h.verdict]}** · ` : ""}${t.url ?? t.label} · read ${seen} of ${total} hunks`, ``];
   const general = h.comments.filter((c) => !c.hunk), placed = h.comments.filter((c) => c.hunk);
@@ -449,7 +449,7 @@ export function writeup(d: Doc, files: FileDiff[], defaults: Defaults = DEFAULTS
   const kept = d.findings.map((f) => ({ f, a: actionOf(h, f, defaults) })).filter(({ a }) => a.kind !== "ignore");
   if (kept.length) {
     out.push(`## Findings you kept`, ``);
-    for (const { f, a } of kept) out.push(`- ${visible(f.hunk.split("@")[0]!)} ${f.side} ${f.line} · ${f.severity} · ${titleOf(f)} · ${actionText(a)}`);
+    for (const { f, a } of kept) out.push(`- ${visible(f.hunk.split("@")[0]!)} ${f.file ? "whole file" : `${f.side} ${f.line}`} · ${f.severity} · ${titleOf(f)} · ${actionText(a)}`);
   }
   return out.join("\n") + "\n";
 }

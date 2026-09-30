@@ -20,7 +20,7 @@ export class Fail extends Error {}
 export type Verdict = "approve" | "request_changes" | "comment";
 export type Target = { repo: string; base: string; head: string; url?: string; platform?: string; title: string; body: string; label: string };
 /** `id` is only set on a comment something points at: the one a finding's block or comment action wrote. */
-export type Comment = { id?: string; hunk: string | null; side: "new" | "old"; line: number | null; text: string; at: string };
+export type Comment = { id?: string; hunk: string | null; side: "new" | "old"; line: number | null; text: string; at: string; /** On the whole file `hunk` belongs to, not on a line of it. */ file?: true };
 /**
  * The reader's action on one finding, when they chose one (a finding without one is on its default, see
  * triage.ts). `block` and `comment` made a line comment of the reader's own (`comment` is its id); `ignore`
@@ -91,7 +91,9 @@ export function parseDocument(input: unknown): Doc {
   const ids = new Set<string>();
   const findings: Finding[] = [];
   for (const f of arr(j.findings).filter(isObj)) {
-    const claim = str(f.claim, 300), line = Number(f.line), title = fitLine(str(f.title, 300)).text;
+    const file = f.file === true;
+    // A finding on a whole file has no line of its own: 0 (the row that starts the file's diff) unless it says 1 (the row that ends it).
+    const claim = str(f.claim, 300), line = file ? (Number(f.line) === 1 ? 1 : 0) : Number(f.line), title = fitLine(str(f.title, 300)).text;
     if (typeof f.hunk !== "string" || !claim || !Number.isInteger(line)) continue;
     // Ids only have to be unique within the document; a repeat or a missing one gets a fresh id.
     let id = typeof f.id === "string" || typeof f.id === "number" ? clip(clean(String(f.id)), 80) : `f${findings.length}`;
@@ -99,7 +101,7 @@ export function parseDocument(input: unknown): Doc {
     ids.add(id);
     findings.push({
       id, source: str(f.source, 40) || "unknown", hunk: f.hunk, side: side(f.side), line,
-      severity: severityOf(f.severity), kind: str(f.kind, 30).toLowerCase() || "finding",
+      severity: severityOf(f.severity), kind: str(f.kind, 30).toLowerCase() || "finding", ...(file ? { file: true as const } : {}),
       // A producer's title is held to 12 words like the critic's; one it did not give is derived on display.
       ...(title ? { title } : {}),
       claim, evidence: str(f.evidence, 500), status: STATUSES.has(f.status as Finding["status"]) ? f.status as Finding["status"] : "unrefuted",
@@ -118,7 +120,8 @@ export function parseDocument(input: unknown): Doc {
       // A repeated id would make a decision point at two comments: the second one loses it.
       const id = typeof c.id === "string" && c.id && c.id.length <= 40 && !cids.has(c.id) ? c.id : undefined;
       if (id) cids.add(id);
-      return [{ ...(id ? { id } : {}), hunk: typeof c.hunk === "string" ? c.hunk : null, side: side(c.side), line: Number.isInteger(c.line) ? c.line as number : null, text, at: str(c.at, 40) }];
+      const hunk = typeof c.hunk === "string" ? c.hunk : null;
+      return [{ ...(id ? { id } : {}), hunk, side: side(c.side), line: Number.isInteger(c.line) ? c.line as number : null, text, at: str(c.at, 40), ...(c.file === true && hunk ? { file: true as const } : {}) }];
     }),
     visited: arr(h.visited).filter((v): v is string => typeof v === "string"),
   };
@@ -220,7 +223,7 @@ export function fit(doc: Doc, files: FileDiff[]): Doc {
   const at = new Map(hunks.map((h) => [h.id, h]));
   const findings = doc.findings.flatMap((f) => {
     const h = at.get(f.hunk)?.hunk;
-    return h ? [{ ...f, line: anchorLine(h, f.side, f.line) }] : [];
+    return h ? [f.file ? f : { ...f, line: anchorLine(h, f.side, f.line) }] : [];
   });
   const ids = new Set(findings.map((f) => f.id));
   const human: Human = { ...doc.human, visited: doc.human.visited.filter((v) => at.has(v)) };
@@ -272,8 +275,8 @@ export function suggestions(doc: Doc, files: FileDiff[]): { doc: Doc; suggested?
 
 // ---------------------------------------------------------------- merging two
 
-const findingKey = (f: Finding) => [f.source, f.hunk, f.side, f.line, f.claim].join("\0");
-const commentKey = (c: Comment) => [c.hunk, c.side, c.line, c.text].join("\0");
+const findingKey = (f: Finding) => [f.source, f.hunk, f.side, f.line, f.file ? "file" : "", f.claim].join("\0");
+const commentKey = (c: Comment) => [c.hunk, c.side, c.line, c.file ? "file" : "", c.text].join("\0");
 
 /**
  * `incoming` folded into `into`, both at the same head. A finding already there (same source,

@@ -18,13 +18,13 @@ const CODE: KeyState = { state: "code" }, TOC: KeyState = { state: "toc" }, FIND
 /** Every state a key can be pressed in, with each variant that changes what is listed. */
 const ALL_STATES: KeyState[] = [
   TOC, CODE, FINDING, CONTENT, { state: "content", results: true }, { state: "settings" },
-  { state: "prompt", kind: "ask" }, { state: "prompt", kind: "comment" }, { state: "prompt", kind: "comment", decide: true }, { state: "prompt", kind: "reason" }, { state: "prompt", kind: "docs" },
+  { state: "prompt", kind: "ask" }, { state: "prompt", kind: "comment" }, { state: "prompt", kind: "comment", decide: true }, { state: "prompt", kind: "reason" }, { state: "prompt", kind: "docs" }, { state: "prompt", kind: "severity" }, { state: "prompt", kind: "finding" },
   { state: "submit", step: "verdict" },
   { state: "submit", step: "preview", dryRun: false, hook: null, coverage: null }, { state: "submit", step: "preview", dryRun: true, hook: false, coverage: true },
 ];
 const name = (s: KeyState) => JSON.stringify(s);
 /** Keys a terminal can send: every printable ASCII character and every named key. */
-const UNIVERSE = [...Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)), ...NAMED_KEYS, "ctrl-d", "ctrl-u", "ctrl-w", "ctrl-x"];
+const UNIVERSE = [...Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)), ...NAMED_KEYS, "ctrl-d", "ctrl-u", "ctrl-w", "ctrl-x", "ctrl-n"];
 const press = (ks: KeyState, keys: string[], km: Keymap = DEFAULT_KEYMAP) => {
   let pending: Pending | null = null;
   let out: ReturnType<typeof step>["out"] = { kind: "none" };

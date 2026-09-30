@@ -25,6 +25,8 @@ export type Finding = {
   claim: string; evidence: string; status: "upheld" | "withdrawn" | "unrefuted"; refute?: string;
   /** How many of the critic's runs raised this finding. Absent on reviews saved before sampling. */
   votes?: number;
+  /** A finding about the whole file, anchored to the file and not to a line: `hunk` is one of the file's blocks, and `line` 0 means it is shown on the row that starts the file's diff, 1 on the row that ends it. */
+  file?: true;
 };
 
 /** A hunk's id is stable for as long as the head is: the file plus where it starts on each side. */

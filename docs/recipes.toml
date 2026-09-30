@@ -209,9 +209,9 @@ why = "Pages the open finding's text a screen at a time."
 # ---- your own findings
 
 [[recipe]]
-q = ["how do I leave a comment on a line", "write my own note on this code", "add my own finding on this line", "comment on the line under my cursor"]
-actions = ["code.new_finding"]
-why = "Writes a finding of your own on the cursor line; it is posted as your own words at submit."
+q = ["how do I leave a comment on a line", "write my own note on this code", "add my own finding on this line", "comment on a whole file"]
+actions = ["code.new_finding", "go.top", "go.end"]
+why = "Writes a finding of your own: pick a severity, then the comment. On a line it is a line comment; on a file's whole-file row (g g and g e land there) it is a comment on the whole file. It is posted as your own words at submit."
 
 # ---- help and settings
 

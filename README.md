@@ -121,7 +121,12 @@ What you get is a full-screen review, not a diff dump:
   added and removed lines the green or red stays and tokens differ by weight, so the diff still reads
   first. Below 100 columns the rail shrinks to chapter numbers. A long line is cut with `…`; `v w`
   wraps it instead.
-- **Notes and coverage.** `Enter` writes your own finding on the line, posted as your comment there.
+- **Your own findings and coverage.** `Enter` makes a finding of your own: pick a severity (`↑`/`↓`, Enter), then
+  write the comment (`ctrl-n` for a new line, Enter saves). It is a finding from `you` with its severity's default
+  action, carried out as your comment, and from then on it behaves like any finding (`→` opens it, `b`/`c`/`i`, `y`).
+  `→` only ever opens an existing finding; `Enter` always makes a new one. Each file's diff starts and ends with a
+  "whole file" row (`g g` and `g e` land on them): `Enter` there makes a file-level finding, posted to GitHub as a
+  file-level review comment, or, if GitHub will not take it, in the summary under the file's name.
   Everything is saved as you go; `q` and come back later.
 - **Submit.** `s` picks a verdict; Enter takes request changes when you blocked on a finding. The
   preview then lists every finding with its action (`(default)` when you left it), the write-up (notes with file
@@ -131,7 +136,7 @@ What you get is a full-screen review, not a diff dump:
   Enter alone skips it. `v` adds a line saying how much you read to the posted summary (off by
   default). On GitHub (through `gh`) this is one review: the head commit is checked first (a PR that
   moved since the review is refused), a pending review gets your line comments (right side for lines
-  in the new file, left for the old), then it is submitted with your verdict and summary. A failed
+  in the new file, left for the old), file-level comments follow one by one, then it is submitted with your verdict and summary. A failed
   post or command is reported, and the file is kept. Only your own words are posted: a finding
   reaches the PR only as the `b`/`c` comment you saved for it; one left on its default action posts nothing.
   `--dry-run` prints the API calls a submit would make and does nothing else.

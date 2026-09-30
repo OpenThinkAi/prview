@@ -20,7 +20,11 @@ export const spawn: Runner = (argv, { cwd, stdin }) => {
 };
 
 /** The human's layer, ready to post: verdict, the summary (general comments) and the line comments. */
-export type Posting = { verdict: Verdict; body: string; /** The coverage line, when the human chose to add it: appended to the body, never counted as words of their own. */ coverage?: string; comments: { path: string; side: "new" | "old"; line: number; text: string }[] };
+export type Posting = {
+  verdict: Verdict; body: string; /** The coverage line, when the human chose to add it: appended to the body, never counted as words of their own. */ coverage?: string; comments: { path: string; side: "new" | "old"; line: number; text: string }[];
+  /** Comments on a whole file rather than a line: posted as file-level comments where the platform has them, else folded into the summary. */
+  files?: { path: string; text: string }[];
+};
 
 export type Adapter = {
   platform: string;
@@ -41,14 +45,15 @@ export function postingOf(
   /** What the human chose to add: a coverage line. */
   extra: { coverage?: string } = {},
 ): Posting {
-  const body: string[] = [], placed: Posting["comments"] = [];
+  const body: string[] = [], placed: Posting["comments"] = [], files: NonNullable<Posting["files"]> = [];
   for (const c of comments) {
     const path = c.hunk ? pathOf(c.hunk) : undefined;
     if (!c.hunk) body.push(c.text);
+    else if (path && c.file) files.push({ path, text: c.text });
     else if (path && c.line !== null) placed.push({ path, side: c.side, line: c.line, text: c.text });
     else body.push(`${path ?? c.hunk.split("@")[0]}: ${c.text}`);
   }
-  return { verdict, body: body.join("\n\n"), ...(extra.coverage ? { coverage: extra.coverage } : {}), comments: placed };
+  return { verdict, body: body.join("\n\n"), ...(extra.coverage ? { coverage: extra.coverage } : {}), comments: placed, ...(files.length ? { files } : {}) };
 }
 
 // ---------------------------------------------------------------- GitHub
@@ -60,9 +65,10 @@ const prOf = (t: Target) => t.url?.match(/^https:\/\/github\.com\/([^/]+)\/([^/]
 function githubProblem(t: Target, p: Posting): string | undefined {
   if (!prOf(t)) return "no GitHub pull request URL in the document's target";
   // GitHub wants words with a change request or a comment; prview never writes them for you.
-  if (p.verdict !== "approve" && !p.body.trim() && !p.comments.length) return `${p.verdict === "request_changes" ? "requesting changes" : "a comment"} needs a summary comment (N) or a line comment (n) to post`;
+  const words = p.comments.length + (p.files?.length ?? 0);
+  if (p.verdict !== "approve" && !p.body.trim() && !words) return `${p.verdict === "request_changes" ? "requesting changes" : "a comment"} needs a summary comment (N) or a line comment (n) to post`;
   // The coverage line is opt-in and is never the whole review: there must be words of the human's own beside it.
-  if (p.coverage && !p.body.trim() && !p.comments.length) return "a coverage line needs a summary comment (N) or a line comment (n) to go with it";
+  if (p.coverage && !p.body.trim() && !words) return "a coverage line needs a summary comment (N) or a line comment (n) to go with it";
   return undefined;
 }
 
@@ -93,6 +99,8 @@ function githubCalls(t: Target, p: Posting, reviewId: number | string = "<review
       comments: p.comments.map((c) => ({ path: c.path, line: c.line, side: c.side === "old" ? "LEFT" : "RIGHT", body: c.text })),
     } } as Call,
     submit: { method: "POST", path: `${pr}/reviews/${reviewId}/events`, body: { event: EVENT[p.verdict], body: [p.body, p.coverage].filter(Boolean).join("\n\n") } } as Call,
+    // A comment on a whole file: GitHub takes these one at a time, outside a pending review (subject_type file).
+    file: (x: { path: string; text: string }): Call => ({ method: "POST", path: `${pr}/comments`, body: { commit_id: t.head, path: x.path, subject_type: "file", body: x.text } }),
     discard: { method: "DELETE", path: `${pr}/reviews/${reviewId}` } as Call,
   };
 }
@@ -102,8 +110,8 @@ export const github: Adapter = {
   describe(t, p) {
     const why = githubProblem(t, p);
     if (why) return `not posted: ${why}`;
-    const n = p.comments.length;
-    return `posts to ${t.url} with gh: ${EVENT[p.verdict].toLowerCase().replace("_", " ")}${p.body.trim() ? ", your summary" : ""}${n ? `, ${n} line comment${n === 1 ? "" : "s"}` : ""}${p.coverage ? ", a coverage line" : ""}`;
+    const n = p.comments.length, w = p.files?.length ?? 0;
+    return `posts to ${t.url} with gh: ${EVENT[p.verdict].toLowerCase().replace("_", " ")}${p.body.trim() ? ", your summary" : ""}${n ? `, ${n} line comment${n === 1 ? "" : "s"}` : ""}${w ? `, ${w} whole-file comment${w === 1 ? "" : "s"}` : ""}${p.coverage ? ", a coverage line" : ""}`;
   },
   dryRun(t, p) {
     const why = githubProblem(t, p);
@@ -113,6 +121,7 @@ export const github: Adapter = {
     return [
       show(c.head, `the head must still be ${t.head}; if it moved, nothing is posted`),
       show(c.create, "a pending review holding the line comments (side RIGHT is the new file, LEFT the old)"),
+      ...(p.files ?? []).map((x) => show(c.file(x), "a comment on the whole file; if GitHub refuses it, it goes into the summary instead")),
       show(c.submit, "submit it with the verdict"),
     ];
   },
@@ -128,7 +137,12 @@ export const github: Adapter = {
     if (typeof id !== "number" && typeof id !== "string") throw new Error("gh api did not return the pending review's id");
     const later = githubCalls(t, p, id);
     try {
-      const done = gh(run, cwd, later.submit);
+      // Whole-file comments go after the pending review took the line comments (so a bad one is caught first). One GitHub
+      // will not take still reaches the PR, in the summary, under its file name.
+      const folded: string[] = [];
+      for (const x of p.files ?? []) { try { gh(run, cwd, later.file(x)); } catch { folded.push(`${x.path}: ${x.text}`); } }
+      const summary = { ...later.submit, body: { ...(later.submit.body as object), body: [p.body, ...folded, p.coverage].filter(Boolean).join("\n\n") } };
+      const done = gh(run, cwd, summary);
       return { url: typeof done?.html_url === "string" ? done.html_url : t.url };
     } catch (e) {
       // Never leave a pending review behind: it would sit half-made on the PR and block the next attempt.

@@ -32,6 +32,9 @@ wrote a document; the only trace of a producer is the `source` on each finding.
 - **`line`** is a line number in the new file (`side: "new"`) or the old one (`side: "old"`).
   One the hunk does not show is moved to the hunk's first line; a finding on a hunk that is not
   in the diff is dropped.
+- **`file: true`** makes a finding about the whole file its `hunk` belongs to, not a line (`line` is then
+  optional). prview writes these for the reader's own findings on a file's "whole file" rows; posted to GitHub
+  as file-level comments. Old documents without it load as they were.
 - **`severity`** is `high`, `medium` or `low` (the older `blocking`, `warn` and `nit` are still read, as those).
   It sets the finding's default action for the reader: high blocks, medium and low comment.
 - **`source`** is your tool's name, short. It is shown next to the finding (`▲ mylinter · security · high · block`)

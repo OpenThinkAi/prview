@@ -93,7 +93,7 @@ test("verdict default: request changes when the reader blocked on something, els
   expect(defaultVerdict(all, h)).toBe("request_changes");
   // A high finding on its default block has no comment of the reader's to post, so it does not pick the verdict.
   expect(defaultVerdict([F("h", h1!.id, 11, { severity: "high" })], empty())).toBeUndefined();
-  const place = (hunk: string, line: number) => `${hunk.split("@")[0]}:${line}`;
+  const place = (hunk: string, line: number | null) => `${hunk.split("@")[0]}:${line}`;
   const note = actionsNote(all, h, place);
   expect(note).toContain("── Findings (2)\n\n▲ src/a.rs:11 · medium · block · Title 1\n▲ src/b.ts:2 · medium · comment (default) · Title 3\n");
   expect(note).toContain("a finding on its default action posts nothing");

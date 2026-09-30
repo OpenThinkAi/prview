@@ -43,7 +43,7 @@ export type Action = {
 };
 
 /** A line being typed: `docs` is the question put to the docs search (`ask` is the one put to a model). */
-export type PromptKind = "ask" | "comment" | "reason" | "docs";
+export type PromptKind = "ask" | "comment" | "reason" | "docs" | "severity" | "finding";
 
 /**
  * Where a key is pressed. `content` with `results`: docs search answers, where the arrows select. In the submit
@@ -77,7 +77,7 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "code.open_finding", states: CODE, key: "right", secondary: "l", label: "open finding", description: "Open the finding on the cursor line." },
   { id: "code.to_toc", states: CODE, key: "left", secondary: "h", label: "contents", description: "Back to the table of contents at this block, which shows the chapter's intent and why." },
   { id: "code.focus_content", states: CODE, key: "tab", label: "content", description: "Move focus into the content area to scroll it.", fixed: true },
-  { id: "code.new_finding", states: CODE, key: "enter", label: "new finding", description: "Write a finding of your own on the cursor line, posted as your comment at that line." },
+  { id: "code.new_finding", states: CODE, key: "enter", label: "new finding", description: "Write a finding of your own on the cursor line, or on a file's whole-file row: pick a severity, then write the comment, which posts if the finding's action is block or comment." },
 
   // ---- anywhere outside a finding
   { id: "review.submit", states: OUTSIDE, key: "s", label: "submit", description: "Submit the review: choose a verdict, see what will be posted, then send it." },
@@ -137,6 +137,9 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "prompt.clear", states: ["prompt"], key: "ctrl-u", label: "clear line", description: "Clear the whole line.", fixed: true },
   { id: "prompt.word", states: ["prompt"], key: "ctrl-w", label: "delete word", description: "Delete the last word.", fixed: true },
   { id: "prompt.cancel", states: ["prompt"], key: "esc", label: "cancel", description: "Cancel; nothing is recorded.", fixed: true },
+  { id: "prompt.up", states: ["prompt"], key: "up", secondary: "k", label: "severity", description: "Pick the previous severity for your new finding.", fixed: true },
+  { id: "prompt.down", states: ["prompt"], key: "down", secondary: "j", label: "severity", description: "Pick the next severity for your new finding.", fixed: true },
+  { id: "prompt.newline", states: ["prompt"], key: "ctrl-n", label: "new line", description: "Start a new line in a comment of several lines.", fixed: true },
 
   // ---- submit: the verdict, then the preview. Enter takes the default: request changes when you blocked on a finding.
   { id: "submit.approve", states: ["submit"], step: "verdict", key: "a", label: "approve", description: "Approve the change.", fixed: true },
@@ -238,7 +241,7 @@ const inState = (ks: KeyState) => (a: Action): boolean => {
 /** How a row reads in this state: labels that say what Enter, x or v will do right now. */
 function worded(ks: KeyState, a: Action): Action {
   if (ks.state === "prompt") {
-    if (a.id === "prompt.send") return { ...a, label: ks.kind === "ask" ? "ask" : ks.kind === "docs" ? "search" : ks.kind === "reason" ? "ignore" : ks.decide ? "save" : "send" };
+    if (a.id === "prompt.send") return { ...a, label: ks.kind === "ask" ? "ask" : ks.kind === "docs" ? "search" : ks.kind === "reason" ? "ignore" : ks.kind === "severity" ? "choose" : ks.decide || ks.kind === "finding" ? "save" : "send" };
     if (a.id === "prompt.cancel" && ks.decide) return { ...a, label: "cancel" };
   }
   if (ks.state === "content" && ks.results && (a.id === "content.down" || a.id === "content.up")) return { ...a, label: "select" };
@@ -253,7 +256,12 @@ function worded(ks: KeyState, a: Action): Action {
 
 /** The top-level rows that act in a state (no prefix), bound ones only, in table order. A prompt drops ctrl-w for the one-word ignore note. */
 export const rowsOf = (ks: KeyState, km: Keymap = active): Action[] =>
-  km.actions.filter((a) => !a.prefix && inState(ks)(a) && keysOf(a).length && !(ks.state === "prompt" && ks.kind === "reason" && a.id === "prompt.word")).map((a) => worded(ks, a));
+  km.actions.filter((a) => !a.prefix && inState(ks)(a) && keysOf(a).length && !(ks.state === "prompt" && promptHides(ks.kind, a.id))).map((a) => worded(ks, a));
+
+/** What a prompt does not list: the ignore note is one word (no ctrl-w); the arrows only pick a severity; a new line only where a comment can have several. The severity pick takes no text. */
+const promptHides = (kind: PromptKind, id: string): boolean =>
+  (kind === "reason" && id === "prompt.word") || ((id === "prompt.up" || id === "prompt.down") && kind !== "severity")
+  || (id === "prompt.newline" && kind !== "finding" && kind !== "comment") || (kind === "severity" && (id === "prompt.clear" || id === "prompt.word"));
 
 /** The second keys of prefix `p` in a state. */
 export const prefixRows = (ks: KeyState, p: Prefix, km: Keymap = active): Action[] =>
