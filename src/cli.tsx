@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { all, build, preparedBy, checkHead, exportDocument, Fail, filesOf, importDocument, load, remove, reopen, repoFor, writeup, type BuildOpts, type Review } from "./build.ts";
 import { ConfigError, configPath, loadConfig, realLookups, resolveModel, ROLES } from "./config.ts";
+import { describeKeymap, installKeymap } from "./keys.ts";
 import { probe } from "./llm.ts";
 import { besideIn, editor, editorArgs } from "./editor.ts";
 import { show } from "./tui.tsx";
@@ -27,7 +28,8 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   refute, ask); with no config every role is claude -p on your subscription. --ai MODEL uses one named
   model for all four roles this run; --no-ai skips the models.
 
-  Keys:  j/k line   h/l hunk   J/K chapter   123G go to file line   gg/G first/last   ]f [f next/previous finding
+  Keys (the defaults: [keys] in the config remaps them per state, prview keys prints yours):
+         j/k line   h/l hunk   J/K chapter   123G go to file line   gg/G first/last   ]f [f next/previous finding
          F reveal this chapter's findings early (--blind only)
          Deciding on findings (]f opens the next; each decision moves on to the next undecided one, and the
          box shows how many are decided, e.g. 3/9 decided):
@@ -51,10 +53,13 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
            target's platform (github: gh api), then, if the document declares on_submit, its command runs
            only if you press x in the preview to allow it (shown in full first; no shell); v in the preview
            adds a line saying how much you read to the posted summary (off by default)
+         \\ show the key bindings for this state
          q quit (everything is kept)
 
   prview prepare <target>     build it (fetch, guide, critic) without opening the screen; open it later
   prview models               list the configured models and roles, and check each model is reachable
+  prview keys                 print the effective key bindings by state (action, key, description);
+                              a bad [keys] table is refused here exactly as at startup
   prview list                 reviews that still exist
   prview open <name>          reopen one (e.g. pm-pr-12), rebuilt at the PR's current head
   prview writeup <name>       print the compiled review without opening the screen
@@ -97,6 +102,13 @@ async function models(): Promise<void> {
   console.log(`roles: ${ROLES.map((r) => `${r}=${cfg.roles[r] ?? "claude"}`).join(" ")}`);
 }
 
+/** What opens the screen reads the config first, so a bad [keys] stops prview before any model has been called. */
+function start() {
+  const cfg = loadConfig();
+  installKeymap(cfg.keymap);
+  return cfg;
+}
+
 async function main(args: string[]): Promise<void> {
   const opts: BuildOpts & { repo?: string; blind?: boolean; dryRun?: boolean } = { context: 3, fresh: false };
   const rest: string[] = [];
@@ -125,20 +137,22 @@ async function main(args: string[]): Promise<void> {
   opts.say = (s) => process.stderr.write(`prview: ${s}\n`);
   const [cmd, a1] = rest;
   // The flag wins over the config either way; the config is only read when a screen is about to open.
-  const blind = () => opts.blind ?? loadConfig().blind;
+  const blind = () => opts.blind ?? start().blind;
   const doc = async () => { if (!a1) throw new Fail(`usage: prview ${cmd} <file | ->`); return a1 === "-" ? Bun.stdin.text() : Bun.file(resolve(a1)).text().catch(() => { throw new Fail(`cannot read ${a1}`); }); };
   switch (cmd) {
     case "-h": case "--help": case "help": console.log(USAGE); return;
     case "models": return models();
+    case "keys": console.log(describeKeymap(loadConfig().keymap)); return;
     case "list": console.log(all().map(({ slug, doc: { target: t, human: h } }) => `${slug}\t${t.label}\t${h.visited.length} read · ${h.comments.length} notes\t${t.title}`).join("\n")); return;
     case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r.doc, filesOf(r))); const by = preparedBy(r.ai?.runs); if (by) process.stderr.write(`${by}\n`); return; }
     case "export": { if (!a1) throw new Fail("usage: prview export <name>"); process.stdout.write(exportDocument(load(a1))); return; }
     case "import": { const r = importDocument(await doc(), opts.repo); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
-    case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); return review(importDocument(await doc(), opts.repo), blind(), opts.dryRun); }
+    case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); start(); return review(importDocument(await doc(), opts.repo), blind(), opts.dryRun); }
     case "done": { if (!a1) throw new Fail("usage: prview done <name>"); console.log(remove(a1)); return; }
-    case "open": { if (!a1) throw new Fail("usage: prview open <name> (prview list)"); return review(await reopen(a1, opts), blind(), opts.dryRun); }
+    case "open": { if (!a1) throw new Fail("usage: prview open <name> (prview list)"); start(); return review(await reopen(a1, opts), blind(), opts.dryRun); }
     case "prepare": { const r = await build(repoFor(a1, opts.repo), a1, opts); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
   }
+  start();
   if (!process.stdout.isTTY) throw new Fail("prview needs a terminal");
   return review(await build(repoFor(cmd, opts.repo), cmd, opts), blind(), opts.dryRun);
 }

@@ -29,7 +29,7 @@ import type { Beside } from "./editor.ts";
 import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
 import { describe, planOf } from "./submit.ts";
 import { decide, decisionOf, defaultVerdict, LABEL, linkedComment, nextUndecided, progress, undecidedNote, undo } from "./triage.ts";
-import { actionOf, findingFooter, infoFooter, type KeyState, navFooter, startsChord } from "./keys.ts";
+import { actionOf, bindingsBody, findingFooter, infoFooter, type KeyState, keyOf, navFooter, startsChord } from "./keys.ts";
 import { MIN_COLS, MIN_ROWS, tooSmall, useTerminalSize } from "./resize.ts";
 
 /** `hook`: the human allowed the document's on_submit command for this submit (x in the preview). */
@@ -157,11 +157,11 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     const hit = nextUndecided(items, visible(), h, { item: pos.item, line });
     if (hit) { setPos({ item: hit.item, line: hit.line }); if (hit.item !== pos.item) setPanX(0); showFinding(hit.finding); return; }
     const p = progress(visible(), h);
-    setFloat({ title: `Findings · ${p.decided}/${p.total} decided`, color: "green", body: `Every finding${hidden.size ? " you can see" : ""} is decided.${hidden.size ? " Chapters you have not read yet keep theirs hidden; F reveals one." : ""} h closes this, then s submits; ]f and [f step back through them, u undoes one.` });
+    setFloat({ title: `Findings · ${p.decided}/${p.total} decided`, color: "green", body: `Every finding${hidden.size ? " you can see" : ""} is decided.${hidden.size ? ` Chapters you have not read yet keep theirs hidden; ${keyOf("nav.reveal")} reveals one.` : ""} ${keyOf("finding.hide")} closes this, then ${keyOf("nav.submit")} submits; ${keyOf("finding.next")} and ${keyOf("finding.prev")} step back through them, ${keyOf("finding.undo")} undoes one.` });
   };
   const jumpFinding = (dir: 1 | -1) => {
     const hit = nextFinding(items, d.findings.filter((f) => live(f) && unhidden(f)), { item: pos.item, line }, dir);
-    if (!hit) { setFloat({ title: "Findings", body: (dir > 0 ? "No more findings after this point." : "No findings before this point.") + (hidden.size ? " Chapters you have not read yet keep theirs hidden; close this with h, then F reveals one." : "") }); return; }
+    if (!hit) { setFloat({ title: "Findings", body: (dir > 0 ? "No more findings after this point." : "No findings before this point.") + (hidden.size ? ` Chapters you have not read yet keep theirs hidden; close this with ${keyOf("info.hide")}, then ${keyOf("nav.reveal")} reveals one.` : "") }); return; }
     setPos({ item: hit.item, line: hit.line });
     showFinding(hit.finding);
   };
@@ -195,6 +195,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     setScroll((s) => clampScroll(s + by, floatLines.length, floatH));
     return true;
   };
+  const stateOf = (): KeyState => float ? (float.finding ? { box: "finding" } : { box: "info", copyable: !!float.copy }) : { box: null, blind };
   const handle = (ch: string, key: Parameters<Parameters<typeof useInput>[0]>[1]) => {
     if (busy) return;
     if (mode.kind === "verdict") {
@@ -244,7 +245,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     // here: Esc, paging, a count, gg/G and the arrow keys.
     const count = countRef.current, pending = pendingRef.current;
     setNote(null);
-    const state: KeyState = float ? (float.finding ? { box: "finding" } : { box: "info", copyable: !!float.copy }) : { box: null, blind };
+    const state = stateOf();
     if (key.escape) { setFloat(null); setCount(""); setPending(null); return; }
     if (pending) {
       const p = pending; setPending(null);
@@ -271,6 +272,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const act = (id: string, n?: number) => {
     switch (id) {
       case "nav.quit": onDone({ kind: "quit" }); exit(); return;
+      case "nav.bindings": setFloat({ title: "Key bindings · reading", body: bindingsBody(stateOf()), copy: bindingsBody(stateOf()) }); return;
       case "nav.submit": setMode({ kind: "verdict" }); setFloat(null); return;
       case "nav.line_down": setPos({ ...pos, line: Math.min(lines.length - 1, line + (n ?? 1)) }); return;
       case "nav.line_up": setPos({ ...pos, line: Math.max(0, line - (n ?? 1)) }); return;
@@ -296,8 +298,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       }
       case "nav.reveal": reveal(); return; // listed only with --blind
       case "nav.finding_here": { // the next finding in this hunk, from the cursor, wrapping
-        if (item && hidden.has(item.id)) { setFloat({ title: "Findings", body: "Hidden until you have been through this chapter. Close this with h, then F reveals them now (and the review notes you did)." }); return; }
-        if (!findingsHere.length) { setFloat({ title: "Findings", body: "None in this hunk. ]f jumps to the next one anywhere." }); return; }
+        if (item && hidden.has(item.id)) { setFloat({ title: "Findings", body: `Hidden until you have been through this chapter. Close this with ${keyOf("info.hide")}, then ${keyOf("nav.reveal")} reveals them now (and the review notes you did).` }); return; }
+        if (!findingsHere.length) { setFloat({ title: "Findings", body: `None in this hunk. ${keyOf("nav.next_finding")} jumps to the next one anywhere.` }); return; }
         let at = lines.findIndex((l, i) => i > line && findingsAt(l).length);
         if (at < 0) at = lines.findIndex((l) => findingsAt(l).length);
         if (at >= 0) setPos({ ...pos, line: at });
