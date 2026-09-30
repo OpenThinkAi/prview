@@ -90,7 +90,7 @@
           }
         },
         "decisions": {
-          "description": "The reader's decision per finding, keyed by finding id. block and comment made a line comment of the reader's own at the finding's line (`comment` is its id), which posts like any other comment; dismissed is \"not an issue\" (the reason is never posted); ignored is true but not worth raising.",
+          "description": "The reader's decision per finding, keyed by finding id. block and comment made a line comment of the reader's own at the finding's line (`comment` is its id), which posts like any other comment; dismissed is \"not an issue\" (the reason is never posted). An older document's ignored is read as dismissed; prview no longer writes it.",
           "type": "object",
           "additionalProperties": {
             "type": "object",
