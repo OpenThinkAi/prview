@@ -1,7 +1,8 @@
 // Launching an editor at a line: what to run, and how to run it beside prview when we are inside tmux.
 
-export function editor(env: Record<string, string | undefined> = process.env): string[] {
-  const e = env.PRVIEW_EDITOR ?? env.EDITOR ?? "hx";
+/** $PRVIEW_EDITOR, else the config's `editor` (the settings view sets it), else $EDITOR, else hx. */
+export function editor(env: Record<string, string | undefined> = process.env, configured?: string): string[] {
+  const e = env.PRVIEW_EDITOR ?? configured ?? env.EDITOR ?? "hx";
   return e.split(/\s+/).filter(Boolean);
 }
 
@@ -28,10 +29,11 @@ export function tmuxSplit(argv: string[], cwd: string): string[] {
 /** Opens the editor beside prview; returns a message when it could not. Only offered inside tmux. */
 export type Beside = (path: string, line: number) => string | undefined;
 
-export function besideIn(worktree: string, env: Record<string, string | undefined> = process.env): Beside | undefined {
+/** `configured` is read at each open, so an editor saved in the settings is used at once. */
+export function besideIn(worktree: string, env: Record<string, string | undefined> = process.env, configured: () => string | undefined = () => undefined): Beside | undefined {
   if (!env.TMUX) return undefined;
   return (path, line) => {
-    const p = Bun.spawnSync(tmuxSplit(editorArgs(editor(env), path, line), worktree), { stdin: "ignore" });
+    const p = Bun.spawnSync(tmuxSplit(editorArgs(editor(env, configured()), path, line), worktree), { stdin: "ignore" });
     return p.exitCode === 0 ? undefined : `tmux could not open a pane: ${p.stderr.toString().trim() || `exit ${p.exitCode}`}`;
   };
 }

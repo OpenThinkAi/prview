@@ -83,7 +83,7 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "review.submit", states: OUTSIDE, key: "s", label: "submit", description: "Submit the review: choose a verdict, see what will be posted, then send it." },
   { id: "review.copy", states: OUTSIDE, key: "y", label: "copy", description: "Copy the content area's main text; with nothing there, the cursor line's path and line number." },
   { id: "review.search_docs", states: OUTSIDE, key: "?", label: "search docs", description: "Search the docs in your own words and see the actions that answer it, with your keys; offline, no model." },
-  { id: "review.settings", states: OUTSIDE, key: "\\", label: "settings", description: "Open the settings: keys, default actions, models, editor and display.", coming: "the settings view" },
+  { id: "review.settings", states: OUTSIDE, key: "\\", label: "settings", description: "Open the settings: keys, default actions, models, editor and display, saved to the config file." },
   { id: "review.quit", states: OUTSIDE, key: "q", label: "quit", description: "Leave prview; the review so far is kept." },
 
   // ---- inside a finding
@@ -153,12 +153,14 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "submit.page_up", states: ["submit"], step: "preview", key: "pgup", secondary: "ctrl-u", label: "page", description: "Page the preview up.", fixed: true },
   { id: "submit.back", states: ["submit"], step: "preview", key: "esc", label: "back", description: "Go back to the verdict.", fixed: true },
 
-  // ---- settings (the view arrives with its own change; the keys are fixed here so nothing can take them)
-  { id: "settings.down", states: ["settings"], key: "down", secondary: "j", label: "field", description: "Move to the next field.", fixed: true, coming: "the settings view" },
-  { id: "settings.up", states: ["settings"], key: "up", secondary: "k", label: "field", description: "Move to the previous field.", fixed: true, coming: "the settings view" },
-  { id: "settings.edit", states: ["settings"], key: "enter", label: "edit", description: "Edit the field; for a key, the next keypress becomes the binding.", fixed: true, coming: "the settings view" },
-  { id: "settings.clear", states: ["settings"], key: "backspace", label: "clear secondary", description: "Clear a key's secondary binding.", fixed: true, coming: "the settings view" },
-  { id: "settings.leave", states: ["settings"], key: "esc", label: "leave", description: "Leave the settings, asking first when there are unsaved changes.", fixed: true, coming: "the settings view" },
+  // ---- settings (settings.ts): the arrows walk the fields, Enter edits one, Esc leaves. Fixed, so a rebinding can never lock you out of the view that fixes it.
+  { id: "settings.down", states: ["settings"], key: "down", secondary: "j", label: "field", description: "Move to the next field.", fixed: true },
+  { id: "settings.up", states: ["settings"], key: "up", secondary: "k", label: "field", description: "Move to the previous field.", fixed: true },
+  { id: "settings.right", states: ["settings"], key: "right", secondary: "l", label: "primary / secondary", description: "On a key, move to its secondary binding.", fixed: true },
+  { id: "settings.left", states: ["settings"], key: "left", secondary: "h", label: "primary / secondary", description: "On a key, move to its primary binding.", fixed: true },
+  { id: "settings.edit", states: ["settings"], key: "enter", label: "edit", description: "Edit the field: for a key the next keypress becomes the binding; a choice steps to its next value; the editor takes a line.", fixed: true },
+  { id: "settings.clear", states: ["settings"], key: "backspace", label: "clear secondary", description: "Clear a key's secondary binding.", fixed: true },
+  { id: "settings.leave", states: ["settings"], key: "esc", label: "leave", description: "Leave the settings, asking first when there are unsaved changes.", fixed: true },
 ];
 
 /**

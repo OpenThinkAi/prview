@@ -34,13 +34,16 @@ import type { Beside } from "./editor.ts";
 import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
 import { describe, planOf } from "./submit.ts";
 import { actionOf, actionsNote, bySeverity, decide, decisionOf, DEFAULTS, defaultVerdict, IN_HOUSE, LABEL, linkedComment, suggestionHint, type Defaults } from "./triage.ts";
-import { type KeyState, keyOf, rowById } from "./keys.ts";
+import { installKeymap, type KeyState, keyOf, rowById } from "./keys.ts";
 import { pendingText, step, tokenOf, type InkKey, type Pending } from "./chord.ts";
 import { answersBody, answersFor, answerText, type Answer } from "./ask-docs.ts";
 import { entriesOf, panelOf, panelTitle } from "./panel.ts";
 import { fitFields, GAP, statusFields } from "./status.ts";
 import { visible as printable } from "./sanitize.ts";
 import { MIN_COLS, MIN_ROWS, tooSmall, useTerminalSize } from "./resize.ts";
+import { configPath, parseConfig, type Config } from "./config.ts";
+import { openSettings, saveSettings, settingsAct, settingsKey, type Out as SettingsOut, type Settings } from "./settings.ts";
+import { SettingsScreen } from "./settings-view.tsx";
 
 /** `hook`: the human allowed the document's on_submit command for this submit (x in the preview). */
 export type Outcome = { kind: "quit" } | { kind: "submit"; hook: boolean; coverage: boolean } | { kind: "edit"; path: string; line: number };
@@ -84,6 +87,10 @@ export type AppProps = {
   copier?: Copier;
   /** The action a finding starts with, by severity (the config's [defaults]). */
   defaults?: Defaults;
+  /** The config as loaded: what the settings view (`\`) opens on. None: the built-in one. */
+  config?: Config;
+  /** A save in the settings view: the config as it now reads, for whatever outlives this screen (the editor command). */
+  onConfig?: (cfg: Config) => void;
 };
 
 /** What the content area opens on: the summary, the suggested verdicts and who prepared it. `a i` shows exactly this again; null when a review has neither. */
@@ -97,7 +104,7 @@ export function summaryContent(review: Review): Content | null {
   return { title: "Summary of this change · not a finding", color: "magenta", copy: d.plan.summary || suggested, body: [d.plan.summary, suggested, preparedBy(review.ai?.runs), hint].filter(Boolean).join("\n\n") };
 }
 
-export function App({ review, files, onDone, beside, size, blind = false, dryRun = false, copier = systemCopier, defaults = DEFAULTS }: AppProps) {
+export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig }: AppProps) {
   const { exit } = useApp();
   const term = useTerminalSize(size);
   const cols = term.cols, rows = term.rows - 1;
@@ -131,9 +138,18 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const setPending = (p: Pending | null) => { if (p !== pendingRef.current) { pendingRef.current = p; tick((n) => n + 1); } };
   const [busy, setBusy] = useState<string | null>(null);
   // Long lines are cut with an ellipsis, or wrap onto more rows (v w).
-  const [wrap, setWrap] = useState(false);
+  const [wrap, setWrap] = useState(config?.wrap ?? false);
   // The severity filter (f h, f m, f a): kept with the stored review, so it is still set when the review is opened again.
   const [level, setLevelRaw] = useState<Filter>(() => filterOf(r.filter));
+  // The settings view (settings.ts), full-screen while open. A save applies at once: the keymap, the defaults, and the
+  // display settings it changed; `live` is the config the next opening starts from.
+  // Like the pending prefix, it lives in a ref too: a paste into the editor line delivers many keys to one closure.
+  const settingsRef = useRef<Settings | null>(null);
+  const [settings, setSettingsState] = useState<Settings | null>(null);
+  const setSettings = (s: Settings | null) => { settingsRef.current = s; setSettingsState(s); };
+  const live = useRef<Config>(config ?? parseConfig("")).current;
+  const [defaults, setDefaults] = useState<Defaults>(defaultsAtStart);
+  const [blind, setBlind] = useState(blindAtStart);
 
   const item = items[pos.item];
   const hunk = item?.hunk ?? null;
@@ -156,7 +172,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
 
   // Where a key is pressed: the submit steps, a prompt, the docs results, the content area (full-screen, or Tab), an
   // open finding, the table of contents or the code.
-  const keyState: KeyState = mode.kind === "verdict" ? { state: "submit", step: "verdict" }
+  const keyState: KeyState = settings ? { state: "settings" } : mode.kind === "verdict" ? { state: "submit", step: "verdict" }
     : mode.kind === "preview" ? (() => { const p = planOf(r, files, { coverage: mode.coverage }); return { state: "submit" as const, step: "preview" as const, dryRun, hook: p.hook ? mode.hook : null, coverage: p.adapter ? mode.coverage : null }; })()
     : mode.kind === "results" ? { state: "content", results: true }
     : mode.kind !== "nav" ? { state: "prompt", kind: mode.kind, decide: mode.kind === "comment" && !!mode.decide }
@@ -291,7 +307,10 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     const tok = tokenOf(ch, key);
     if (!tok) return;
     setNote(null);
-    const res = step(keyState, pendingRef.current, tok);
+    // Capturing a binding, typing the editor, or the question on leaving: the key itself, not what it is bound to.
+    const open = settingsRef.current;
+    if (open?.sub) { settingsDone(settingsKey(open, tok)); return; }
+    const res = step(open ? { state: "settings" } : keyState, pendingRef.current, tok);
     setPending(res.pending);
     if (res.out.kind === "act") { act(res.out.id, res.out.n); return; }
     if (res.out.kind === "escape") { backOut(); return; }
@@ -315,6 +334,18 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     const at = scroll;
     setContent({ title: `Search the docs · ${query}`, color: "cyan", body: answersBody(answers, sel) });
     setScroll(at);
+  };
+  // After a settings key: save (applying the config at once) and leave, leave, or stay with the new state.
+  const settingsDone = ({ s, out }: SettingsOut) => {
+    if (out === "leave") { setSettings(null); return; }
+    if (out !== "save") { setSettings(s); return; }
+    let cfg: Config;
+    try { cfg = saveSettings(s); } catch (e) { setSettings({ ...s, message: { text: `not saved: ${(e as Error).message}`, error: true } }); return; }
+    installKeymap(cfg.keymap); setDefaults(cfg.defaults);
+    if (cfg.wrap !== s.initial.wrap) setWrap(cfg.wrap);
+    if (cfg.blind !== s.initial.blind) setBlind(cfg.blind);
+    Object.assign(live, cfg); onConfig?.(cfg);
+    setSettings(null); setNote(`settings saved to ${cfg.path}`);
   };
   // A key whose behaviour comes with a later change says so, and does nothing else.
   const coming = (id: string) => { const a = rowById(id); setNote(`${keyOf(id)} ${a?.label ?? id}: not built yet, coming with ${a?.coming ?? "a later change"}`); };
@@ -359,6 +390,12 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       case "review.submit": setMode({ kind: "verdict" }); setContent(null); return;
       case "review.copy": case "finding.copy": case "content.copy": copy(); return;
       case "review.search_docs": setMode({ kind: "docs" }); setInput(""); return;
+      case "review.settings": setSettings(openSettings(live, configPath())); return;
+
+      // ---- the settings view
+      case "settings.down": case "settings.up": case "settings.right": case "settings.left": case "settings.edit": case "settings.clear": case "settings.leave":
+        if (settingsRef.current) settingsDone(settingsAct(settingsRef.current, id));
+        return;
 
       // ---- the code
       case "code.down": lineBy(1); return;
@@ -463,8 +500,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       case "filter.all": setFilter("all"); return;
 
       // ---- keys whose behaviour comes with a later change: each says so
-      case "review.settings": case "ai.draft": case "ai.accept": case "ai.discard":
-      case "settings.down": case "settings.up": case "settings.edit": case "settings.clear": case "settings.leave":
+      case "ai.draft": case "ai.accept": case "ai.discard":
         coming(id); return;
     }
   };
@@ -574,6 +610,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     : <Text wrap="truncate" dimColor> {busy ? `${busy} keys wait until it answers` : full && view && mode.kind !== "preview" ? `${keyOf("view.fullscreen")} or Esc restores the layout` : ""}{pending ? <Text color="cyan">   {pendingText(pending)}</Text> : null}</Text>;
 
   if (tooSmall(term)) return <Text wrap="truncate">terminal too small, need {MIN_COLS}x{MIN_ROWS}</Text>;
+  if (settings) return <SettingsScreen s={settings} cols={cols} rows={rows} />;
 
   return (
     <Box flexDirection="column" width={cols} height={rows}>
@@ -669,11 +706,11 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
 }
 
 /** Run the app once; resolves with what the reader wants next. State lives on the review object and is saved as it changes. */
-export function show(review: Review, files: FileDiff[], beside?: Beside, blind = false, dryRun = false, defaults: Defaults = DEFAULTS): Promise<Outcome> {
+export function show(review: Review, files: FileDiff[], beside?: Beside, blind = false, dryRun = false, defaults: Defaults = DEFAULTS, config?: Config, onConfig?: (cfg: Config) => void): Promise<Outcome> {
   return new Promise((resolve) => {
     let outcome: Outcome = { kind: "quit" };
     process.stdout.write("\x1b[?1049h\x1b[H");
-    const app = render(<App review={review} files={files} beside={beside} blind={blind} dryRun={dryRun} defaults={defaults} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
+    const app = render(<App review={review} files={files} beside={beside} blind={blind} dryRun={dryRun} defaults={defaults} config={config} onConfig={onConfig} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
     app.waitUntilExit().then(() => { app.clear(); process.stdout.write("\x1b[?1049l"); save(review); resolve(outcome); });
   });
 }

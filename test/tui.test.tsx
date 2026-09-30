@@ -1052,7 +1052,7 @@ test("g c into a collapsed chapter expands it; ← from its code comes back with
 
 test("keys that come with later changes say so, and do nothing else", async () => {
   const t = await open();
-  for (const [keys, id] of [["as", "ai.draft"], ["\\", "review.settings"]] as const) {
+  for (const [keys, id] of [["as", "ai.draft"]] as const) {
     await t.press(keys);
     expect(t.frame(), id).toContain(`${keyOf(id)} `);
     expect(t.frame(), id).toContain("not built yet, coming with");

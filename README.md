@@ -58,7 +58,8 @@ What you get is a full-screen review, not a diff dump:
   high one first; `g g`/`g e` top/end of the file; `g 120 Enter` that line; `g c 3 Enter` that chapter) and
   `f` filter (`f h` high only, `f m` high and medium, `f a` all: the level shows in the status area and is kept with the review; it is for reading, so the submit checklist still lists every finding). `s` submits, `y` copies, `?` searches the docs, `q` quits. `Esc` backs out of anything: a pending
   prefix, full-screen, the content area, a finding, a prompt. `g f`/`g h` and the line jumps land in the code;
-  `g c` lands in the table of contents. Keys that arrive with later changes (`\` settings, `a s` drafts) are in the tables already and say so when pressed.
+  `g c` lands in the table of contents. `\` opens the settings view (below). Keys that arrive with later changes
+  (`a s` drafts) are in the tables already and say so when pressed.
 - **The screen.** A status area on top: the PR's title, then separate fields, each with a dim label: the PR number,
   the branches (or commits), `read 3/5`, the findings by severity, whatever their action (`▲ 2 high · 1 medium`), the
   comments, and the in-house review's suggested verdict when there is one. No field is cut to make room for another:
@@ -112,7 +113,8 @@ What you get is a full-screen review, not a diff dump:
   layout. The submit preview always reads full-screen. `v z` (zen) hides the table of contents so the code has the
   width, and shows it again.
 - **Your editor for the real code.** `v e` opens the file at the line under the cursor in a
-  worktree at the PR head (`$EDITOR`, default `hx`; VS Code, Zed and vim forms are handled).
+  worktree at the PR head (`$PRVIEW_EDITOR`, else `editor = "..."` in the config, else `$EDITOR`, else `hx`;
+  VS Code, Zed and vim forms are handled).
   Quit the editor and you are back where you were. Inside tmux the editor opens in a split pane
   to the right and prview stays on screen.
 - **Colour and width.** Code is coloured by token (keywords, strings, comments, numbers, types); on
@@ -180,6 +182,24 @@ The panel, the hints in the content area, docs search and `prview keys` all show
 "code.down" = { primary = "down", secondary = "n" }  # ↓ and n
 "code.next_chapter" = { secondary = "" }             # ⇧↓ only, no J
 "view.wrap" = "W"                                    # v W
+```
+
+Settings view: `\` opens the settings full-screen: every action (its states, description, primary and secondary
+key), the default action per severity, the model per role, the editor command and the display defaults (`wrap`,
+`blind`). `↓`/`↑` move, `→`/`←` pick a key's primary or secondary, `Enter` edits: on a key the next keypress becomes
+the binding (Backspace clears a secondary; Esc and Tab cannot be bound, and a key another action already has in the
+same state is refused, naming it), a choice steps to its next value, the editor takes a line. `Esc` leaves, asking
+"Save changes? y / n / Esc to keep editing" when something changed. `y` writes the config file (`$PRVIEW_CONFIG`)
+and the changes apply at once, no restart. The save is checked exactly as prview checks the file at startup, so it
+never writes a config prview would refuse. It rewrites only the lines of the settings you changed, keeping each
+line's trailing comment; a new line goes at the end of its table (`[keys]`, `[defaults]`, `[roles]`, created at the
+end of the file if missing; `editor`, `wrap` and `blind` before the first table). A key put back to its default, a
+role put back to the default model and an emptied editor lose their line. Comments, blank lines, `[models.*]` and
+tables prview does not know are left as they were.
+
+```toml
+editor = "zed"   # v e runs this ($PRVIEW_EDITOR still wins)
+wrap = true      # long lines wrap from the start; v w still toggles
 ```
 
 A key is one printable character or a name: `up`, `down`, `left`, `right`, `shift-up` (and the other
