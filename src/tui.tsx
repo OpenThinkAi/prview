@@ -16,7 +16,7 @@
 // the review is only where the cursor was and where the worktree is.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, render, useApp, useInput, useStdout } from "ink";
+import { Box, Text, render, useApp, useInput } from "ink";
 import { where, type DiffLine, type FileDiff } from "./diff.ts";
 import { claimAddsTo, hunksOf, MECHANICAL_INTENT, titleOf, worstFirst, type Finding, type HunkAt } from "./guide.ts";
 import { ask, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
@@ -29,6 +29,7 @@ import type { Beside } from "./editor.ts";
 import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
 import { describe, planOf } from "./submit.ts";
 import { decide, decisionOf, defaultVerdict, LABEL, linkedComment, nextUndecided, progress, undecidedNote, undo } from "./triage.ts";
+import { MIN_COLS, MIN_ROWS, tooSmall, useTerminalSize } from "./resize.ts";
 
 /** `hook`: the human allowed the document's on_submit command for this submit (x in the preview). */
 export type Outcome = { kind: "quit" } | { kind: "submit"; hook: boolean; coverage: boolean } | { kind: "edit"; path: string; line: number };
@@ -72,8 +73,8 @@ export type AppProps = {
 
 export function App({ review, files, onDone, beside, size, blind = false, dryRun = false, copier = systemCopier }: AppProps) {
   const { exit } = useApp();
-  const { stdout } = useStdout();
-  const cols = size?.cols ?? (stdout.columns || 100), rows = (size?.rows ?? (stdout.rows || 40)) - 1;
+  const term = useTerminalSize(size);
+  const cols = term.cols, rows = term.rows - 1;
   const r = useRef(review).current;
   const d = r.doc, h = d.human;
   const items = useMemo(() => itemsOf(d, files), [d, files]);
@@ -366,6 +367,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       }
     }
   };
+
+  if (tooSmall(term)) return <Text wrap="truncate">terminal too small, need {MIN_COLS}x{MIN_ROWS}</Text>;
 
   return (
     <Box flexDirection="column" width={cols} height={rows}>
