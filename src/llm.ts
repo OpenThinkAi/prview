@@ -46,7 +46,9 @@ async function openai(url: string, key: string | undefined, model: string, syste
   return c.message.content.replace(/<think>[\s\S]*?<\/think>/g, "");
 }
 
-async function claude(system: string, prompt: string): Promise<string> {
+export type Usage = { ms: number; cost?: number };
+
+async function claude(system: string, prompt: string, cost: (usd: number) => void): Promise<string> {
   // Not --bare (that skips the subscription login). Tools, MCP and skills off, neutral cwd so no CLAUDE.md loads.
   const args = ["claude", "-p", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence", "--output-format", "json", "--system-prompt", system];
   if (process.env.HXQ_CLAUDE_MODEL) args.push("--model", process.env.HXQ_CLAUDE_MODEL);
@@ -56,12 +58,22 @@ async function claude(system: string, prompt: string): Promise<string> {
   let j: any;
   try { j = JSON.parse(raw); } catch { throw new Error(`claude -p returned no JSON: ${(raw || err).slice(0, 300)}`); }
   if (j.is_error) throw new Error(`claude: ${j.result}`);
+  if (typeof j.total_cost_usd === "number") cost(j.total_cost_usd);
   return String(j.result ?? "");
 }
 
-export async function complete(provider: Provider, system: string, prompt: string): Promise<string> {
+/** `usage` hears about each call that finishes: how long it took, and what it cost where the provider says. */
+export async function complete(provider: Provider, system: string, prompt: string, usage?: (u: Usage) => void): Promise<string> {
+  const t0 = Date.now();
+  let cost: number | undefined;
+  const text = await route(provider, system, prompt, (usd) => { cost = usd; });
+  usage?.({ ms: Date.now() - t0, cost });
+  return text;
+}
+
+async function route(provider: Provider, system: string, prompt: string, setCost: (usd: number) => void): Promise<string> {
   switch (provider) {
-    case "claude": return claude(system, prompt);
+    case "claude": return claude(system, prompt, setCost);
     case "deepseek": return openai("https://api.deepseek.com/v1", deepseekKey(), env("HXQ_DEEPSEEK_MODEL", "deepseek-v4-pro"), system, prompt);
     case "qwen": return openai(LOCAL.qwen.url, undefined, LOCAL.qwen.model, system, prompt);
     case "gemma": return openai(LOCAL.gemma.url, undefined, LOCAL.gemma.model || await firstModel(LOCAL.gemma.url, /gemma/i), system, prompt);

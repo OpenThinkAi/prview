@@ -19,6 +19,8 @@ export type Severity = "blocking" | "warn" | "nit";
 export type Finding = {
   id: string; source: string; hunk: string; side: "new" | "old"; line: number; severity: Severity; kind: string;
   claim: string; evidence: string; status: "upheld" | "withdrawn" | "unrefuted"; refute?: string;
+  /** How many of the critic's runs raised this finding. Absent on reviews saved before sampling. */
+  votes?: number;
 };
 
 /** A hunk's id is stable for as long as the head is: the file plus where it starts on each side. */
@@ -182,6 +184,44 @@ export function parseCritic(reply: string, chapter: Chapter, hunks: HunkAt[], fi
     });
   }
   return out;
+}
+
+// ---------------------------------------------------------------- sampling
+
+const RANK: Record<Severity, number> = { blocking: 0, warn: 1, nit: 2 };
+/** Worst first, then the most-agreed-on: the order the gutter and the counts should read in. */
+export const worstFirst = (a: Finding, b: Finding) => RANK[a.severity] - RANK[b.severity] || (b.votes ?? 1) - (a.votes ?? 1);
+
+const words = (s: string) => new Set(s.toLowerCase().replace(/[^a-z0-9_ ]+/g, " ").split(/\s+/).filter(Boolean));
+/** The same claim in different words: identical once normalised, or at least half the words shared. */
+export function sameClaim(a: string, b: string): boolean {
+  const x = words(a), y = words(b);
+  if (!x.size || !y.size) return false;
+  const shared = [...x].filter((w) => y.has(w)).length;
+  return shared / (x.size + y.size - shared) >= 0.5;
+}
+
+/**
+ * The critic's runs on one chapter folded into one list. Two findings are the same when they sit on the
+ * same hunk and side, within two lines of each other, and say the same thing: a model rarely lands on
+ * the exact line twice, so an exact anchor match would count one bug as several. A run counts once per
+ * finding however many of its own findings match. Severity is the one most runs gave (ties go to the
+ * worse), so one run's overreach cannot promote a finding by itself.
+ */
+export function mergeFindings(runs: Finding[][], firstId: number): Finding[] {
+  type Group = { first: Finding; from: Set<number>; sev: Severity[] };
+  const groups: Group[] = [];
+  runs.forEach((run, r) => {
+    for (const f of run) {
+      const g = groups.find((g) => g.first.hunk === f.hunk && g.first.side === f.side && Math.abs(g.first.line - f.line) <= 2 && sameClaim(g.first.claim, f.claim));
+      if (g) { g.from.add(r); g.sev.push(f.severity); } else groups.push({ first: f, from: new Set([r]), sev: [f.severity] });
+    }
+  });
+  return groups.map((g) => {
+    const count = (s: Severity) => g.sev.filter((x) => x === s).length;
+    const severity = (["blocking", "warn", "nit"] as Severity[]).reduce((best, s) => count(s) > count(best) ? s : best);
+    return { ...g.first, severity, votes: g.from.size };
+  }).sort(worstFirst).map((f, i) => ({ ...f, id: String(firstId + i) }));
 }
 
 // ---------------------------------------------------------------- refute

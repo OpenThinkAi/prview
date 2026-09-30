@@ -7,7 +7,7 @@ import { all, build, checkHead, exportDocument, Fail, filesOf, home, importDocum
 import { PROVIDERS, type Provider } from "./llm.ts";
 import { show } from "./tui.tsx";
 
-const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [--context N] [--ai claude|qwen|gemma|deepseek | --no-ai] [--fresh]
+const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [--context N] [--ai claude|qwen|gemma|deepseek | --no-ai] [--samples N] [--fresh]
   Opens the change in a full-screen review: a guide (a model) has ordered the hunks into chapters,
   core change first, tests last, and says what to verify in each; mechanical hunks (whitespace, lock
   files, pure moves, classified by rule) come last; a critic (a model) has raised findings, each
@@ -16,6 +16,7 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
 
   With no target: the current branch against the default branch. Every open fetches the PR's current
   head; the guide and findings are redone only when the head moved (or with --fresh).
+  --samples N runs the critic N times per chapter (default 2) and keeps what the runs agree on, with votes shown.
   --ai picks the model (claude, the default, is claude -p on your subscription); --no-ai skips the models.
 
   Keys:  j/k line   h/l hunk   J/K chapter   123G go to file line   gg/G first/last   ]f [f next/previous finding
@@ -77,6 +78,11 @@ async function main(args: string[]): Promise<void> {
     else if (a === "--context") opts.context = Math.max(0, parseInt(args[++i] ?? "3", 10) || 0);
     else if (a === "--no-ai") opts.ai = null;
     else if (a === "--fresh") opts.fresh = true;
+    else if (a === "--samples") {
+      const n = Number(args[++i]);
+      if (!Number.isInteger(n) || n < 1 || n > 9) throw new Fail("--samples takes a whole number from 1 to 9");
+      opts.samples = n;
+    }
     else if (a === "--ai") {
       const p = args[++i] as Provider;
       if (!PROVIDERS.includes(p)) throw new Fail(`--ai takes one of ${PROVIDERS.join(", ")}`);
