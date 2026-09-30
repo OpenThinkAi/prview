@@ -25,6 +25,7 @@ import { where, type DiffLine, type FileDiff } from "./diff.ts";
 import { claimAddsTo, hunksOf, MECHANICAL_INTENT, titleOf, worstFirst, type Finding, type HunkAt } from "./guide.ts";
 import { ask, preparedBy, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
 import type { Doc, Human, Verdict } from "./document.ts";
+import { checklistNote, filtered, filterLabel, filterOf, type Filter } from "./filter.ts";
 import { chapterHidden, hiddenHunks } from "./blind.ts";
 import { chapterStart, fileEdge, gotoLine, nextBySeverity, nextFindingWrapping, tocIndex, tocMove, tocRows, type NavItem, type TocMove } from "./nav.ts";
 import { highlightLines, langOf, lengthOf, sliceSpans, styleOf, type Span } from "./highlight.ts";
@@ -131,6 +132,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const [busy, setBusy] = useState<string | null>(null);
   // Long lines are cut with an ellipsis, or wrap onto more rows (v w).
   const [wrap, setWrap] = useState(false);
+  // The severity filter (f h, f m, f a): kept with the stored review, so it is still set when the review is opened again.
+  const [level, setLevelRaw] = useState<Filter>(() => filterOf(r.filter));
 
   const item = items[pos.item];
   const hunk = item?.hunk ?? null;
@@ -168,7 +171,9 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const unhidden = (f: Finding) => !hidden.has(f.hunk);
   // What the gutter marks, the counts count and the go-to keys step through: every finding the reader may see, those the
   // refute step dropped included (they are ignored by default).
-  const visible = () => d.findings.filter(unhidden);
+  const visible = () => filtered(d.findings.filter(unhidden), level);
+  // The submit checklist and the default verdict ignore the filter: it is for reading, not for what gets posted.
+  const unfiltered = () => d.findings.filter(unhidden);
   const ignored = (f: Finding) => actionOf(h, f, defaults).kind === "ignore";
   // A ▲ mark or count on the rail, coloured like the gutter: the worst severity among the findings not ignored, dim when
   // every one is ignored (a refute-dropped finding, say).
@@ -238,7 +243,17 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     const f = content?.finding ? d.findings.find((x) => x.id === content.finding) : undefined;
     return f && unhidden(f) ? f : undefined;
   };
-  const hiddenNote = () => hidden.size ? " Chapters you have not read yet keep theirs hidden until you have been through them." : "";
+  const hiddenNote = () => (level !== "all" ? ` The filter (${filterLabel(level)}) is hiding the rest; ${keyOf("filter.all")} shows all.` : "") + (hidden.size ? " Chapters you have not read yet keep theirs hidden until you have been through them." : "");
+  // `f h`, `f m`, `f a`: findings the level hides leave the screen, and an open one that goes is closed.
+  const setFilter = (next: Filter) => {
+    if (next === level) { setNote(`already showing ${filterLabel(next)}`); return; }
+    if (next === "all") delete r.filter; else r.filter = next;
+    setLevelRaw(next); save(r);
+    const open = content?.finding ? d.findings.find((x) => x.id === content.finding) : undefined;
+    if (open && !filtered([open], next).length) setContent(null);
+    const gone = d.findings.filter((f) => unhidden(f) && !filtered([f], next).length).length;
+    setNote(`filter: ${filterLabel(next)}${gone ? ` (${gone} hidden by the filter)` : ""}`);
+  };
   // After an action is picked the finding stays open, showing its new action; `g f` goes on to the next one.
   const decided = (f: Finding, next: Human) => { Object.assign(h, next); redraw(); showFinding(f); };
   const land = (hit: (Pos & { finding: Finding }) | undefined) => {
@@ -253,10 +268,10 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const preview = (hook: boolean, coverage: boolean) => {
     const p = planOf(r, files, { coverage });
     setMode({ kind: "preview", hook, coverage });
-    setContent({ title: `${VERDICT[h.verdict!]} · Enter ${dryRun ? "prints the calls" : "submits"}${p.hook ? `, x ${hook ? "disallows" : "allows"} the command` : ""}${p.adapter ? `, v ${coverage ? "drops" : "adds"} the coverage line` : ""}, Esc goes back`, color: "green", body: `${actionsNote(visible(), h, place, defaults, hidden.size > 0)}${writeup(d, files, defaults)}\n${describe(p, hook, dryRun)}` });
+    setContent({ title: `${VERDICT[h.verdict!]} · Enter ${dryRun ? "prints the calls" : "submits"}${p.hook ? `, x ${hook ? "disallows" : "allows"} the command` : ""}${p.adapter ? `, v ${coverage ? "drops" : "adds"} the coverage line` : ""}, Esc goes back`, color: "green", body: `${actionsNote(unfiltered(), h, place, defaults, hidden.size > 0, checklistNote(level))}${writeup(d, files, defaults)}\n${describe(p, hook, dryRun)}` });
   };
   // A block you chose makes request changes the verdict Enter picks; without one, Enter keeps the verdict already chosen, if any.
-  const verdictDefault = (): Verdict | undefined => defaultVerdict(visible(), h) ?? h.verdict;
+  const verdictDefault = (): Verdict | undefined => defaultVerdict(unfiltered(), h) ?? h.verdict;
 
   // Fast typing or a paste can deliver several plain characters in one chunk ("g12"): take them one at a time. An escape
   // sequence Ink did not read as a key (it hands those over with the ESC stripped) stays whole, for tokenOf to read.
@@ -442,8 +457,13 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       case "submit.up": scrollBy(-1); return;
       case "submit.back": setMode({ kind: "verdict" }); setContent(null); return;
 
+      // ---- f: filter
+      case "filter.high": setFilter("high"); return;
+      case "filter.medium": setFilter("medium"); return;
+      case "filter.all": setFilter("all"); return;
+
       // ---- keys whose behaviour comes with a later change: each says so
-      case "review.settings": case "ai.draft": case "ai.accept": case "ai.discard": case "filter.high": case "filter.medium": case "filter.all":
+      case "review.settings": case "ai.draft": case "ai.accept": case "ai.discard":
       case "settings.down": case "settings.up": case "settings.edit": case "settings.clear": case "settings.leave":
         coming(id); return;
     }
@@ -461,7 +481,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const fields = fitFields(statusFields({
     label: printable(d.target.label), base: d.target.base, head: d.target.head, read: { seen, total },
     findings: bySeverity(visible()), hidden: anyHidden,
-    comments: h.comments.length, suggested: inHouse ? VERDICT[inHouse.verdict] : undefined,
+    comments: h.comments.length, filter: level, suggested: inHouse ? VERDICT[inHouse.verdict] : undefined,
   }), cols - 4);
 
   // The content area: one thing at a time, scrolled within its rows. A finding's title is bold above its detail.

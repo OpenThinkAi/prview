@@ -56,10 +56,9 @@ What you get is a full-screen review, not a diff dump:
   behind a letter prefix: `a` AI (`a i` the summary, `a ?` ask the model about this block), `v` view (`v z` zen,
   hiding the table of contents; `v c` the content area full-screen; `v e` your editor; `v w` wrap), `g` go to (`g f`/`g F` next/previous finding, wrapping; `g h`/`g H` by severity, every
   high one first; `g g`/`g e` top/end of the file; `g 120 Enter` that line; `g c 3 Enter` that chapter) and
-  `f` filter. `s` submits, `y` copies, `?` searches the docs, `q` quits. `Esc` backs out of anything: a pending
+  `f` filter (`f h` high only, `f m` high and medium, `f a` all: the level shows in the status area and is kept with the review; it is for reading, so the submit checklist still lists every finding). `s` submits, `y` copies, `?` searches the docs, `q` quits. `Esc` backs out of anything: a pending
   prefix, full-screen, the content area, a finding, a prompt. `g f`/`g h` and the line jumps land in the code;
-  `g c` lands in the table of contents. Keys that arrive with later changes (`\` settings, `a s` drafts, `f`
-  filters) are in the tables already and say so when pressed.
+  `g c` lands in the table of contents. Keys that arrive with later changes (`\` settings, `a s` drafts) are in the tables already and say so when pressed.
 - **The screen.** A status area on top: the PR's title, then separate fields, each with a dim label: the PR number,
   the branches (or commits), `read 3/5`, the findings by severity, whatever their action (`▲ 2 high · 1 medium`), the
   comments, and the in-house review's suggested verdict when there is one. No field is cut to make room for another:

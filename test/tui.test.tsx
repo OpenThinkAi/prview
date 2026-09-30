@@ -1052,7 +1052,7 @@ test("g c into a collapsed chapter expands it; ← from its code comes back with
 
 test("keys that come with later changes say so, and do nothing else", async () => {
   const t = await open();
-  for (const [keys, id] of [["fh", "filter.high"], ["as", "ai.draft"], ["\\", "review.settings"]] as const) {
+  for (const [keys, id] of [["as", "ai.draft"], ["\\", "review.settings"]] as const) {
     await t.press(keys);
     expect(t.frame(), id).toContain(`${keyOf(id)} `);
     expect(t.frame(), id).toContain("not built yet, coming with");
@@ -1346,22 +1346,22 @@ const regions = (t: Shown) => {
 };
 
 test("status area: the title on its own line, then separate labelled fields; the in-house suggestion only", async () => {
-  const t = await open({ findings: [finding, f2, f3] }, { suggested: [{ by: "prview", verdict: "request_changes" }, { by: "imported", verdict: "approve" }] });
+  const t = await open({ findings: [finding, f2, f3] }, { cols: 130, suggested: [{ by: "prview", verdict: "request_changes" }, { by: "imported", verdict: "approve" }] });
   const { status, middle } = regions(t);
   const [top, title, fields, bottom] = status.split("\n");
   expect(top).toMatch(/^┌─+┐$/);
   expect(title).toMatch(/^│ A change\s+│?$/);
-  expect(fields).toContain("branches main ← x   read 1/2   findings ▲ 1 high · 1 medium · 1 low   comments 0   suggested Request changes");
+  expect(fields).toContain("branches main ← x   read 1/2   findings ▲ 1 high · 1 medium · 1 low   filter all   comments 0   suggested Request changes");
   expect(fields).not.toContain("Approve");
   expect(bottom).toMatch(/^└─+┘$/);
   expect(middle).toContain("READ IN ORDER");
 });
 
 test("status fields (pure): a PR shows its number and commits, a range its branches; narrow widths drop whole fields in order", () => {
-  const base: StatusInput = { label: "acme/app#1016", base: "a".repeat(40), head: "b".repeat(40), read: { seen: 1, total: 5 }, findings: { high: 2, medium: 1, low: 0 }, hidden: false, comments: 3, suggested: "Comment" };
+  const base: StatusInput = { label: "acme/app#1016", base: "a".repeat(40), head: "b".repeat(40), read: { seen: 1, total: 5 }, findings: { high: 2, medium: 1, low: 0 }, hidden: false, comments: 3, filter: "medium", suggested: "Comment" };
   const all = statusFields(base);
-  expect(all.map((f) => `${f.label} ${f.value}`)).toEqual(["PR #1016", "commits aaaaaaa ← bbbbbbb", "read 1/5", "findings ▲ 2 high · 1 medium", "comments 3", "suggested Comment"]);
-  expect(statusFields({ ...base, label: "main..feature", suggested: undefined }).map((f) => f.key)).toEqual(["branch", "read", "findings", "comments"]);
+  expect(all.map((f) => `${f.label} ${f.value}`)).toEqual(["PR #1016", "commits aaaaaaa ← bbbbbbb", "read 1/5", "findings ▲ 2 high · 1 medium", "filter high and medium", "comments 3", "suggested Comment"]);
+  expect(statusFields({ ...base, label: "main..feature", suggested: undefined }).map((f) => f.key)).toEqual(["branch", "read", "findings", "filter", "comments"]);
   expect(statusFields({ ...base, findings: { high: 0, medium: 0, low: 0 }, hidden: true }).find((f) => f.key === "findings")!.value).toBe("none · more hidden ▲?");
   const w = (fs: ReturnType<typeof statusFields>) => fs.map((f) => `${f.label} ${f.value}`).join("   ").length;
   expect(fitFields(all, 200)).toEqual(all);
@@ -1498,4 +1498,86 @@ test("smoke sizes: every region fits 120x32 and 100x28, in each state", async ()
       expect(regions(t).status, at).toContain("A change");
     }
   }
+});
+
+// ---- f h / f m / f a: the severity filter
+const mixed = () => {
+  const warn: Finding = { ...finding, id: "w", line: 12, severity: "medium", title: "A warning" };
+  const nit: Finding = { ...finding, id: "n", hunk: h2!.id, line: 2, severity: "low", title: "A nit" };
+  return [finding, warn, nit];
+};
+
+test("filter: f h leaves only high findings on the gutter, the rail and the counts; f a brings them back; the status shows the level", async () => {
+  const t = await open({ findings: mixed() }, { code: true });
+  expect(t.frame()).toContain("filter all");
+  expect(t.frame()).toContain("findings ▲ 1 high · 1 medium · 1 low");
+  await t.press("fm");
+  expect(t.frame()).toContain("filter high and medium");
+  expect(t.frame()).toContain("findings ▲ 1 high · 1 medium");
+  expect(t.frame()).not.toContain("1 low");
+  expect(regions(t).middle).not.toContain("b.ts:1 ▲"); // the nit's block has no mark
+  await t.press("fh");
+  expect(t.frame()).toContain("filter high only");
+  expect(t.frame()).toContain("findings ▲ 1 high");
+  expect(t.frame()).not.toContain("1 medium");
+  const gutter = regions(t).middle.split("\n").filter((l) => l.includes("▲"));
+  expect(gutter.some((l) => /1 Core change ▲1/.test(l))).toBe(true);
+  // the medium finding sat on line 12; its mark is gone, the high one's on line 11 stays
+  expect(regions(t).middle).toMatch(/11 ▲ \+let answer/);
+  expect(regions(t).middle).not.toMatch(/12 ▲/);
+  await t.press("fa");
+  expect(t.frame()).toContain("filter all");
+  expect(t.frame()).toMatch(/12 ▲ \+new2/);
+});
+
+test("filter: a filtered-out finding cannot be reached with g f or g h, and an open one closes when the filter hides it", async () => {
+  const t = await open({ findings: mixed() }, { code: true });
+  await t.press("fh");
+  for (let i = 0; i < 3; i++) { await t.press("gf"); expect(t.frame()).toContain("Hard-coded answer in main"); expect(t.frame()).not.toContain("A warning"); expect(t.frame()).not.toContain("A nit"); }
+  await t.press("gh");
+  expect(t.frame()).toContain("Hard-coded answer in main");
+  // open the medium one, then filter to high: it closes
+  await t.press("x" + "fa" + "gh" + "gh");
+  expect(t.frame()).toContain("A warning");
+  await t.press("fh");
+  expect(t.frame()).not.toContain("A warning");
+  await t.press("fm");
+  await t.press("fa");
+  // nothing matches: a clear note
+  const none = await open({ findings: [mixed()[2]!] });
+  await none.press("fh");
+  await none.press("gf");
+  expect(none.frame()).toContain("There are no findings to go to.");
+  expect(none.frame()).toContain("high only");
+});
+
+test("filter: the level is kept with the stored review, not in the document, and comes back when it is opened again", async () => {
+  const t = await open({ findings: mixed() });
+  Object.assign(t.r.doc.target, { base: "a".repeat(40), head: "b".repeat(40) }); // a stored review has real commit ids
+  await t.press("fh");
+  expect(t.r.filter).toBe("high");
+  expect(JSON.stringify(t.r.doc)).not.toContain("filter");
+  const back = (await import("../src/build.ts")).load(t.r.slug);
+  expect(back.filter).toBe("high");
+  expect(JSON.stringify(back.doc)).not.toContain("\"filter\"");
+  const again = render(<App review={back} files={files} onDone={() => {}} size={{ cols: 120, rows: 40 }} />);
+  await settle();
+  expect((again.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "")).toContain("filter high only");
+  await t.press("fa");
+  expect(t.r.filter).toBeUndefined();
+});
+
+test("filter: the submit checklist still lists every finding and says a filter is active; the default verdict ignores the filter", async () => {
+  const t = await open({ findings: mixed() });
+  await t.press("fh" + "s");
+  await t.press("c");
+  const f = t.frame();
+  expect(f).toContain("── Findings (3)");
+  expect(f).toContain("A warning");
+  expect(f).toContain("A nit");
+  expect(f).toContain("The filter (high only) is only for reading");
+  const all = await open({ findings: mixed() });
+  await all.press("s");
+  await all.press("c");
+  expect(all.frame()).not.toContain("is only for reading");
 });

@@ -4,12 +4,13 @@
 // No field is cut to make room for another: when the line is too narrow, whole fields drop, in DROP_ORDER. The
 // findings by severity are never dropped (at a width too narrow even for them alone, the line is cut at the edge).
 
+import { filterLabel, type Filter } from "./filter.ts";
 import type { Severity } from "./guide.ts";
 
-export type Field = { key: "pr" | "branch" | "read" | "findings" | "comments" | "suggested"; label: string; value: string; color?: string };
+export type Field = { key: "pr" | "branch" | "read" | "findings" | "filter" | "comments" | "suggested"; label: string; value: string; color?: string };
 
-/** The order fields leave a narrow line in: the suggested verdict first, then the branches, the comments, the PR number, the reading progress. The findings stay. */
-export const DROP_ORDER: readonly Field["key"][] = ["suggested", "branch", "comments", "pr", "read"];
+/** The order fields leave a narrow line in: the suggested verdict first, then the branches, the comments, the PR number, the reading progress. The severity filter goes last of all. The findings stay. */
+export const DROP_ORDER: readonly Field["key"][] = ["suggested", "branch", "comments", "pr", "read", "filter"];
 export const GAP = "   ";
 
 export type StatusInput = {
@@ -19,6 +20,8 @@ export type StatusInput = {
   /** The findings shown, by severity, whatever their action; `hidden`: blind, some are not shown yet. */
   findings: Record<Severity, number>; hidden: boolean;
   comments: number;
+  /** The severity filter (`f h`/`f m`/`f a`): the findings above are the ones it lets through. */
+  filter?: Filter;
   /** The in-house review's suggested verdict, worded, when there is one. */
   suggested?: string;
 };
@@ -35,6 +38,7 @@ export function statusFields(s: StatusInput): Field[] {
   const counts = SEVERITY.filter((k) => s.findings[k]).map((k) => `${s.findings[k]} ${k}`);
   const shown = counts.length ? `▲ ${counts.join(" · ")}` : "none";
   out.push({ key: "findings", label: "findings", value: `${shown}${s.hidden ? " · more hidden ▲?" : ""}`, color: counts.length ? "yellow" : undefined });
+  if (s.filter) out.push({ key: "filter", label: "filter", value: filterLabel(s.filter), color: s.filter === "all" ? undefined : "cyan" });
   out.push({ key: "comments", label: "comments", value: String(s.comments) });
   if (s.suggested) out.push({ key: "suggested", label: "suggested", value: s.suggested });
   return out;
