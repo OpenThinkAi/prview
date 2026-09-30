@@ -8,7 +8,7 @@
 // commit; it never merges with, or opens against, another head.
 
 import type { FileDiff } from "./diff.ts";
-import { anchorLine, checkPlan, classify, clip, filePlan, hunksOf, SEVERITIES, type Chapter, type Finding, type Mechanical, type Plan, type Severity } from "./guide.ts";
+import { anchorLine, checkPlan, classify, clip, filePlan, fitLine, hunksOf, SEVERITIES, type Chapter, type Finding, type Mechanical, type Plan, type Severity } from "./guide.ts";
 
 export const SCHEMA = "prview-review/1";
 
@@ -74,7 +74,7 @@ export function parseDocument(input: unknown): Doc {
   const ids = new Set<string>();
   const findings: Finding[] = [];
   for (const f of arr(j.findings).filter(isObj)) {
-    const claim = str(f.claim, 300), line = Number(f.line);
+    const claim = str(f.claim, 300), line = Number(f.line), title = fitLine(str(f.title, 300)).text;
     if (typeof f.hunk !== "string" || !claim || !Number.isInteger(line)) continue;
     // Ids only have to be unique within the document; a repeat or a missing one gets a fresh id.
     let id = typeof f.id === "string" || typeof f.id === "number" ? clip(String(f.id), 80) : `f${findings.length}`;
@@ -83,6 +83,8 @@ export function parseDocument(input: unknown): Doc {
     findings.push({
       id, source: str(f.source, 40) || "unknown", hunk: f.hunk, side: side(f.side), line,
       severity: SEVERITIES.has(f.severity as Severity) ? f.severity as Severity : "warn", kind: str(f.kind, 30).toLowerCase() || "finding",
+      // A producer's title is held to 12 words like the critic's; one it did not give is derived on display.
+      ...(title ? { title } : {}),
       claim, evidence: str(f.evidence, 500), status: STATUSES.has(f.status as Finding["status"]) ? f.status as Finding["status"] : "unrefuted",
       ...(str(f.refute, 300) ? { refute: str(f.refute, 300) } : {}),
       // Only a producer that ran a reviewer several times has votes; anything else is left unset.

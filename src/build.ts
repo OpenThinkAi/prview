@@ -16,7 +16,7 @@ import { parseDiff, type FileDiff } from "./diff.ts";
 import { blank, Fail, fit, merge, parseDocument, SCHEMA, type Comment, type Doc, type Target } from "./document.ts";
 import {
   applyReask, applyRefute, classify, CRITIC_SYSTEM, criticPrompt, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, numbered,
-  mergeFindings, parseCritic, readGuide, REASK_SYSTEM, reaskPrompt, REFUTE_SYSTEM, refutePrompt, type Finding, type HunkAt, type Mechanical, type Plan,
+  mergeFindings, readCritic, readGuide, applyTitleReask, TITLE_REASK_SYSTEM, titleReaskPrompt, titleOf, REASK_SYSTEM, reaskPrompt, REFUTE_SYSTEM, refutePrompt, type Chapter, type Finding, type HunkAt, type Mechanical, type Plan,
 } from "./guide.ts";
 import { DEFAULT_MODEL, loadConfig, realLookups, resolveModel, resolveRoles, type Resolved, type Role } from "./config.ts";
 import { complete, pool, type Usage } from "./llm.ts";
@@ -114,6 +114,14 @@ export async function runGuide(model: Resolved, src: { title: string; body: stri
   catch (e) { return { plan, reasked: cuts.length, errors: [`guide re-ask: ${(e as Error).message}`] }; }
 }
 
+/** One critic run: parsed, with one re-ask for any title that had to be cut (a failed re-ask keeps the cut titles). */
+export async function runCritic(model: Resolved, prompt: string, chapter: Chapter, hunks: HunkAt[], usage?: (u: Usage) => void): Promise<Finding[]> {
+  const { findings, cuts } = readCritic(await complete(model, CRITIC_SYSTEM, prompt, usage), chapter, hunks, 0);
+  if (!cuts.length) return findings;
+  try { return applyTitleReask(findings, cuts, await complete(model, TITLE_REASK_SYSTEM, titleReaskPrompt(findings, cuts), usage)); }
+  catch { return findings; }
+}
+
 /** The default producer: the guide orders the hunks, the critic raises findings, refute re-checks them. */
 async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, models: Record<Role, Resolved>, samples: number, say: Progress): Promise<{ doc: Doc; errors: string[]; runs: Run[] }> {
   const errors: string[] = [], runs: Run[] = [];
@@ -132,7 +140,7 @@ async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, 
   const reviews = await pool(plan.chapters.map((c, i) => async () => {
     const prompt = criticPrompt(src, c, hunks);
     const each = await Promise.all(Array.from({ length: samples }, () =>
-      complete(models.critic, CRITIC_SYSTEM, prompt, timed("critic")).then((t) => parseCritic(t, c, hunks, 0)).catch((e) => e instanceof Error ? e : new Error(String(e)))));
+      runCritic(models.critic, prompt, c, hunks, timed("critic")).catch((e) => e instanceof Error ? e : new Error(String(e)))));
     const ok = each.filter((r): r is Finding[] => !(r instanceof Error));
     for (const r of each) if (r instanceof Error) errors.push(`critic (${c.title}): ${r.message}`);
     if (!ok.length) throw new Error("every run failed");
@@ -377,7 +385,7 @@ export function writeup(d: Doc, files: FileDiff[]): string {
   const kept = d.findings.filter((f) => f.status !== "withdrawn" && !h.dismissals.includes(f.id));
   if (kept.length) {
     out.push(`## Findings you kept`, ``);
-    for (const f of kept) out.push(`- ${f.hunk.split("@")[0]} ${f.side} ${f.line} · ${f.severity} · ${f.claim}`);
+    for (const f of kept) out.push(`- ${f.hunk.split("@")[0]} ${f.side} ${f.line} · ${f.severity} · ${titleOf(f)}`);
   }
   return out.join("\n") + "\n";
 }

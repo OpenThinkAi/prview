@@ -61,6 +61,7 @@
           "line": { "type": "integer", "description": "a line number on `side`; one outside the hunk moves to the hunk's first line" },
           "severity": { "enum": ["blocking", "warn", "nit"], "default": "warn" },
           "kind": { "type": "string", "maxLength": 30, "description": "e.g. bug, security, correctness, design, test, perf" },
+          "title": { "type": "string", "description": "optional: the finding in a glance, at most 12 words (prview cuts a longer one); left out, prview shows the claim's first sentence" },
           "claim": { "type": "string", "minLength": 1, "maxLength": 300 },
           "evidence": { "type": "string", "maxLength": 500 },
           "refute": { "type": "string", "maxLength": 300, "description": "what a second look concluded" },

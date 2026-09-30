@@ -19,7 +19,9 @@ What you get is a full-screen review, not a diff dump:
   rule may have missed.
 - **Findings in the gutter.** A critic (a model) raises findings anchored to a line; each one is
   handed to a fresh call with more of the file to refute, and only the survivors are shown (`▲`).
-  `f` reads one (titled with who raised it: `▲ critic · bug · warn`), `d` dismisses it.
+  `f` reads one: a bold title of at most 12 words first ("Missing test: X isn't covered"), the detail
+  beneath, and a header saying who raised it (`▲ critic · bug · warn`); `d` dismisses it. A finding
+  with no title of its own shows its claim's first sentence.
   `y` copies the open box (a finding, the `?` why, an `a` answer) as clean text: the original strings,
   no borders, padding or hard wraps. With no box open it copies the line's `path:line`. It uses `pbcopy`,
   `wl-copy` or `xclip`, else OSC 52 (works through tmux with `allow-passthrough on`, and over ssh);

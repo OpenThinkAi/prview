@@ -13,7 +13,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput, useStdout } from "ink";
 import { where, type DiffLine, type FileDiff } from "./diff.ts";
-import { hunksOf, MECHANICAL_INTENT, worstFirst, type Finding, type HunkAt } from "./guide.ts";
+import { claimAddsTo, hunksOf, MECHANICAL_INTENT, titleOf, worstFirst, type Finding, type HunkAt } from "./guide.ts";
 import { ask, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
 import type { Doc, Verdict } from "./document.ts";
 import { chapterHidden, hiddenHunks, revealBody, revealEarly } from "./blind.ts";
@@ -41,8 +41,8 @@ function itemsOf(d: Doc, files: FileDiff[]): Item[] {
 /** Columns a press of H or L moves the code sideways. */
 const PAN = 8;
 const SEV = { blocking: "red", warn: "yellow", nit: "blue" } as const;
-/** `copy` is the float's source text for `y`: what it means, not the wrapped and boxed lines drawn from `body`. */
-type Float = { title: string; body: string; color?: string; tall?: boolean; copy?: string };
+/** `lead` is bold above the body: a finding's title. `copy` is the float's source text for `y`: what it means, not the wrapped and boxed lines drawn from `lead` and `body`. */
+type Float = { title: string; lead?: string; body: string; color?: string; tall?: boolean; copy?: string };
 type Mode = { kind: "nav" } | { kind: "comment"; general: boolean } | { kind: "ask" } | { kind: "verdict" } | { kind: "include" } | { kind: "preview"; hook: boolean; findings: string[]; coverage: boolean };
 
 export type AppProps = {
@@ -125,7 +125,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   };
   const showFinding = (f: Finding) => {
     const gone = h.dismissals.includes(f.id);
-    setFloat({ title: `▲ ${f.source} · ${f.kind} · ${f.severity}${f.votes && r.ai?.samples ? ` · ${f.votes}/${r.ai.samples}` : ""}${gone ? " · dismissed" : ""}`, color: SEV[f.severity], copy: findingText(f, place(f.hunk, f.line)), body: `${f.claim}\n\n${f.evidence}${f.refute ? `\n\nSecond look: ${f.refute}` : ""}\n\nd to ${gone ? "restore" : "dismiss"}.` });
+    setFloat({ title: `▲ ${f.source} · ${f.kind} · ${f.severity}${f.votes && r.ai?.samples ? ` · ${f.votes}/${r.ai.samples}` : ""}${gone ? " · dismissed" : ""}`, color: SEV[f.severity], lead: titleOf(f), copy: findingText(f, place(f.hunk, f.line)), body: [claimAddsTo(f) ? f.claim : "", f.evidence, f.refute ? `Second look: ${f.refute}` : "", `d to ${gone ? "restore" : "dismiss"}.`].filter(Boolean).join("\n\n") });
   };
   const jumpFinding = (dir: 1 | -1) => {
     const hit = nextFinding(items, d.findings.filter((f) => live(f) && unhidden(f)), { item: pos.item, line }, dir);
@@ -282,7 +282,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const anyHidden = d.findings.some((f) => live(f) && !unhidden(f));
 
   // The float sits right under the cursor line, so the window keeps that many rows free below it.
-  const floatLines = float ? wrapText(float.body, floatInner) : [];
+  const leadLines = float?.lead ? wrapText(float.lead, floatInner) : [];
+  const floatLines = float ? [...leadLines, ...(leadLines.length ? [""] : []), ...wrapText(float.body, floatInner)] : [];
   const floatH = float ? floatHeight(floatLines.length, rows, !!float.tall) : 0;
   const sc = float ? clampScroll(scroll, floatLines.length, floatH) : 0;
   const shownFloat = floatLines.slice(sc, sc + floatRows(floatH));
@@ -384,7 +385,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
                     {cur && float ? (
                       <Box flexDirection="column" marginLeft={gutterW + 2} width={floatW} height={floatH} overflow="hidden" borderStyle="round" borderColor={float.color ?? "gray"} paddingX={1}>
                         <Text bold color={float.color} wrap="truncate">{float.title}{busy ? <Text dimColor> · {busy}</Text> : null}{floatLines.length > floatRows(floatH) ? <Text dimColor> · {sc + 1}-{Math.min(floatLines.length, sc + floatRows(floatH))}/{floatLines.length} PgUp/PgDn</Text> : null}</Text>
-                        {shownFloat.map((t, j) => <Text key={j} wrap="truncate">{t}</Text>)}
+                        {shownFloat.map((t, j) => <Text key={j} bold={sc + j < leadLines.length} wrap="truncate">{t}</Text>)}
                       </Box>
                     ) : null}
                   </Box>

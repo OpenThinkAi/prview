@@ -45,7 +45,7 @@ index 1..2 100644
 const files = parseDiff(DIFF);
 const [h1, h2] = hunksOf(files);
 
-const finding: Finding = { id: "1", source: "critic", hunk: h1!.id, side: "new", line: 11, severity: "blocking", kind: "bug", claim: "answer is hard-coded", evidence: "42 appears with no source", status: "upheld" };
+const finding: Finding = { id: "1", source: "critic", hunk: h1!.id, side: "new", line: 11, severity: "blocking", kind: "bug", title: "Hard-coded answer in main", claim: "answer is hard-coded", evidence: "42 appears with no source", status: "upheld" };
 type Over = { findings?: Finding[]; comments?: Doc["human"]["comments"]; plan?: Doc["plan"] };
 function fixture(over: Over = {}): Review {
   const doc: Doc = {
@@ -114,7 +114,10 @@ test("finding float: f opens the finding under the cursor, d dismisses it, Esc c
   const t = await open();
   await t.press("f");
   expect(t.frame()).toContain("critic · bug · blocking");
-  expect(t.frame()).toContain("answer is hard-coded");
+  // The title leads, the claim and evidence sit under it.
+  const fr = t.frame();
+  expect(fr.indexOf("Hard-coded answer in main")).toBeGreaterThan(fr.indexOf("critic · bug · blocking"));
+  expect(fr.indexOf("answer is hard-coded")).toBeGreaterThan(fr.indexOf("Hard-coded answer in main"));
   expect(t.r.pos.line).toBe(2); // the cursor moved to the finding's line
   await t.press("d");
   expect(t.r.doc.human.dismissals).toEqual(["1"]);
@@ -368,7 +371,8 @@ test("blind gate (pure): hidden until every hunk is visited or revealed early; e
   expect(earlyTitles([{ title: "One", ids: ["a", "b"] }, { title: "Two", ids: ["c"] }], { visited: [], revealed: ["c"] })).toEqual(["Two"]);
   const body = revealBody([finding], [{ hunk: h1!.id, side: "new", line: 11, text: "why 42?", at: "" }], (h, l) => `${h}:${l}`);
   expect(body).toContain("The model found 1:");
-  expect(body).toContain("answer is hard-coded");
+  expect(body).toContain("Hard-coded answer in main"); // the listing shows the title, not the claim
+  expect(body).not.toContain("answer is hard-coded");
   expect(body).toContain("You noted 1:");
   expect(body).toContain("why 42?");
 });
@@ -408,7 +412,7 @@ test("blind: F reveals early, lists the findings beside the reader's comments, a
   const f = t.frame();
   expect(f).toContain("what the model found");
   expect(f).toContain("The model found 1:");
-  expect(f).toContain("answer is hard-coded");
+  expect(f).toContain("Hard-coded answer in main");
   expect(f).toContain("You noted 1:");
   expect(f).toContain("why 42?");
   expect(t.r.doc.human.revealed).toEqual([h1!.id]);
@@ -441,10 +445,11 @@ test("blind off: nothing is hidden and the footer does not offer F", async () =>
 
 import { askText, confirmation, copyText, findingText, osc52, routes, whyText } from "../src/clipboard.ts";
 
-test("clipboard text: a finding is path:line — lead, then the detail; a titled finding leads with its title", () => {
-  expect(findingText(finding, "src/a.rs:11")).toBe("src/a.rs:11 — answer is hard-coded\n\n42 appears with no source");
-  expect(findingText({ ...finding, refute: "still true" }, "src/a.rs:11")).toBe("src/a.rs:11 — answer is hard-coded\n\n42 appears with no source\n\nSecond look: still true");
-  expect(findingText({ ...finding, title: "Hard-coded answer" }, "src/a.rs:11")).toBe("src/a.rs:11 — Hard-coded answer\n\nanswer is hard-coded\n\n42 appears with no source");
+test("clipboard text: a finding is path:line — title, then the detail; one with no title leads with the claim's first sentence", () => {
+  const bare = { ...finding, title: undefined };
+  expect(findingText(bare, "src/a.rs:11")).toBe("src/a.rs:11 — Answer is hard-coded\n\n42 appears with no source"); // the short claim is the title: not said twice
+  expect(findingText({ ...bare, refute: "still true" }, "src/a.rs:11")).toBe("src/a.rs:11 — Answer is hard-coded\n\n42 appears with no source\n\nSecond look: still true");
+  expect(findingText(finding, "src/a.rs:11")).toBe("src/a.rs:11 — Hard-coded answer in main\n\nanswer is hard-coded\n\n42 appears with no source");
   expect(whyText("Core change", "Check the answer is derived", "It is the heart of it.")).toBe("Core change\n\nCheck the answer is derived\n\nIt is the heart of it.");
   expect(whyText("Mechanical", undefined, "why")).toBe("Mechanical\n\nwhy");
   expect(askText("why 42?", "Because.")).toBe("why 42?\n\nBecause.");
@@ -495,7 +500,7 @@ test("y: with a finding open copies its source text and the footer says how much
   expect(t.frame()).not.toContain("copied 11 chars");
   await t.press("f");
   await t.press("y");
-  expect(t.copied[1]).toBe("src/a.rs:11 — answer is hard-coded\n\n42 appears with no source");
+  expect(t.copied[1]).toBe("src/a.rs:11 — Hard-coded answer in main\n\nanswer is hard-coded\n\n42 appears with no source");
   expect(t.copied[1]).not.toMatch(/[│─╭╮╰╯]/);
   await t.press("?");
   await t.press("y");

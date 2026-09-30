@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDiff } from "../src/diff.ts";
-import { applyReask, applyRefute, classify, filePlan, fitLine, hunksOf, MECHANICAL_INTENT, mergeFindings, oneLine, parseCritic, parseGuide, readGuide, reaskPrompt, rubric, sameClaim, twoSentences, worstFirst, type Finding } from "../src/guide.ts";
+import { applyReask, applyRefute, applyTitleReask, claimAddsTo, classify, deriveTitle, readCritic, titleOf, titleReaskPrompt, filePlan, fitLine, hunksOf, MECHANICAL_INTENT, mergeFindings, oneLine, parseCritic, parseGuide, readGuide, reaskPrompt, rubric, sameClaim, twoSentences, worstFirst, type Finding } from "../src/guide.ts";
 import { blank, fit, merge, parseDocument, SCHEMA, type Doc } from "../src/document.ts";
 import { gotoLine, nextFinding } from "../src/nav.ts";
 
@@ -413,4 +413,63 @@ test("roles: critic on one model and ask on another; --ai overrides all four", (
   expect(new Set(Object.values(all).map((m) => m.def.name))).toEqual(new Set(["local-qwen"]));
   expect(() => resolveRoles(c, l, "nope")).toThrow(/no model named nope/);
   expect(() => resolveRoles(c, none)).toThrow(/no credential/);
+});
+
+// ---------------------------------------------------------------- finding titles
+
+test("a finding's title is held to 12 words; one too long is cut and re-asked once, a missing one is not an error", () => {
+  const files = parseDiff(MECH), hunks = hunksOf(files);
+  const chapter = { title: "The bump", intent: "", why: "", hunks: ["src/real.rs@1:1"] };
+  const long = "The function load_caller_org does not have a test that exercises the error path";
+  const at = { hunk: "src/real.rs@1:1", side: "new", line: 1 };
+  const reply = JSON.stringify([
+    { ...at, title: "Missing test: load_caller_org error path isn't covered.", claim: "a" },
+    { ...at, title: long, claim: "b" },
+    { ...at, claim: "No title here. More words follow." },
+    { ...at, title: 42, claim: "c" },
+  ]);
+  const { findings, cuts } = readCritic(reply, chapter, hunks, 0);
+  expect(findings.map((f) => f.title)).toEqual([
+    "Missing test: load_caller_org error path isn't covered", // trailing period dropped
+    "The function load_caller_org does not have a test that exercises the error…", undefined, "42",
+  ]);
+  expect(cuts).toEqual([{ index: 1, said: long }]);
+  expect(titleReaskPrompt(findings, cuts)).toContain("n=2");
+  // The rewrite lands when it fits; a rewrite still too long, junk, or a reply for a finding not asked about changes nothing.
+  expect(applyTitleReask(findings, cuts, '[{"n":2,"title":"Missing test: load_caller_org error path"},{"n":1,"title":"hijack"}]')[1]!.title).toBe("Missing test: load_caller_org error path");
+  expect(applyTitleReask(findings, cuts, '[{"n":2,"title":"Missing test: load_caller_org error path isn\'t covered anywhere at all in the suite"}]')).toEqual(findings);
+  expect(applyTitleReask(findings, cuts, '[{"n":2,"title":"x"},{"n":1,"title":"hijack"}]')[0]!.title).toBe(findings[0]!.title);
+  expect(applyTitleReask(findings, cuts, "not json")).toEqual(findings);
+});
+
+test("titleOf: the finding's own title, else the claim's first sentence cut to 12 words; old documents still load", () => {
+  const prose = "The retry loop never backs off, so a failing upstream is hit as fast as the CPU allows. This was also the case before the change. See src/retry.rs.";
+  expect(titleOf({ title: "Retry never backs off", claim: prose })).toBe("Retry never backs off");
+  expect(deriveTitle(prose)).toBe("The retry loop never backs off, so a failing upstream is hit…");
+  expect(deriveTitle("Uses e.g. a fixed delay in v1.2. Second sentence.")).toBe("Uses e.g. a fixed delay in v1.2");
+  expect(titleOf({ claim: "n is wrong" })).toBe("N is wrong");
+  expect(titleOf({ claim: "" })).toBe("");
+  // A short one-sentence claim is its own title, so the float does not say it twice.
+  expect(claimAddsTo({ claim: "n is wrong" })).toBe(false);
+  expect(claimAddsTo({ claim: prose })).toBe(true);
+  expect(claimAddsTo({ title: "n is wrong", claim: "n is wrong" })).toBe(true);
+
+  const d = parseDocument(JSON.stringify(foreign({ findings: [
+    { source: "stamp:security", hunk: "src/real.rs@1:1", line: 1, claim: prose },
+    { source: "hal9k", hunk: "src/real.rs@1:1", line: 1, title: "one two three four five six seven eight nine ten eleven twelve thirteen", claim: "x" },
+    { source: "hal9k", hunk: "src/real.rs@1:1", line: 1, title: "  ", claim: "y" },
+  ] })));
+  expect(d.findings.map((f) => f.title)).toEqual([undefined, "One two three four five six seven eight nine ten eleven twelve…", undefined]);
+  expect(d.findings.map(titleOf)[0]).toBe("The retry loop never backs off, so a failing upstream is hit…");
+});
+
+test("the write-up lists kept findings by title", () => {
+  const r = { doc: { ...blank({ title: "T", base: A, head: B, label: "l" } as never), findings: [
+    { id: "1", source: "stamp:x", hunk: "src/real.rs@1:1", side: "new" as const, line: 1, severity: "warn" as const, kind: "bug", claim: "Long prose about the thing. Even more prose.", evidence: "", status: "upheld" as const },
+    { id: "2", source: "critic", hunk: "src/real.rs@1:1", side: "new" as const, line: 2, severity: "nit" as const, kind: "bug", title: "Short title", claim: "Long prose again.", evidence: "", status: "upheld" as const },
+  ] } };
+  const md = writeup(r.doc, parseDiff(MECH));
+  expect(md).toContain("warn · Long prose about the thing");
+  expect(md).not.toContain("Even more prose");
+  expect(md).toContain("nit · Short title");
 });

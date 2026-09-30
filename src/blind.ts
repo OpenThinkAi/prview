@@ -5,7 +5,7 @@
 // A chapter is named here by the id of its first hunk: chapters carry no ids of their own, and a
 // hunk belongs to exactly one chapter, so the key survives a plan being replaced by a richer one.
 
-import type { Finding } from "./guide.ts";
+import { titleOf, type Finding } from "./guide.ts";
 import type { Comment } from "./document.ts";
 
 /** The part of the reader's layer the gate looks at. */
@@ -47,7 +47,7 @@ export function earlyTitles(chapters: { title: string; ids: string[] }[], human:
 export function revealBody(findings: Finding[], comments: Comment[], place: (hunk: string, line: number | null) => string): string {
   const out: string[] = [];
   out.push(findings.length ? `The model found ${findings.length}:` : "The model found nothing in this chapter.");
-  for (const f of findings) out.push(`▲ ${place(f.hunk, f.line)} · ${f.severity} · ${f.claim}`);
+  for (const f of findings) out.push(`▲ ${place(f.hunk, f.line)} · ${f.severity} · ${titleOf(f)}`);
   out.push("", comments.length ? `You noted ${comments.length}:` : "You left no comments here.");
   for (const c of comments) out.push(`» ${place(c.hunk ?? "", c.line)} · ${c.text}`);
   return out.join("\n");
