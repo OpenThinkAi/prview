@@ -181,6 +181,10 @@ of token vectors, so a sentence's vector is the normalised mean of its WordPiece
 TypeScript with no neural runtime. The table ships in `models/potion-base-8M/` as int8 with a scale
 per row (about 8 MB) and loads in a few milliseconds.
 
+The model is [potion-base-8M](https://huggingface.co/minishlab/potion-base-8M) by MinishLab (MIT),
+trained on the `minishlab/tokenlearn-c4-en-bge-base-v1.5` dataset; the copy here is an int8-quantized
+derivative, and its upstream license notice is in `models/potion-base-8M/LICENSE`.
+
 `scripts/build-embedder.ts` is the only thing that downloads anything. It fetches the pinned revision,
 converts it, and writes `reference.json`: token ids and vectors from the Python `model2vec` itself
 (run through `uv`), which `test/embed.test.ts` holds the TypeScript tokenizer and vectors to.
@@ -209,3 +213,7 @@ bun install
 bun test
 bun run typecheck
 ```
+
+## License
+
+MIT, see `LICENSE`.
