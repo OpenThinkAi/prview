@@ -10,7 +10,7 @@ import type { Review } from "../src/build.ts";
 import type { Doc } from "../src/document.ts";
 import { chapterHidden, earlyTitles, hiddenHunks, revealBody, revealEarly } from "../src/blind.ts";
 import { writeup } from "../src/build.ts";
-import { FINDING_KEYS, findingFooter, INFO_KEYS, infoFooter, NAV_KEYS, navFooter } from "../src/keys.ts";
+import { actionOf, ALL_ACTIONS, FINDING_KEYS, findingFooter, INFO_KEYS, infoFooter, NAV_ALIASES, NAV_KEYS, navFooter, startsChord } from "../src/keys.ts";
 import { parseDocument, SCHEMA } from "../src/document.ts";
 import { parseConfig } from "../src/config.ts";
 import { App, type Outcome } from "../src/tui.tsx";
@@ -874,4 +874,46 @@ test("nav: the footer comes from NAV_KEYS, every listed key acts, b/c/u are not 
   expect(b.frame()).toContain(navFooter(200, true));
   await b.press("F");
   expect(b.frame()).toContain("what the model found");
+});
+
+// ---------------------------------------------------------------- actions as data: the tables name what a key does
+
+test("actions: ids are unique, <state>.<action> for their own table, each with a key, a label and a one-line description", () => {
+  const ids = ALL_ACTIONS.map((a) => a.id);
+  expect(new Set(ids).size).toBe(ids.length);
+  for (const [state, rows] of [["nav", NAV_KEYS], ["finding", FINDING_KEYS], ["info", INFO_KEYS]] as const) {
+    for (const a of rows) {
+      expect(a.id, a.id).toMatch(new RegExp(`^${state}\\.[a-z_]+$`));
+      expect(a.key.length, a.id).toBeGreaterThan(0);
+      expect(a.label.trim(), a.id).not.toBe("");
+      expect(a.description.trim(), a.id).not.toBe("");
+      expect(a.description, a.id).not.toContain("\n");
+    }
+    // One key means one action in a state.
+    const keys = rows.map((a) => a.key);
+    expect(new Set(keys).size, state).toBe(keys.length);
+  }
+  for (const id of Object.values(NAV_ALIASES)) expect(ids).toContain(id);
+});
+
+test("actions: one lookup takes a state and a key to an action id, and the handler has a case for every id", () => {
+  expect(actionOf({ box: "finding" }, "n")).toBe("finding.not_an_issue");
+  expect(actionOf({ box: null, blind: false }, "n")).toBe("nav.note");
+  expect(actionOf({ box: null, blind: false }, "l")).toBe("nav.next_hunk");
+  expect(actionOf({ box: null, blind: false }, " ")).toBe("nav.next_hunk");
+  expect(actionOf({ box: null, blind: false }, "]c")).toBe("nav.next_chapter");
+  expect(actionOf({ box: "info", copyable: true }, "]c")).toBeUndefined();
+  expect(actionOf({ box: "info", copyable: true }, "h")).toBe("info.hide");
+  expect(actionOf({ box: "info", copyable: true }, "y")).toBe("info.copy");
+  expect(actionOf({ box: "info", copyable: false }, "y")).toBeUndefined();
+  expect(actionOf({ box: null, blind: false }, "F")).toBeUndefined();
+  expect(actionOf({ box: null, blind: true }, "F")).toBe("nav.reveal");
+  expect(actionOf({ box: "finding" }, "b")).toBe("finding.block");
+  expect(actionOf({ box: null, blind: false }, "b")).toBeUndefined();
+  expect(startsChord({ box: "finding" }, "]")).toBe(true);
+  expect(startsChord({ box: "finding" }, "[")).toBe(true);
+  expect(startsChord({ box: "finding" }, "g")).toBe(false);
+  // The handler dispatches on the id: an action with no case would be listed in the footer and do nothing.
+  const src = readFileSync(join(import.meta.dir, "../src/tui.tsx"), "utf8");
+  for (const { id } of ALL_ACTIONS) expect(src, id).toContain(`case "${id}"`);
 });

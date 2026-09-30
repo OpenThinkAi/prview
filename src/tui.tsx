@@ -29,7 +29,7 @@ import type { Beside } from "./editor.ts";
 import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
 import { describe, planOf } from "./submit.ts";
 import { decide, decisionOf, defaultVerdict, LABEL, linkedComment, nextUndecided, progress, undecidedNote, undo } from "./triage.ts";
-import { accepts, FINDING_KEYS, findingFooter, infoFooter, infoRows, navFooter } from "./keys.ts";
+import { actionOf, findingFooter, infoFooter, type KeyState, navFooter, startsChord } from "./keys.ts";
 import { MIN_COLS, MIN_ROWS, tooSmall, useTerminalSize } from "./resize.ts";
 
 /** `hook`: the human allowed the document's on_submit command for this submit (x in the preview). */
@@ -91,10 +91,10 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const [mode, setMode] = useState<Mode>({ kind: "nav" });
   const [input, setInput] = useState("");
   // Keys can arrive several to a chunk (a fast "781G"), all handled by one closure: the prefix state lives in refs.
-  const countRef = useRef(""), pendingRef = useRef<"g" | "]" | "[" | null>(null);
+  const countRef = useRef(""), pendingRef = useRef<string | null>(null);
   const [, tick] = useState(0);
   const setCount = (c: string) => { countRef.current = c; tick((n) => n + 1); };
-  const setPending = (p: "g" | "]" | "[" | null) => { pendingRef.current = p; tick((n) => n + 1); };
+  const setPending = (p: string | null) => { pendingRef.current = p; tick((n) => n + 1); };
   const [busy, setBusy] = useState<string | null>(null);
   // Long lines either scroll sideways (H/L) or wrap onto more rows (w).
   const [wrap, setWrap] = useState(false);
@@ -239,83 +239,100 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       return;
     }
 
-    // ---- nav
+    // ---- nav, and the boxes over it: a key resolves to an action id through keys.ts (state + key → action) and the
+    // handler dispatches on the id, so the footer and the handler read one table. The documented exceptions stay raw
+    // here: Esc, paging, a count, gg/G and the arrow keys.
     const count = countRef.current, pending = pendingRef.current;
     setNote(null);
+    const state: KeyState = float ? (float.finding ? { box: "finding" } : { box: "info", copyable: !!float.copy }) : { box: null, blind };
     if (key.escape) { setFloat(null); setCount(""); setPending(null); return; }
     if (pending) {
       const p = pending; setPending(null);
-      if (p === "g" && ch === "g") setPos({ ...pos, line: 0 });
-      else if ((p === "]" || p === "[") && ch === "f") jumpFinding(p === "]" ? 1 : -1);
-      else if ((p === "]" || p === "[") && ch === "c" && !float) goChapter(p === "]" ? 1 : -1);
+      if (p === "g") { if (ch === "g") setPos({ ...pos, line: 0 }); return; }
+      const id = actionOf(state, p + ch);
+      if (id) act(id);
       return;
     }
     if (key.ctrl || key.pageDown || key.pageUp) { scrollFloat(ch, key); return; } // before the letters: ctrl-d is a page, not a letter key
-    // A box open: only the keys its footer lists act (keys.ts), so the footer is the truth. Hide closes any box and records nothing.
-    if (float) {
-      if (!accepts(float.finding ? FINDING_KEYS : infoRows(!!float.copy), ch)) return;
-      if (ch === "h") { setFloat(null); return; }
-      if (ch === "n") { const f = target(); if (f) { setMode({ kind: "reason", id: f.id }); setInput(decisionOf(h, f.id)?.reason ?? ""); } return; }
-    }
+    // A box open: only the keys its footer lists act, so the footer is the truth. Hide closes any box and records nothing.
+    if (float && !actionOf(state, ch) && !startsChord(state, ch)) return;
     if (/^[0-9]$/.test(ch) && (count || ch !== "0")) { setCount(count + ch); return; }
     const n = count ? parseInt(count, 10) : undefined;
     setCount("");
     const toLine = () => { const at = gotoLine(items, pos.item, n!); if (at) { setPos(at); setFloat(null); } };
     if (ch === "g") { if (n !== undefined) toLine(); else setPending("g"); return; }
-    if (ch === "]" || ch === "[") { setPending(ch); return; }
-    if (ch === "q") { onDone({ kind: "quit" }); exit(); return; }
-    if (ch === "s") { setMode({ kind: "verdict" }); setFloat(null); return; }
-    if (ch === "G") { if (n !== undefined) toLine(); else setPos({ ...pos, line: Math.max(0, lines.length - 1) }); }
-    else if (ch === "j" || key.downArrow) setPos({ ...pos, line: Math.min(lines.length - 1, line + (n ?? 1)) });
-    else if (ch === "k" || key.upArrow) setPos({ ...pos, line: Math.max(0, line - (n ?? 1)) });
-    else if (ch === "l" || key.rightArrow || ch === " ") goItem(pos.item + (n ?? 1));
-    else if (ch === "h" || key.leftArrow) goItem(pos.item - (n ?? 1));
-    else if (ch === "J") goChapter(1);
-    else if (ch === "K") goChapter(-1);
-    else if (ch === "?") {
-      if (!item) return;
-      const body = item.mechanical ? `${MECHANICAL_INTENT}\n\nMechanical: ${item.mechanical}. Classified by rule, not by a model.` : `${chapter?.intent ? chapter.intent + "\n\n" : ""}${chapter?.why || "The guide gave no reason for this chapter."}`;
-      setFloat({ title: `${item.chapter + 1} · ${chapterTitle}`, body, copy: item.mechanical ? body : whyText(chapterTitle, chapter?.intent, chapter?.why || "The guide gave no reason for this chapter.") });
-    }
-    else if (ch === "y") {
-      // An open box copies its own text; with none open, the cursor line's reference, which is what you paste into a note.
-      const l = lines[line], at = l ? l.n ?? l.o : null;
-      const text = float ? float.copy : item && at !== null ? `${item.path}:${at}` : undefined;
-      setNote(text ? confirmation(copier(text)) : "nothing to copy here");
-    }
-    else if (ch === "F") { if (blind) reveal(); }
-    else if (ch === "f") { // the next finding in this hunk, from the cursor, wrapping
-      if (item && hidden.has(item.id)) { setFloat({ title: "Findings", body: "Hidden until you have been through this chapter. Close this with h, then F reveals them now (and the review notes you did)." }); return; }
-      if (!findingsHere.length) { setFloat({ title: "Findings", body: "None in this hunk. ]f jumps to the next one anywhere." }); return; }
-      let at = lines.findIndex((l, i) => i > line && findingsAt(l).length);
-      if (at < 0) at = lines.findIndex((l) => findingsAt(l).length);
-      if (at >= 0) setPos({ ...pos, line: at });
-      showFinding((at >= 0 ? findingsAt(lines[at]!) : findingsHere)[0]!);
-    }
-    else if (float?.finding && (ch === "b" || ch === "c" || ch === "u")) {
-      const f = target();
-      if (!f) return;
-      if (ch === "u") {
+    if (ch === "G") { if (n !== undefined) toLine(); else setPos({ ...pos, line: Math.max(0, lines.length - 1) }); return; }
+    if (startsChord(state, ch)) { setPending(ch); return; }
+    const id = actionOf(state, ch) ?? (key.downArrow ? "nav.line_down" : key.upArrow ? "nav.line_up" : key.rightArrow ? "nav.next_hunk" : key.leftArrow ? "nav.prev_hunk" : undefined);
+    if (id) act(id, n); else scrollFloat(ch, key);
+  };
+
+  // What each action does. Every id in the key tables has a case here (a test holds the two together).
+  const act = (id: string, n?: number) => {
+    switch (id) {
+      case "nav.quit": onDone({ kind: "quit" }); exit(); return;
+      case "nav.submit": setMode({ kind: "verdict" }); setFloat(null); return;
+      case "nav.line_down": setPos({ ...pos, line: Math.min(lines.length - 1, line + (n ?? 1)) }); return;
+      case "nav.line_up": setPos({ ...pos, line: Math.max(0, line - (n ?? 1)) }); return;
+      case "nav.next_hunk": goItem(pos.item + (n ?? 1)); return;
+      case "nav.prev_hunk": goItem(pos.item - (n ?? 1)); return;
+      case "nav.next_chapter": goChapter(1); return;
+      case "nav.prev_chapter": goChapter(-1); return;
+      case "nav.next_finding": case "finding.next": case "info.next_finding": jumpFinding(1); return;
+      case "nav.prev_finding": case "finding.prev": case "info.prev_finding": jumpFinding(-1); return;
+      case "finding.hide": case "info.hide": setFloat(null); return;
+      case "nav.why": {
+        if (!item) return;
+        const body = item.mechanical ? `${MECHANICAL_INTENT}\n\nMechanical: ${item.mechanical}. Classified by rule, not by a model.` : `${chapter?.intent ? chapter.intent + "\n\n" : ""}${chapter?.why || "The guide gave no reason for this chapter."}`;
+        setFloat({ title: `${item.chapter + 1} · ${chapterTitle}`, body, copy: item.mechanical ? body : whyText(chapterTitle, chapter?.intent, chapter?.why || "The guide gave no reason for this chapter.") });
+        return;
+      }
+      case "nav.copy": case "finding.copy": case "info.copy": {
+        // An open box copies its own text; with none open, the cursor line's reference, which is what you paste into a note.
+        const l = lines[line], at = l ? l.n ?? l.o : null;
+        const text = float ? float.copy : item && at !== null ? `${item.path}:${at}` : undefined;
+        setNote(text ? confirmation(copier(text)) : "nothing to copy here");
+        return;
+      }
+      case "nav.reveal": reveal(); return; // listed only with --blind
+      case "nav.finding_here": { // the next finding in this hunk, from the cursor, wrapping
+        if (item && hidden.has(item.id)) { setFloat({ title: "Findings", body: "Hidden until you have been through this chapter. Close this with h, then F reveals them now (and the review notes you did)." }); return; }
+        if (!findingsHere.length) { setFloat({ title: "Findings", body: "None in this hunk. ]f jumps to the next one anywhere." }); return; }
+        let at = lines.findIndex((l, i) => i > line && findingsAt(l).length);
+        if (at < 0) at = lines.findIndex((l) => findingsAt(l).length);
+        if (at >= 0) setPos({ ...pos, line: at });
+        showFinding((at >= 0 ? findingsAt(lines[at]!) : findingsHere)[0]!);
+        return;
+      }
+      case "finding.not_an_issue": { const f = target(); if (f) { setMode({ kind: "reason", id: f.id }); setInput(decisionOf(h, f.id)?.reason ?? ""); } return; }
+      case "finding.undo": {
+        const f = target();
+        if (!f) return;
         if (!decisionOf(h, f.id)) { setNote("nothing decided on this finding"); return; }
         Object.assign(h, undo(h, f.id)); redraw(); showFinding(f); return;
       }
-      // The comment starts as the finding's title (or the comment already written for it) and is saved only on Enter.
-      setMode({ kind: "comment", general: false, decide: { id: f.id, kind: ch === "b" ? "block" : "comment" } });
-      setInput(linkedComment(h, f.id)?.text ?? titleOf(f));
+      case "finding.block": case "finding.comment": {
+        const f = target();
+        if (!f) return;
+        // The comment starts as the finding's title (or the comment already written for it) and is saved only on Enter.
+        setMode({ kind: "comment", general: false, decide: { id: f.id, kind: id === "finding.block" ? "block" : "comment" } });
+        setInput(linkedComment(h, f.id)?.text ?? titleOf(f));
+        return;
+      }
+      case "nav.edit": {
+        if (!item) return;
+        const l = lines[line];
+        const at = l?.n ?? lines.slice(line).find((x) => x.n !== null)?.n ?? hunk?.newStart ?? 1;
+        if (beside) { const err = beside(item.path, at); if (err) setFloat({ title: "editor", body: err, color: "red" }); return; }
+        onDone({ kind: "edit", path: item.path, line: at }); exit();
+        return;
+      }
+      case "nav.note": setMode({ kind: "comment", general: false }); return;
+      case "nav.general_note": setMode({ kind: "comment", general: true }); return;
+      case "nav.ask": setMode({ kind: "ask" }); return;
+      case "nav.wrap": setWrap(!wrap); setPanX(0); return;
+      case "nav.pan_left": case "nav.pan_right": if (!wrap) setPanX(clampX(panX + (id === "nav.pan_right" ? PAN : -PAN), longest, codeCols)); return;
     }
-    else if (ch === "e") {
-      if (!item) return;
-      const l = lines[line];
-      const at = l?.n ?? lines.slice(line).find((x) => x.n !== null)?.n ?? hunk?.newStart ?? 1;
-      if (beside) { const err = beside(item.path, at); if (err) setFloat({ title: "editor", body: err, color: "red" }); return; }
-      onDone({ kind: "edit", path: item.path, line: at }); exit();
-    }
-    else if (ch === "n") setMode({ kind: "comment", general: false });
-    else if (ch === "N") setMode({ kind: "comment", general: true });
-    else if (ch === "a") setMode({ kind: "ask" });
-    else if (ch === "w") { setWrap(!wrap); setPanX(0); }
-    else if (ch === "H" || ch === "L") { if (!wrap) setPanX(clampX(panX + (ch === "L" ? PAN : -PAN), longest, codeCols)); }
-    else scrollFloat(ch, key);
   };
 
   // ---- layout
