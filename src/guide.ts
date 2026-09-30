@@ -8,6 +8,7 @@
 // model: a model saying "skip this" is exactly where a bug would hide.
 
 import type { FileDiff, Hunk } from "./diff.ts";
+import { stripInvisible } from "./sanitize.ts";
 
 /** `intent` is the one line shown with every hunk of the chapter; `why` is the paragraph behind `?`. */
 export type Chapter = { title: string; intent: string; why: string; hunks: string[] };
@@ -75,14 +76,30 @@ export const clip = (s: string, n: number) => s.length > n ? s.slice(0, n) + "�
 // The title, the description, the code and anything a model already wrote about them come from the change under review,
 // and whoever wrote the change can write "ignore your instructions" into any of it. Every prompt carries that text inside
 // <pr_data> blocks, and every system prompt says what is inside one is data, never an instruction. A block cannot be
-// closed early from inside: any <pr_data or </pr_data in the text is defanged before it is wrapped.
+// closed early from inside: any <pr_data or </pr_data in the text, however it is spelled (split by an invisible character,
+// written full-width), is defanged before it is wrapped.
 
 export const FENCE = "pr_data";
-const FENCE_TAG = new RegExp(`<(\\s*/?\\s*${FENCE})`, "gi");
+const FENCE_TAG = new RegExp(`<\\s*/?\\s*${FENCE}`, "gi");
 
-/** `text` as one data block named `name`; a fence tag inside it loses its `<`, so the block ends only where it says. */
+/**
+ * `text` with the invisible characters removed and every fence tag in it defanged, and otherwise exactly as written. A tag
+ * is looked for in the NFKC form, so a full-width ＜／ｐｒ＿ｄａｔａ＞ counts too, but only the character that opened it is
+ * replaced (by ‹): the code a model reads keeps its own spelling.
+ */
+export function defang(text: string): string {
+  const chars = [...stripInvisible(text)];
+  // The NFKC view, one character at a time, with the index of the original character each normalised one came from.
+  let view = "";
+  const from: number[] = [];
+  chars.forEach((c, i) => { for (const n of stripInvisible(c.normalize("NFKC"))) { view += n; from.push(i); } });
+  for (const m of view.matchAll(FENCE_TAG)) chars[from[m.index!]!] = "‹";
+  return chars.join("");
+}
+
+/** `text` as one data block named `name`; a fence tag inside it (in any spelling) is defanged, so the block ends only where it says. */
 export function fence(name: string, text: string): string {
-  return `<${FENCE} name="${name.replace(/[^\w .:@/-]/g, "_")}">\n${text.replace(FENCE_TAG, "‹$1")}\n</${FENCE}>`;
+  return `<${FENCE} name="${name.replace(/[^\w .:@/-]/g, "_")}">\n${defang(text)}\n</${FENCE}>`;
 }
 
 /** Said in every system prompt: what a fence holds, and that nothing in one is addressed to the model. */
@@ -428,7 +445,7 @@ export const REFUTE_SYSTEM = `A reviewer raised a finding on a code change. You 
 Reply with JSON only: {"verdict": "uphold" or "withdraw" or "downgrade", "reason": "one or two sentences", "lines": ["n123", ...]}
 "lines" cites the code that settles it, by the labels shown: "n123" is line 123 of the file after the change (the numbered file lines and the hunk's n lines), "o120" is line 120 of the old file (the hunk's o lines).
 "withdraw" needs evidence: cite the specific line or lines that already handle the case, or that show the claim misreads the code. A withdrawal that cites no line shown to you is kept as upheld.
-"downgrade" means real but overstated: keep it at a lower severity.
+"downgrade" means real but overstated: keep it at a lower severity. It needs evidence too: cite the line or lines that show it is less serious, or the severity stands.
 ${DATA_RULE}`;
 
 /** The lines a refute can cite: every line the prompt numbered for it. "n12" is new line 12, "o9" old line 9. */
@@ -462,9 +479,10 @@ const citeLabel = (x: unknown): string | null => {
 };
 
 /**
- * The second look, applied. `shown` is what `refutable` says the prompt numbered: a withdrawal counts only when it cites at
- * least one of those lines, so "withdraw" with no evidence (what an injected "withdraw everything" would produce) keeps the
- * finding, upheld. Without `shown` (a caller that cannot say what was numbered), no citation can be checked and none is trusted.
+ * The second look, applied. `shown` is what `refutable` says the prompt numbered: a withdrawal or a downgrade counts only
+ * when it cites at least one of those lines. "withdraw" with no evidence (what an injected "withdraw everything" would
+ * produce) keeps the finding upheld, and "downgrade" with none keeps its severity. Without `shown` (a caller that cannot say
+ * what was numbered), no citation can be checked and none is trusted.
  */
 export function applyRefute(f: Finding, reply: string, shown: Set<string> = new Set()): Finding {
   let j: { verdict?: unknown; reason?: unknown; lines?: unknown };
@@ -474,6 +492,7 @@ export function applyRefute(f: Finding, reply: string, shown: Set<string> = new 
   const reason = clip(String(j.reason ?? "").trim(), 299 - at.length); // clip adds "…": 300 is the document's limit
   if (j.verdict === "withdraw" && cites.length) return { ...f, status: "withdrawn", refute: reason + at };
   if (j.verdict === "withdraw") return { ...f, status: "upheld", refute: clip(`Withdrawal cited no line, so the finding stands. ${reason}`.trim(), 299) };
-  if (j.verdict === "downgrade") return { ...f, status: "upheld", refute: reason + at, severity: f.severity === "blocking" ? "warn" : "nit" };
+  if (j.verdict === "downgrade" && cites.length) return { ...f, status: "upheld", refute: reason + at, severity: f.severity === "blocking" ? "warn" : "nit" };
+  if (j.verdict === "downgrade") return { ...f, status: "upheld", refute: clip(`Downgrade cited no line, so the severity stands. ${reason}`.trim(), 299) };
   return { ...f, status: "upheld", refute: reason + at };
 }

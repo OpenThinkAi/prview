@@ -31,3 +31,13 @@ export const visible = (s: string): string =>
     const n = c.charCodeAt(0);
     return n < 0x20 ? String.fromCharCode(0x2400 + n) : n === 0x7f ? "␡" : `\\x${n.toString(16)}`;
   });
+
+/**
+ * Invisible characters that can split a word or a tag so it no longer reads as one to a regex but still does to a model:
+ * zero-width and direction marks, line and paragraph separators, word joiners and invisible operators, the BOM, the bidi
+ * embeddings and isolates, the tag characters, and any other format character (Cf). They carry nothing a reviewer can see.
+ */
+const INVISIBLE = /[\u200B-\u200F\u2028\u2029\u2060-\u2064\uFEFF\u202A-\u202E\u2066-\u2069\u{E0000}-\u{E007F}\p{Cf}]/gu;
+
+/** `s` without the invisible characters, for text a model reads as data (guide.ts fences it); everything visible is kept as written. */
+export const stripInvisible = (s: string): string => s.replace(INVISIBLE, "");

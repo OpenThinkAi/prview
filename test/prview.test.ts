@@ -120,7 +120,7 @@ test("findings are anchored to a real line of their hunk, or to the hunk's start
   ]), chapter, hunks, 100);
   expect(fs.map((f) => [f.id, f.source, f.side, f.line, f.severity, f.status])).toEqual([["100", "critic", "new", 1, "blocking", "unrefuted"], ["101", "critic", "old", 1, "warn", "unrefuted"]]);
   expect(applyRefute(fs[0]!, '{"verdict":"withdraw","reason":"handled above","lines":["n1"]}', new Set(["n1"]))).toMatchObject({ status: "withdrawn", refute: "handled above (cites n1)" });
-  expect(applyRefute(fs[0]!, '{"verdict":"downgrade","reason":"real but minor"}')).toMatchObject({ status: "upheld", severity: "warn" });
+  expect(applyRefute(fs[0]!, '{"verdict":"downgrade","reason":"real but minor","lines":["n1"]}', new Set(["n1"]))).toMatchObject({ status: "upheld", severity: "warn" });
   expect(applyRefute(fs[0]!, "uphold it").status).toBe("upheld");
 });
 
