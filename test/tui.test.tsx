@@ -21,7 +21,8 @@ import { bottomHeight, boxLines, clampScroll, layoutOf, pageStep, windowOf, wrap
 import { DROP_ORDER, fitFields, statusFields, type StatusInput } from "../src/status.ts";
 import { editorArgs, tmuxSplit, besideIn } from "../src/editor.ts";
 import { nextBySeverity, nextFindingWrapping, fileEdge, chapterStart, tocIndex, tocMove, tocRows, type TocAt, type TocMove } from "../src/nav.ts";
-import type { Defaults } from "../src/triage.ts";
+import { DEFAULTS, type Defaults } from "../src/triage.ts";
+import type { Flow } from "../src/submit-flow.ts";
 
 // The screens, driven with keys the way a reader would. App writes the review to $PRVIEW_HOME as it
 // goes, so each test gets a scratch one; there is no terminal, so the size is passed in.
@@ -80,12 +81,12 @@ const row = (keys: string, label: string) => new RegExp(`(?:│ |  )${esc(keys)}
 const listing = (e: { keys: string; label: string }[]) => e.map((x) => `${x.keys} ${x.label}`);
 const settle = () => new Promise((r) => setTimeout(r, 30));
 /** `code`: step from the table of contents, where a review opens, into the first block's code (→), as most tests start there. */
-async function open(over?: Over, props: { ai?: Review["ai"]; suggested?: Review["suggested"]; blind?: boolean; dryRun?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined; code?: boolean; defaults?: Defaults } = {}) {
+async function open(over?: Over, props: { ai?: Review["ai"]; suggested?: Review["suggested"]; blind?: boolean; dryRun?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined; code?: boolean; defaults?: Defaults; resume?: Flow } = {}) {
   const outcomes: Outcome[] = [];
   const r = fixture(over);
   r.ai = props.ai;
   if (props.suggested) r.suggested = props.suggested;
-  const app = render(<App review={r} files={files} onDone={(o) => outcomes.push(o)} beside={props.beside} blind={props.blind} dryRun={props.dryRun} defaults={props.defaults} size={{ cols: props.cols ?? 120, rows: props.rows ?? 40 }} />);
+  const app = render(<App review={r} files={files} onDone={(o) => outcomes.push(o)} beside={props.beside} blind={props.blind} dryRun={props.dryRun} defaults={props.defaults} resume={props.resume} size={{ cols: props.cols ?? 120, rows: props.rows ?? 40 }} />);
   await settle();
   // One key at a time: a handler closes over the state of its render, so two keys in one chunk would both see the old cursor.
   const press = async (keys: string) => { for (const k of keys.match(KEY) ?? []) { app.stdin.write(k); await settle(); } };
@@ -93,9 +94,9 @@ async function open(over?: Over, props: { ai?: Review["ai"]; suggested?: Review[
   return { r, app, press, outcomes, cols: props.cols ?? 120, rows: props.rows ?? 40, frame: () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "") };
 }
 type Shown = { frame: () => string; cols: number; rows: number };
-/** The key panel for state `s` as the screen lays it out at this size: the submit preview (and `full`) is the full-screen one. */
+/** The key panel for state `s` as the screen lays it out at this size: the submit flow's send step (and `full`) is the full-screen one. */
 const panelAt = (t: Shown, s: KeyState, full = false) => {
-  const L = layoutOf(t.cols, t.rows - 1, { full: full || (s.state === "submit" && s.step === "preview") });
+  const L = layoutOf(t.cols, t.rows - 1, { full: full || (s.state === "submit" && s.step === "send") });
   return panelOf(panelTitle(s), entriesOf(s), L.panelW, L.bottomH);
 };
 /** Every line of the state's key panel is on the screen, and the grid holds every entry, secondaries included, at this size. */
@@ -358,100 +359,146 @@ test("→ on a line opens an existing finding and never makes one; Enter always 
   expect(t.frame()).toContain("no finding on this line");
 });
 
-test("submit flow: s asks for a verdict, previews the write-up, Esc goes back, Enter submits", async () => {
-  const t = await open({ comments: [{ hunk: h1!.id, side: "new", line: 11, text: "why 42?", at: "now" }] });
+const second: Finding = { ...finding, id: "2", hunk: h2!.id, line: 2, severity: "medium", title: "Type changed to a string", claim: "y is a string now" };
+const dropped: Finding = { ...finding, id: "3", hunk: h2!.id, line: 2, severity: "low", title: "Maybe a nit", claim: "a nit", status: "withdrawn" };
+const PR_URL = "https://github.com/o/r/pull/7";
+const S_TAB = "\x1b[Z";
+
+test("submit step 1: every finding with its severity, action and title; block and comment ticked, ignore not; Space, a, Esc", async () => {
+  const t = await open({ findings: [finding, second, dropped] });
   await t.press("s");
-  expect(t.frame()).toContain("verdict ›");
-  shown(t, { state: "submit", step: "verdict" });
-  await t.press("r");
-  expect(t.r.doc.human.verdict).toBe("request_changes");
-  expect(t.frame()).toContain("Request changes");
-  expect(t.frame()).toContain("why 42?");
-  await t.press(ESC);
-  expect(t.frame()).toContain("verdict ›");
-  await t.press("c");
+  expect(t.frame()).toContain("Submit · 1 Findings › 2 Verdict › 3 Comment › 4 Send");
+  expect(t.frame()).toContain("[x] high · block (default) · src/a.rs:11 · Hard-coded answer in main");
+  expect(t.frame()).toContain("[x] medium · comment (default) · src/b.ts:2 · Type changed to a string");
+  expect(t.frame()).toContain("[ ] low · ignore (default) · src/b.ts:2 · Maybe a nit");
+  shown(t, { state: "submit", step: "findings" });
+  await t.press(" "); // the cursor starts on the first
+  expect(t.frame()).toContain("[ ] high · block (default)");
+  await t.press("j ");
+  expect(t.frame()).toContain("[ ] medium · comment (default)");
+  await t.press("a"); // not all ticked: tick all
+  expect(t.frame()).toContain("[x] low · ignore (default)");
+  expect(t.frame()).toContain("[x] high");
+  await t.press("a"); // all ticked: untick all
+  expect(t.frame()).not.toContain("[x]");
+  await t.press(ESC); // leaves the flow; nothing sent, nothing recorded
+  expect(t.frame()).not.toContain("Submit ·");
   expect(t.outcomes).toEqual([]);
-  await t.press("\r");
-  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, coverage: false }]);
-  expect(t.frame()).not.toContain("x allows"); // no command in the document, nothing to allow
+  expect(t.r.doc.human.verdict).toBeUndefined();
+  expect(t.r.doc.human.decisions).toBeUndefined();
 });
 
-test("submit flow: the document's command is shown in full and runs only after its own key, x", async () => {
-  const t = await open();
+test("submit step 2: the platform's verdicts as a radio, starting on what the ticks imply; always changeable; ⇧Tab back", async () => {
+  const t = await open({ findings: [finding, second] }, { suggested: [{ by: "prview", verdict: "comment", reason: "x" }] });
+  t.r.doc.target.platform = "github";
+  await t.press("s" + TAB);
+  shown(t, { state: "submit", step: "verdict" });
+  expect(t.frame()).toContain("(•) Request changes"); // a ticked block
+  expect(t.frame()).toContain("( ) Approve");
+  expect(t.frame()).toContain("( ) Comment");
+  expect(t.frame()).toContain("suggested, information only: prview Comment");
+  await t.press(S_TAB + " " + TAB); // untick the block: only a comment is ticked
+  expect(t.frame()).toContain("(•) Comment");
+  await t.press(S_TAB + "j " + TAB); // nothing ticked: no selection
+  expect(t.frame()).not.toContain("(•)");
+  expect(t.frame()).toContain("Nothing ticked implies a verdict");
+  await t.press("j");
+  expect(t.frame()).toContain("(•) Approve");
+  await t.press("jjj"); // stops at the last
+  expect(t.frame()).toContain("(•) Comment");
+  await t.press(S_TAB + "a" + TAB); // a verdict picked by hand stays, whatever is ticked
+  expect(t.frame()).toContain("(•) Comment");
+});
+
+test("submit step 3: a multi-line comment box, prefilled with the summary comments; Esc stops typing, v e opens the editor", async () => {
+  const t = await open({ comments: [{ hunk: null, side: "new", line: null, text: "An old summary", at: "now" }] });
+  await t.press("s" + TAB + TAB);
+  shown(t, { state: "submit", step: "comment", typing: true });
+  expect(t.frame()).toContain("│ An old summary");
+  await t.press("\rvery good, ve");
+  expect(t.frame()).toContain("│ very good, ve"); // typing: v is text, not a prefix
+  await t.press("\x17"); // ctrl-w
+  expect(t.frame()).toContain("│ very good,");
+  expect(t.frame()).not.toContain("good, ve");
+  await t.press(ESC); // stops typing; still in the step
+  shown(t, { state: "submit", step: "comment", typing: false });
+  expect(t.frame()).toContain("Submit ·");
+  await t.press("ve");
+  expect(t.outcomes).toHaveLength(1);
+  const o = t.outcomes[0]!;
+  expect(o.kind).toBe("edit_comment");
+  if (o.kind === "edit_comment") expect(o.flow).toMatchObject({ step: "comment", comment: "An old summary\nvery good," });
+});
+
+test("submit: after the editor the flow reopens where it was, with the comment it wrote", async () => {
+  const t = await open({ findings: [finding] }, { resume: { step: "comment", listed: ["1"], ticked: [], at: 0, verdicts: ["approve", "request_changes", "comment"], verdict: "approve", picked: true, comment: "From the editor\nline two", typing: false, hook: false, coverage: false, box: 0 } });
+  expect(t.frame()).toContain("│ From the editor");
+  expect(t.frame()).toContain("│ line two");
+  await t.press(TAB);
+  expect(t.frame()).toContain("Verdict: Approve");
+  expect(t.frame()).toContain("From the editor");
+  await t.press(S_TAB + S_TAB + S_TAB);
+  expect(t.frame()).toContain("[ ] high · block (default)"); // the ticks came back too
+});
+
+test("submit step 4: exactly what posts, checkboxes for the command and the coverage line (both off), Enter sends the selection", async () => {
+  const t = await open({ findings: [finding, second, dropped] });
+  Object.assign(t.r.doc.target, { platform: "github", url: PR_URL });
   t.r.doc.on_submit = { run: ["notify-tool", "--file", "{file}"] };
-  await t.press("sa");
-  await t.press(PGDN + PGDN + PGDN); // page down to the end of the preview
-  expect(t.frame()).toContain("notify-tool --file");
-  expect(t.frame()).toContain("t.json"); // {file}, filled in: the path the document is written to
-  expect(t.frame()).toContain("no shell, stopped after 60s");
-  expect(t.frame()).toContain("[ ] Not allowed");
-  await t.press("x");
-  expect(t.frame()).toContain("[x] Allowed");
-  await t.press("x");
-  expect(t.frame()).toContain("[ ] Not allowed");
-  await t.press("x");
+  await t.press("gfb\x15mine: derive it\r" + ESC); // block on the first with words of your own
+  await t.press("s" + TAB + TAB + "Looks close." + TAB);
+  shown(t, { state: "submit", step: "send", dryRun: false, boxes: true });
+  const f = t.frame();
+  expect(f).not.toContain("READ IN ORDER"); // full-screen
+  expect(f).toContain("[ ] Run the document's on_submit command: notify-tool --file");
+  expect(f).toContain(`[ ] Add "I read`);
+  expect(f).toContain(`What posts to ${PR_URL}`);
+  expect(f).toContain("Verdict: Request changes");
+  expect(f).toContain("  Looks close.");
+  expect(f).toContain("Line comments (2):");
+  expect(f).toContain("mine: derive it"); // your comment on the block
+  expect(f).toContain("y is a string now"); // the medium one on its default comment: its own text
+  expect(f).not.toContain("a nit"); // ignored, unticked: nothing
+  expect(f.slice(f.indexOf("── What posts"), f.indexOf("── On submit"))).not.toMatch(/critic|prview/i); // never a word of tooling in what posts
+  await t.press(" "); // tick the command
+  expect(t.frame()).toContain("[x] Run the document's on_submit command");
+  await t.press(PGDN + PGDN);
+  expect(t.frame()).toContain("Allowed for this submit: it runs after the post.");
+  await t.press(PGUP + PGUP + "j "); // and the coverage line
+  expect(t.frame()).toMatch(/\[x\] Add "I read \d of 2 hunks\."/);
+  expect(t.r.doc.human.verdict).toBeUndefined(); // nothing is recorded until it is sent
   await t.press("\r");
-  expect(t.outcomes).toEqual([{ kind: "submit", hook: true, coverage: false }]);
+  expect(t.outcomes).toEqual([{ kind: "submit", hook: true, coverage: true, selection: { listed: ["1", "2", "3"], include: ["1", "2"], comment: "Looks close.", verdict: "request_changes" }, defaults: DEFAULTS }]);
 });
 
-test("submit flow: allowing the command does not outlive the preview; back to the verdict and it is off again", async () => {
+test("submit step 4: the checkboxes do not outlive the flow; Esc from it leaves, and s starts over with both off", async () => {
   const t = await open();
   t.r.doc.on_submit = { run: ["notify-tool"] };
-  await t.press("sax");
-  await t.press(ESC);
-  await t.press("a\r");
-  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, coverage: false }]);
+  await t.press("s" + TAB + TAB + TAB + " ");
+  expect(t.frame()).toContain("[x] Run");
+  await t.press(ESC + "s" + TAB + TAB + TAB);
+  expect(t.frame()).toContain("[ ] Run");
+  await t.press("\r");
+  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, coverage: false, selection: { listed: ["1"], include: ["1"], comment: "", verdict: "request_changes" }, defaults: DEFAULTS }]);
 });
 
-test("submit flow: the preview leads with every finding and its action; with a block you chose, Enter picks request changes", async () => {
-  const second: Finding = { ...finding, id: "2", hunk: h2!.id, line: 2, severity: "medium", title: "Type changed to a string", claim: "y is a string now" };
-  const t = await open({ findings: [finding, second] });
-  await t.press("s");
-  expect(t.frame()).not.toContain("Enter takes"); // a block that is only a default posts nothing: no default verdict
-  await t.press("\r");
-  expect(t.frame()).toContain("verdict ›"); // so Enter picks nothing
-  await t.press("a");
-  expect(t.frame()).toContain("Findings (2)");
-  expect(t.frame()).toContain("▲ src/a.rs:11 · high · block (default) · Hard-coded answer in main");
-  expect(t.frame()).toContain("▲ src/b.ts:2 · medium · comment (default) · Type changed to a string");
-  expect(t.frame()).not.toContain("decided");
-  await t.press(ESC + ESC);
-  await t.press("gfi\r"); // the first ignored; it stays open, ignored
-  expect(t.frame()).toContain("critic · bug · high · ignore");
-  await t.press(ESC);
-  await t.press("s");
-  expect(t.frame()).toContain("Enter takes Approve"); // nothing blocked: Enter keeps the verdict chosen before
-  await t.press(ESC);
-  await t.press("gfb\r"); // on to the second, and block on it, with its text as the comment
-  await t.press(ESC);
-  await t.press("s");
-  expect(t.frame()).toContain("Enter takes Request changes");
-  await t.press("\r");
-  expect(t.r.doc.human.verdict).toBe("request_changes");
-  expect(t.frame()).toContain("▲ src/a.rs:11 · high · ignore · Hard-coded answer in main");
-  expect(t.frame()).toContain("▲ src/b.ts:2 · medium · block · Type changed to a string");
-  expect(t.frame()).toContain("y is a string now"); // the comment it wrote, in the write-up
-});
-
-test("submit flow: v adds the coverage line for a platform that posts; off again with v; Esc backs out of the question", async () => {
+test("submit step 4: without a verdict Enter sends nothing and says so; with no platform the file is the review", async () => {
   const t = await open();
-  t.r.doc.target.platform = "github";
-  await t.press("sa");
-  await t.press(ESC);
-  expect(t.frame()).toContain("verdict ›");
-  await t.press("a");
-  expect(t.frame()).toMatch(row("v", "add coverage line"));
-  await t.press("v");
-  expect(t.frame()).toMatch(row("v", "drop coverage line"));
+  await t.press("s " + TAB + TAB + TAB); // untick the one finding: nothing ticked, no verdict
+  expect(t.frame()).toContain("Pick a verdict first");
+  expect(t.frame()).toContain("Nothing is posted (the document has no platform)");
+  shown(t, { state: "submit", step: "send", dryRun: false, boxes: false });
   await t.press("\r");
-  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, coverage: true }]);
+  expect(t.outcomes).toEqual([]);
+  expect(t.frame()).toContain("pick a verdict first");
 });
 
-test("submit flow: with --dry-run the preview says nothing will be posted", async () => {
+test("submit flow: with --dry-run the send step says nothing will be posted, and Enter prints the calls", async () => {
   const t = await open(undefined, { dryRun: true });
-  await t.press("sa");
-  expect(t.frame()).toContain("Enter prints the calls");
+  await t.press("s" + TAB + TAB + TAB);
+  expect(t.frame()).toContain("dry run");
   expect(t.frame()).toContain("DRY RUN");
+  expect(t.frame()).toMatch(row("Enter", "print the calls"));
 });
 
 test("long lines: cut with an ellipsis, v w wraps onto more rows and back", async () => {
@@ -944,9 +991,9 @@ test("an imported review's verdict is in the opening summary as information only
   expect(f).toContain("mylinter's review suggested Request changes.");
   expect(f).toContain("An imported review suggested Approve.");
   expect(f).toContain("information only");
-  await t.press("s");
-  expect(t.frame()).toContain("verdict ›");
-  expect(t.frame()).not.toContain("Enter takes");
+  await t.press(ESC + "s" + " " + TAB); // nothing ticked: the radio starts with no selection, whatever was suggested
+  expect(t.frame()).toContain("( ) Approve");
+  expect(t.frame()).not.toContain("(•)");
   expect(t.r.doc.human.verdict).toBeUndefined();
 });
 
@@ -954,10 +1001,9 @@ test("the in-house suggestion shows its reason in the summary and as a picker hi
   const t = await open({}, { suggested: [{ by: "prview", verdict: "comment", reason: "1 warn: Off by one" }, { by: "imported", verdict: "approve" }] });
   expect(t.frame()).toContain("prview's review suggested Comment: 1 warn: Off by one.");
   expect(t.frame()).toContain("suggested Comment"); // and in the status area, the in-house one only
-  await t.press("s");
-  expect(t.frame()).toContain("verdict ›");
+  await t.press(ESC + "s" + " " + TAB);
   expect(t.frame()).toContain("suggested, information only: prview Comment, imported Approve");
-  expect(t.frame()).not.toContain("Enter takes");
+  expect(t.frame()).not.toContain("(•)");
   expect(t.r.doc.human.verdict).toBeUndefined();
 });
 
@@ -1174,8 +1220,10 @@ test("each state's panel lists its keys, and leaving the state brings the code's
     { name: "new finding: comment", into: "\r\r", state: { state: "prompt", kind: "finding" }, out: ESC },
     { name: "ignore note", into: "gfi", state: { state: "prompt", kind: "reason" }, out: ESC + ESC },
     { name: "block comment", into: "gfb", state: { state: "prompt", kind: "comment", decide: true }, out: ESC + ESC },
-    { name: "verdict", into: "s", state: { state: "submit", step: "verdict" }, out: ESC },
-    { name: "preview", into: "sa", state: { state: "submit", step: "preview", dryRun: false, hook: null, coverage: null }, out: ESC + ESC },
+    { name: "findings", into: "s", state: { state: "submit", step: "findings" }, out: ESC },
+    { name: "verdict", into: "s" + TAB, state: { state: "submit", step: "verdict" }, out: ESC },
+    { name: "comment", into: "s" + TAB + TAB, state: { state: "submit", step: "comment", typing: true }, out: ESC + ESC },
+    { name: "send", into: "s" + TAB + TAB + TAB, state: { state: "submit", step: "send", dryRun: false, boxes: false }, out: ESC },
     { name: "docs results", into: "?mark this finding as wrong\r", state: { state: "content", results: true }, out: ESC },
   ];
   for (const s of states) {
@@ -1208,29 +1256,14 @@ test("prompts: their panel is the keys that work; text goes in as typed, prefixe
   expect(listing(entriesOf({ state: "prompt", kind: "comment", decide: true }))).toEqual(["Enter save", "ctrl-u clear line", "ctrl-w delete word", "Esc cancel", "ctrl-n new line"]);
 });
 
-test("verdict and preview: the panel lists what acts; x and v appear only when the submit has that choice", async () => {
-  expect(listing(entriesOf({ state: "submit", step: "verdict" }))).toEqual(["a approve", "r request changes", "c comment", "Enter default verdict", "Esc cancel"]);
-  const t = await open();
-  await t.press("sr"); // request changes
-  expect(t.r.doc.human.verdict).toBe("request_changes");
-  expect(listing(entriesOf({ state: "submit", step: "preview", dryRun: false, hook: null, coverage: null }))).toEqual(["Enter submit", "↓/↑ j/k scroll", "PgDn/PgUp ctrl-d/ctrl-u page", "Esc back"]);
-  shown(t, { state: "submit", step: "preview", dryRun: false, hook: null, coverage: null });
-  expect(t.frame()).not.toMatch(row("x", "allow command"));
-  expect(t.frame()).not.toMatch(row("v", "add coverage line"));
-  await t.press(ESC);
-  const g = await open(undefined, { dryRun: true });
-  g.r.doc.target.platform = "github";
-  g.r.doc.on_submit = { run: ["true"] } as Doc["on_submit"];
-  await g.press("sc");
-  expect(g.frame()).toMatch(row("Enter", "print the calls"));
-  expect(g.frame()).toMatch(row("x", "allow command"));
-  expect(g.frame()).toMatch(row("v", "add coverage line"));
-  await g.press("x");
-  expect(g.frame()).toMatch(row("x", "disallow command"));
-  await g.press("v");
-  expect(g.frame()).toMatch(row("v", "drop coverage line"));
-  await g.press("\r");
-  expect(g.outcomes).toEqual([{ kind: "submit", hook: true, coverage: true }]);
+test("the submit steps: each panel lists what acts there; the send step's checkbox keys only when it has a checkbox", () => {
+  expect(listing(entriesOf({ state: "submit", step: "findings" }))).toEqual(["↓/↑ j/k finding", "Space tick", "a tick all", "Tab next step", "Esc leave"]);
+  expect(listing(entriesOf({ state: "submit", step: "verdict" }))).toEqual(["↓/↑ j/k verdict", "Tab next step", "⇧Tab step back", "Esc leave"]);
+  expect(listing(entriesOf({ state: "submit", step: "comment", typing: true }))).toEqual(["Enter new line", "ctrl-u clear line", "ctrl-w delete word", "Esc done typing", "Tab next step", "⇧Tab step back"]);
+  expect(listing(entriesOf({ state: "submit", step: "comment", typing: false }))).toEqual(["Enter type", "Tab next step", "⇧Tab step back", "Esc leave", "v view…"]);
+  expect(listing(entriesOf({ state: "submit", step: "comment", typing: false }, { prefix: "v" }))).toEqual(["e editor"]);
+  expect(listing(entriesOf({ state: "submit", step: "send", dryRun: false, boxes: false }))).toEqual(["Enter send", "PgDn/PgUp ctrl-d/ctrl-u page", "⇧Tab step back", "Esc leave"]);
+  expect(listing(entriesOf({ state: "submit", step: "send", dryRun: true, boxes: true }))).toEqual(["↓/↑ j/k checkbox", "Space tick", "Enter print the calls", "PgDn/PgUp ctrl-d/ctrl-u page", "⇧Tab step back", "Esc leave"]);
 });
 
 test("the bottom panel never covers the cursor line or the finding's box, and its text is all reachable, at any width or height", async () => {
@@ -1496,7 +1529,7 @@ test("content area: prompts, docs search, answers and the verdict show there, on
   expect(regions(t).bottom).toContain("ignore · private note ›");
   expect(regions(t).middle).toContain("╭ ▲ critic"); // the finding stays open on its line
   await t.press(ESC + ESC + "s");
-  expect(regions(t).bottom).toContain("verdict ›");
+  expect(regions(t).bottom).toContain("Submit · 1 Findings");
   expect(regions(t).middle).toContain("let answer");
 });
 
@@ -1565,20 +1598,31 @@ test("v c makes the content area full-screen: the arrows scroll it, Esc or v c r
   expect(t.frame()).toContain("READ IN ORDER");
 });
 
-test("the submit preview reads full-screen; Esc goes back to the verdict with the code in view", async () => {
+test("the submit flow's send step reads full-screen; Esc leaves with the code in view", async () => {
   const t = await open();
-  await t.press("sa");
+  await t.press("s");
+  expect(t.frame()).toContain("READ IN ORDER"); // one finding: the checklist fits the content area
+  await t.press(TAB + TAB + TAB);
   expect(t.frame()).not.toContain("READ IN ORDER");
-  expect(t.frame()).toContain("Approve · Enter submits");
-  shown(t, { state: "submit", step: "preview", dryRun: false, hook: null, coverage: null });
+  expect(t.frame()).toContain("4 Send");
   await t.press(ESC);
   expect(t.frame()).toContain("READ IN ORDER");
-  expect(t.frame()).toContain("verdict ›");
+  expect(t.frame()).not.toContain("Submit ·");
+});
+
+test("the findings checklist goes full-screen when it needs the room, and keeps its cursor in view", async () => {
+  const many = Array.from({ length: 40 }, (_, i): Finding => ({ ...finding, id: `m${i}`, title: `Finding number ${i}` }));
+  const t = await open({ findings: many }, { rows: 32 });
+  await t.press("s");
+  expect(t.frame()).not.toContain("READ IN ORDER");
+  await t.press("j".repeat(39));
+  expect(t.frame()).toContain("Finding number 39");
+  expect(t.frame()).not.toContain("Finding number 0 ");
 });
 
 test("smoke sizes: every region fits 120x32 and 100x28, in each state", async () => {
   for (const [cols, rows] of [[120, 32], [100, 28]] as const) {
-    for (const keys of ["", "gf", TAB, "vc", "g", "\r", "?mark this finding as wrong\r", "s", "sa"]) {
+    for (const keys of ["", "gf", TAB, "vc", "g", "\r", "?mark this finding as wrong\r", "s", "s" + TAB, "s" + TAB + TAB, "s" + TAB + TAB + TAB]) {
       const t = await open(withSummary(), { cols, rows });
       await t.press(keys);
       const f = t.frame(), at = `${cols}x${rows} ${JSON.stringify(keys)}`;
@@ -1656,17 +1700,17 @@ test("filter: the level is kept with the stored review, not in the document, and
   expect(t.r.filter).toBeUndefined();
 });
 
-test("filter: the submit checklist still lists every finding and says a filter is active; the default verdict ignores the filter", async () => {
+test("filter: the submit checklist still lists every finding and says a filter is active; the implied verdict ignores the filter", async () => {
   const t = await open({ findings: mixed() });
   await t.press("fh" + "s");
-  await t.press("c");
   const f = t.frame();
-  expect(f).toContain("── Findings (3)");
-  expect(f).toContain("A warning");
-  expect(f).toContain("A nit");
+  expect(f).toContain("[x] high · block (default) · src/a.rs:11 · Hard-coded answer in main");
+  expect(f).toContain("[x] medium · comment (default) · src/a.rs:12 · A warning");
+  expect(f).toContain("[x] low · comment (default) · src/b.ts:2 · A nit");
   expect(f).toContain("The filter (high only) is only for reading");
+  await t.press(" " + TAB); // untick the high one: the hidden medium and low still imply a comment
+  expect(t.frame()).toContain("(•) Comment");
   const all = await open({ findings: mixed() });
   await all.press("s");
-  await all.press("c");
   expect(all.frame()).not.toContain("is only for reading");
 });

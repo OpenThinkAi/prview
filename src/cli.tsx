@@ -1,15 +1,17 @@
 #!/usr/bin/env bun
 // prview: review a pull request in the terminal. A model prepares the reading; you do the reviewing.
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { all, build, preparedBy, checkHead, exportDocument, Fail, filesOf, importDocument, load, remove, reopen, repoFor, writeup, type BuildOpts, type Review } from "./build.ts";
+import { all, build, preparedBy, checkHead, exportDocument, Fail, filesOf, home, importDocument, load, remove, reopen, repoFor, writeup, type BuildOpts, type Review } from "./build.ts";
 import { ConfigError, configPath, loadConfig, realLookups, resolveModel, ROLES, type Config } from "./config.ts";
 import { describeKeymap, installKeymap } from "./keys.ts";
 import { probe } from "./llm.ts";
 import { besideIn, editor, editorArgs } from "./editor.ts";
 import { show } from "./tui.tsx";
 import { submit } from "./submit.ts";
+import { clean } from "./sanitize.ts";
+import type { Flow } from "./submit-flow.ts";
 
 const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [--context N] [--ai MODEL | --no-ai] [--samples N] [--blind | --no-blind] [--fresh] [--dry-run]
   Opens the change in a full-screen review: a guide (a model) has ordered the hunks into chapters,
@@ -44,12 +46,16 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
         pick a severity (↑/↓, Enter), write the comment (ctrl-n a new line, Enter saves, Esc cancels); it has its
         severity's default action, carried out as your own comment, and then acts like any finding
     Tab into the content area to scroll it, and back
-    s submit: pick a verdict (Enter takes request changes when you blocked on a finding), preview every finding
-      with its action, the write-up and what submit will do, Enter. Findings post only as the b/c comments you saved.
-      The document is written to $PRVIEW_HOME/submitted/<slug>.json (+ .md), then posted through the adapter
-      for its target's platform (github: gh api), then, if the document declares on_submit, its command runs
-      only if you press x in the preview to allow it (shown in full first; no shell); v in the preview adds
-      a line saying how much you read to the posted summary (off by default)
+    s submit, four steps (Tab next, ⇧Tab back, Esc leaves and sends nothing):
+      1 findings: every finding with its action; block and comment ticked, ignore not (Space ticks one, a all).
+        A ticked finding posts its comment on its line: yours from b/c, else the finding's text.
+      2 verdict: the platform's verdicts (↑/↓), starting on what the ticks imply; suggestions shown beside it
+      3 comment: the review's top-level comment (this is where the old N summary comment went); Enter adds a
+        line, Esc stops typing, then v e writes it in your editor
+      4 send: exactly what posts, then checkboxes (↑/↓, Space), both off: the document's on_submit command
+        (shown in full; no shell) and a line saying how much you read. Enter sends.
+      The document is written to $PRVIEW_HOME/submitted/<slug>.json (+ .md) first, then posted through the
+      adapter for its target's platform (github: gh api), then the command runs if you ticked it
     y copy the content area (a finding, the summary, an answer) as clean text; with it empty, the line's path:line
       (pbcopy, wl-copy, xclip, else OSC 52; PRVIEW_CLIPBOARD=osc52 forces the terminal route)
     ? search the docs: type what you want to do, Enter lists the matching actions with your keys (offline, no model)
@@ -95,22 +101,40 @@ async function review(r: Review, cfg: Config, blind: boolean, dryRun = false): P
   checkHead(r);
   const files = filesOf(r);
   let blindNow = blind;
+  let resume: Flow | undefined;
   for (;;) {
     // A save in the settings view updates `cfg` in place, so the editor and the defaults below are the saved ones.
-    const o = await show(r, files, besideIn(r.worktree, process.env, () => cfg.editor), blindNow, dryRun, cfg.defaults, cfg, (c) => { if (c.blind !== cfg.blind) blindNow = c.blind; Object.assign(cfg, c); });
+    const o = await show(r, files, besideIn(r.worktree, process.env, () => cfg.editor), blindNow, dryRun, cfg.defaults, cfg, (c) => { if (c.blind !== cfg.blind) blindNow = c.blind; Object.assign(cfg, c); }, resume);
+    resume = undefined;
     if (o.kind === "edit") {
       const cmd = editor(process.env, cfg.editor);
       const p = Bun.spawnSync(editorArgs(cmd, o.path, o.line), { cwd: r.worktree, stdio: ["inherit", "inherit", "inherit"] });
       if (p.exitCode !== 0 && !existsSync(join(r.worktree, o.path))) console.error(`prview: ${o.path} is not in the worktree`);
       continue;
     }
+    // The submit flow's comment, written in the editor (always in this terminal: prview waits for it), then back to the flow.
+    if (o.kind === "edit_comment") {
+      resume = { ...o.flow, comment: editComment(r, o.flow.comment, cfg.editor), typing: false };
+      continue;
+    }
     if (o.kind === "submit") {
-      const res = submit(r, files, { allowHook: o.hook, coverage: o.coverage, dryRun, defaults: cfg.defaults });
-      process.stdout.write((dryRun ? "" : writeup(r.doc, files, cfg.defaults) + "\n") + `${res.summary}\n`);
+      const res = submit(r, files, { allowHook: o.hook, coverage: o.coverage, selection: o.selection, dryRun, defaults: o.defaults });
+      process.stdout.write((dryRun ? "" : writeup(r.doc, files, o.defaults) + "\n") + `${res.summary}\n`);
       if (!res.ok) process.exitCode = 1;
     }
     return;
   }
+}
+
+/** Opens `text` in the editor as a file beside the review's state and returns what was saved; on any failure, `text` as it was. */
+function editComment(r: Review, text: string, configured?: Config["editor"]): string {
+  const file = join(home(), `${r.slug}.comment.md`);
+  try { mkdirSync(home(), { recursive: true }); writeFileSync(file, text ? text + "\n" : ""); } catch { return text; }
+  const lines = text.split("\n").length;
+  const p = Bun.spawnSync(editorArgs(editor(process.env, configured), file, lines), { cwd: r.worktree, stdio: ["inherit", "inherit", "inherit"] });
+  if (p.exitCode !== 0) console.error(`prview: the editor exited with ${p.exitCode}; the comment is as it was saved`);
+  // Typed by the reader, but through a file: control characters go, as for anything read back from disk.
+  try { return clean(readFileSync(file, "utf8")).replace(/\s+$/, ""); } catch { return text; }
 }
 
 async function models(): Promise<void> {

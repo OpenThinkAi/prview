@@ -32,9 +32,12 @@ import { highlightLines, langOf, lengthOf, sliceSpans, styleOf, type Span } from
 import { boxLines, clampScroll, layoutOf, STATUS_H, pageStep, rowsFor, windowOf, wrapText } from "./layout.ts";
 import type { Beside } from "./editor.ts";
 import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
-import { describe, planOf } from "./submit.ts";
+import { coverageLine, describe, planOf, postPreview, shown as shownArgv, type Plan } from "./submit.ts";
 import { clampLine, edgesOf, inputLines, ownFinding, rowKind, SEVERITIES, stepLine, type Spot } from "./rows.ts";
-import { actionOf, actionsNote, bySeverity, decide, decisionOf, DEFAULTS, defaultVerdict, IN_HOUSE, LABEL, linkedComment, suggestionHint, type Defaults } from "./triage.ts";
+import { actionOf, bySeverity, decide, decisionOf, DEFAULTS, IN_HOUSE, LABEL, linkedComment, suggestionHint, type Defaults } from "./triage.ts";
+import * as flows from "./submit-flow.ts";
+import { FLOW_STEPS, STEP_NAMES, type Box as CheckBox, type Draft, type Flow, type Selection } from "./submit-flow.ts";
+import { verdictsFor } from "./platform.ts";
 import { installKeymap, type KeyState, keyOf, rowById } from "./keys.ts";
 import { pendingText, step, tokenOf, type InkKey, type Pending } from "./chord.ts";
 import { answersBody, answersFor, answerText, type Answer } from "./ask-docs.ts";
@@ -46,8 +49,12 @@ import { configPath, parseConfig, type Config } from "./config.ts";
 import { openSettings, saveSettings, settingsAct, settingsKey, type Out as SettingsOut, type Settings } from "./settings.ts";
 import { SettingsScreen } from "./settings-view.tsx";
 
-/** `hook`: the human allowed the document's on_submit command for this submit (x in the preview). */
-export type Outcome = { kind: "quit" } | { kind: "submit"; hook: boolean; coverage: boolean } | { kind: "edit"; path: string; line: number };
+/**
+ * `submit`: send what the submit flow chose; `hook`: the human ticked the document's on_submit command for this submit;
+ * `defaults`: the default actions the flow's preview used, so what posts is worked out exactly as it was shown.
+ * `edit_comment`: `v e` in the flow's comment step; the CLI opens the comment in the editor and reopens the flow there.
+ */
+export type Outcome = { kind: "quit" } | { kind: "submit"; hook: boolean; coverage: boolean; selection: Selection; defaults: Defaults } | { kind: "edit"; path: string; line: number } | { kind: "edit_comment"; flow: Flow };
 
 /** Everything the rail steps through, in reading order: each chapter's hunks, then the mechanical ones. */
 type Item = NavItem & { at: HunkAt; mechanical?: string };
@@ -72,7 +79,7 @@ type Content = { title: string; tag?: string; lead?: string; body: string; color
  * `decide`: this comment carries out a block or comment action on that finding. `reason`: the optional private note of an ignore.
  * `docs`: the question typed for the offline docs search (`ask` is the one for the model); `results`: its answers, `sel` the selected one.
  */
-type Mode = { kind: "nav" } | { kind: "comment"; decide?: { id: string; kind: "block" | "comment" } } | { kind: "severity"; sel: number; spot: Spot } | { kind: "finding"; severity: Severity; spot: Spot } | { kind: "reason"; id: string } | { kind: "ask" } | { kind: "docs" } | { kind: "results"; query: string; answers: Answer[]; sel: number } | { kind: "verdict" } | { kind: "preview"; hook: boolean; coverage: boolean };
+type Mode = { kind: "nav" } | { kind: "comment"; decide?: { id: string; kind: "block" | "comment" } } | { kind: "severity"; sel: number; spot: Spot } | { kind: "finding"; severity: Severity; spot: Spot } | { kind: "reason"; id: string } | { kind: "ask" } | { kind: "docs" } | { kind: "results"; query: string; answers: Answer[]; sel: number } | { kind: "submit"; flow: Flow };
 
 export type AppProps = {
   review: Review; files: FileDiff[]; onDone: (o: Outcome) => void;
@@ -92,6 +99,10 @@ export type AppProps = {
   config?: Config;
   /** A save in the settings view: the config as it now reads, for whatever outlives this screen (the editor command). */
   onConfig?: (cfg: Config) => void;
+  /** Reopen in the submit flow where it was (after `v e` wrote the comment in the editor). */
+  resume?: Flow;
+  /** A drafted submission (`a s`): the submit flow starts from it instead of the defaults. */
+  draft?: Draft;
 };
 
 /** What the content area opens on: the summary, the suggested verdicts and who prepared it. `a i` shows exactly this again; null when a review has neither. */
@@ -105,7 +116,7 @@ export function summaryContent(review: Review): Content | null {
   return { title: "Summary of this change · not a finding", color: "magenta", copy: d.plan.summary || suggested, body: [d.plan.summary, suggested, preparedBy(review.ai?.runs), hint].filter(Boolean).join("\n\n") };
 }
 
-export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig }: AppProps) {
+export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig, resume, draft }: AppProps) {
   const { exit } = useApp();
   const term = useTerminalSize(size);
   const cols = term.cols, rows = term.rows - 1;
@@ -131,7 +142,9 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   // What `y` just did, or why a key did nothing, shown in the footer until the next key.
   const [note, setNote] = useState<string | null>(null);
   const setContent = (f: Content | null) => { setScroll(0); setContentRaw(f); if (!f || f.finding) setFocus("code"); if (!f) setFull(false); };
-  const [mode, setMode] = useState<Mode>({ kind: "nav" });
+  const [mode, setMode] = useState<Mode>(resume ? { kind: "submit", flow: resume } : { kind: "nav" });
+  // The submit flow changes through the mode's own state, so several keys in one chunk (typing) build on each other.
+  const setFlow = (fn: (f: Flow) => Flow) => setMode((m) => m.kind === "submit" ? { kind: "submit", flow: fn(m.flow) } : m);
   const [input, setInput] = useState("");
   // Keys can arrive several to a chunk (a fast "g12"), all handled by one closure: the pending prefix lives in a ref.
   const pendingRef = useRef<Pending | null>(null);
@@ -175,10 +188,39 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   };
   const view: Content | null = content ?? (tree === "toc" && mode.kind === "nav" ? chapterView() : null);
 
+  // ---- the submit flow (submit-flow.ts has the rules). The send step's plan is the one submit posts from, so its
+  // preview is exactly what goes out; its checkboxes are the ones this submit has.
+  const sendPlan = (fl: Flow): Plan => planOf(r, files, { coverage: fl.coverage, selection: flows.selectionOf(fl), defaults });
+  const boxesOf = (p: Plan): CheckBox[] => [...(p.hook && !p.hook.refused ? ["hook" as const] : []), ...(p.adapter ? ["coverage" as const] : [])];
+  function submitState(fl: Flow): KeyState {
+    if (fl.step === "comment") return { state: "submit", step: "comment", typing: fl.typing };
+    if (fl.step === "send") return { state: "submit", step: "send", dryRun, boxes: boxesOf(sendPlan(fl)).length > 0 };
+    return { state: "submit", step: fl.step };
+  }
+  const flowBoxes = (): CheckBox[] => mode.kind === "submit" && mode.flow.step === "send" ? boxesOf(sendPlan(mode.flow)) : [];
+  // The flow's current step as display lines, wrapped to the content area's width.
+  const flowView = (fl: Flow, inner: number): flows.Line[] => {
+    const p = fl.step === "send" ? sendPlan(fl) : undefined, boxes = p ? boxesOf(p) : [];
+    const boxText = (b: CheckBox) => b === "hook"
+      ? `Run the document's on_submit command: ${shownArgv(p!.hook!.argv)}${p!.hook!.stdout ? ` > ${p!.hook!.stdout}` : ""}`
+      : `Add "${coverageLine(d, files)}" to the posted comment`;
+    const ls = flows.stepLines(fl, {
+      findings: d.findings, h, defaults, place: (f) => `${place(f.hunk, f.file ? null : f.line)}${f.file ? " (whole file)" : ""}`, label: (v) => VERDICT[v],
+      keys: { tick: keyOf("submit.tick"), all: keyOf("submit.tick_all"), editor: keyOf("view.comment_editor"), next: keyOf("submit.next"), back: keyOf("submit.back") },
+      hidden: d.findings.some((f) => !unhidden(f)), note: checklistNote(level), suggested: suggestionHint(r.suggested ?? [], (v) => VERDICT[v]),
+      ...(p ? { boxes: boxes.map((box) => ({ box, text: boxText(box) })), preview: `${postPreview(p, (v) => VERDICT[v])}\n\n${describe(p, fl.hook, dryRun)}` } : {}),
+    });
+    // A wrapped line keeps its indent on every row, so the preview's comments stay under their file and line.
+    return ls.flatMap((l) => {
+      if (!l.wrap) return [l];
+      const pad = /^ */.exec(l.text)![0].slice(0, Math.max(0, inner - 10));
+      return wrapText(l.text.slice(pad.length), inner - pad.length).map((text, i) => ({ ...l, text: pad + text, cursor: l.cursor && i === 0 }));
+    });
+  };
+
   // Where a key is pressed: the submit steps, a prompt, the docs results, the content area (full-screen, or Tab), an
   // open finding, the table of contents or the code.
-  const keyState: KeyState = settings ? { state: "settings" } : mode.kind === "verdict" ? { state: "submit", step: "verdict" }
-    : mode.kind === "preview" ? (() => { const p = planOf(r, files, { coverage: mode.coverage }); return { state: "submit" as const, step: "preview" as const, dryRun, hook: p.hook ? mode.hook : null, coverage: p.adapter ? mode.coverage : null }; })()
+  const keyState: KeyState = settings ? { state: "settings" } : mode.kind === "submit" ? submitState(mode.flow)
     : mode.kind === "results" ? { state: "content", results: true }
     : mode.kind !== "nav" ? { state: "prompt", kind: mode.kind, decide: mode.kind === "comment" && !!mode.decide }
     : full && view ? { state: "content" }
@@ -284,16 +326,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     showFinding(hit.finding);
   };
   const place = (id: string, l: number | null) => `${printable(items.find((x) => x.id === id)?.path ?? id)}${l !== null ? `:${l}` : ""}`;
-  // The preview ends with what Enter will do: where the file goes, where it posts, and the document's
-  // command, if it has one, which runs only after its own keypress (x) in this preview.
-  // Every finding and its action lead the preview, so what the review says about each is seen before anything posts.
-  const preview = (hook: boolean, coverage: boolean) => {
-    const p = planOf(r, files, { coverage });
-    setMode({ kind: "preview", hook, coverage });
-    setContent({ title: `${VERDICT[h.verdict!]} · Enter ${dryRun ? "prints the calls" : "submits"}${p.hook ? `, x ${hook ? "disallows" : "allows"} the command` : ""}${p.adapter ? `, v ${coverage ? "drops" : "adds"} the coverage line` : ""}, Esc goes back`, color: "green", body: `${actionsNote(unfiltered(), h, place, defaults, hidden.size > 0, checklistNote(level))}${writeup(d, files, defaults)}\n${describe(p, hook, dryRun)}` });
-  };
-  // A block you chose makes request changes the verdict Enter picks; without one, Enter keeps the verdict already chosen, if any.
-  const verdictDefault = (): Verdict | undefined => defaultVerdict(unfiltered(), h) ?? h.verdict;
+
 
   // Fast typing or a paste can deliver several plain characters in one chunk ("g12"): take them one at a time. An escape
   // sequence Ink did not read as a key (it hands those over with the ESC stripped) stays whole, for tokenOf to read.
@@ -301,7 +334,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     if (input.length > 1 && !key.ctrl && !key.meta && !/^[[O][0-9;]*[A-Za-z~]$/.test(input)) for (const c of input) handle(c, {});
     else handle(input, key);
   });
-  const scrollBy = (by: number) => setScroll((s) => clampScroll(s + by, contentLines.length, L.contentRows));
+  const scrollBy = (by: number) => setScroll((s) => clampScroll(s + by, mode.kind === "submit" ? flowLines(L.contentInner).length : contentLines.length, L.contentRows));
 
   /**
    * Every key goes through the tables: tokenOf reads the key, `step` (chord.ts) resolves it in the current state, with any
@@ -324,6 +357,12 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       if (tok === "backspace") setInput((s) => s.slice(0, -1));
       else if (tok === "space") setInput((s) => s + " ");
       else if ([...tok].length === 1) setInput((s) => s + tok);
+    }
+    // The submit flow's comment box, while it is typing, takes text the same way.
+    if (keyState.state === "submit" && keyState.step === "comment" && keyState.typing && res.out.kind === "none") {
+      if (tok === "backspace") setFlow(flows.backspace);
+      else if (tok === "space") setFlow((f) => flows.typeText(f, " "));
+      else if ([...tok].length === 1) setFlow((f) => flows.typeText(f, tok));
     }
   };
   // Esc with nothing pending: out of full-screen, out of the docs results, out of the content area, or what it shows closes.
@@ -364,7 +403,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   };
   // Enter in a prompt: what the typed line does depends on the prompt.
   const send = () => {
-    if (mode.kind === "nav" || mode.kind === "results" || mode.kind === "verdict" || mode.kind === "preview") return;
+    if (mode.kind === "nav" || mode.kind === "results" || mode.kind === "submit") return;
     // Your own finding: Enter on the severity goes on to the comment; Enter on the comment saves the finding.
     if (mode.kind === "severity") { setMode({ kind: "finding", severity: SEVERITIES[mode.sel]!, spot: mode.spot }); setInput(""); return; }
     const text = input.trim();
@@ -401,7 +440,8 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     switch (id) {
       // ---- anywhere outside a finding
       case "review.quit": onDone({ kind: "quit" }); exit(); return;
-      case "review.submit": setMode({ kind: "verdict" }); setContent(null); return;
+      // Every finding is in the checklist, whatever the filter (it is for reading); a blind chapter's stay hidden and post nothing.
+      case "review.submit": setContent(null); setMode({ kind: "submit", flow: flows.startFlow(unfiltered(), h, verdictsFor(d.target.platform), defaults, draft) }); return;
       case "review.copy": case "finding.copy": case "content.copy": copy(); return;
       case "review.search_docs": setMode({ kind: "docs" }); setInput(""); return;
       case "review.settings": setSettings(openSettings(live, configPath())); return;
@@ -503,20 +543,28 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       case "prompt.word": setInput((s) => s.replace(/\S+\s*$/, "")); return;
       case "prompt.cancel": setMode({ kind: "nav" }); setInput(""); return;
 
-      // ---- submit: the verdict, then the preview
-      case "submit.approve": case "submit.request_changes": case "submit.comment": case "submit.default": {
-        const v: Verdict | undefined = id === "submit.approve" ? "approve" : id === "submit.request_changes" ? "request_changes" : id === "submit.comment" ? "comment" : verdictDefault();
-        if (v) { h.verdict = v; save(r); preview(false, false); }
+      // ---- submit: findings, verdict, comment, send (submit-flow.ts)
+      case "submit.down": case "submit.up": { const b = flowBoxes(); setFlow((f) => flows.move(f, id === "submit.down" ? 1 : -1, b)); return; }
+      case "submit.tick": { const b = flowBoxes(); setFlow((f) => flows.toggle(f, b)); return; }
+      case "submit.tick_all": setFlow(flows.toggleAll); return;
+      case "submit.next": setScroll(0); setFlow((f) => flows.nextStep(f, d.findings, h, defaults)); return;
+      case "submit.back": setScroll(0); setFlow((f) => flows.prevStep(f, d.findings, h, defaults)); return;
+      case "submit.newline": setFlow(flows.newline); return;
+      case "submit.clear_line": setFlow(flows.clearLine); return;
+      case "submit.word": setFlow(flows.deleteWord); return;
+      case "submit.stop_typing": setFlow((f) => ({ ...f, typing: false })); return;
+      case "submit.edit": setFlow((f) => ({ ...f, typing: true })); return;
+      case "view.comment_editor": if (mode.kind === "submit") { onDone({ kind: "edit_comment", flow: mode.flow }); exit(); } return;
+      case "submit.leave": setMode({ kind: "nav" }); setContent(null); return;
+      case "submit.send": {
+        if (mode.kind !== "submit") return;
+        const fl = mode.flow;
+        if (!fl.verdict) { setNote(`pick a verdict first: ${keyOf("submit.back")} goes back to it`); return; }
+        const b = flowBoxes();
+        onDone({ kind: "submit", hook: fl.hook && b.includes("hook"), coverage: fl.coverage && b.includes("coverage"), selection: flows.selectionOf(fl), defaults });
+        exit();
         return;
       }
-      case "submit.cancel": setMode({ kind: "nav" }); return;
-      case "submit.send": if (mode.kind === "preview") { onDone({ kind: "submit", hook: mode.hook, coverage: mode.coverage }); exit(); } return;
-      case "submit.hook": case "submit.coverage":
-        if (mode.kind === "preview") { const at = scroll; preview(id === "submit.hook" ? !mode.hook : mode.hook, id === "submit.coverage" ? !mode.coverage : mode.coverage); setScroll(at); }
-        return;
-      case "submit.down": scrollBy(1); return;
-      case "submit.up": scrollBy(-1); return;
-      case "submit.back": setMode({ kind: "verdict" }); setContent(null); return;
 
       // ---- f: filter
       case "filter.high": setFilter("high"); return;
@@ -530,7 +578,11 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   };
 
   // ---- layout
-  const L = layoutOf(cols, rows, { zen, full: (full && !!view) || mode.kind === "preview" });
+  // The submit flow takes the whole screen when its step needs the room; the send step always does.
+  const L0 = layoutOf(cols, rows, { zen, full: full && !!view });
+  const flowLines = (inner: number) => mode.kind === "submit" ? flowView(mode.flow, inner) : [];
+  const flowFull = mode.kind === "submit" && (mode.flow.step === "send" || flowLines(L0.contentInner).length > L0.contentRows);
+  const L = flowFull ? layoutOf(cols, rows, { zen, full: true }) : L0;
   const { railW, mainW, gutterW, codeW, boxW, boxInner } = L;
   const codeCols = codeW - 1; // the +/- sign takes the first column
   const total = items.filter((i) => !i.mechanical).length, seen = items.filter((i) => !i.mechanical && h.visited.includes(i.id)).length;
@@ -629,12 +681,15 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
           <Text><Text color="cyan" bold>{label} › </Text>{input}<Text inverse> </Text>{mode.kind === "reason" && !input ? <Text dimColor>private note — never posted</Text> : null}</Text>
         </>;
       }
-      case "verdict": {
-        const dv = verdictDefault(), hint = suggestionHint(r.suggested ?? [], (v) => VERDICT[v]);
+      case "submit": {
+        const fl = mode.flow, ls = flowLines(L.contentInner);
+        // The findings, the radio and the comment keep their cursor in view; the send step scrolls with the page keys.
+        const focus = Math.max(0, ls.findIndex((l) => l.cursor));
+        const top = fl.step === "send" ? clampScroll(scroll, ls.length, L.contentRows) : Math.max(0, Math.min(Math.max(0, ls.length - L.contentRows), focus - Math.floor(L.contentRows / 2)));
+        const more = ls.length > L.contentRows;
         return <>
-          <Text bold color="green" wrap="truncate">Verdict</Text>
-          <Text><Text color="green" bold>verdict › </Text>{dv ? <Text dimColor>Enter takes {VERDICT[dv]}</Text> : null}</Text>
-          {hint ? <Text dimColor>{hint}</Text> : null}
+          <Text wrap="truncate"><Text bold color="green">Submit</Text>{FLOW_STEPS.map((st, i) => <Text key={st} dimColor={st !== fl.step} bold={st === fl.step} color={st === fl.step ? "green" : undefined}>{i ? " › " : " · "}{i + 1} {STEP_NAMES[st]}</Text>)}{dryRun ? <Text color="yellow"> · dry run</Text> : null}{more ? <Text dimColor> · {top + 1}-{Math.min(ls.length, top + L.contentRows)}/{ls.length}</Text> : null}</Text>
+          {ls.slice(top, top + L.contentRows).map((l, j) => <Text key={j} wrap="truncate" inverse={l.cursor && fl.step !== "comment"} bold={l.head} dimColor={l.dim} color={l.on ? "green" : undefined}>{l.text || " "}{l.cursor && fl.step === "comment" ? <Text inverse> </Text> : null}</Text>)}
         </>;
       }
     }
@@ -652,7 +707,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
 
   const footer = note
     ? <Text wrap="truncate" color="green"> {note}</Text>
-    : <Text wrap="truncate" dimColor> {busy ? `${busy} keys wait until it answers` : full && view && mode.kind !== "preview" ? `${keyOf("view.fullscreen")} or Esc restores the layout` : ""}{pending ? <Text color="cyan">   {pendingText(pending)}</Text> : null}</Text>;
+    : <Text wrap="truncate" dimColor> {busy ? `${busy} keys wait until it answers` : full && view && mode.kind !== "submit" ? `${keyOf("view.fullscreen")} or Esc restores the layout` : ""}{pending ? <Text color="cyan">   {pendingText(pending)}</Text> : null}</Text>;
 
   if (tooSmall(term)) return <Text wrap="truncate">terminal too small, need {MIN_COLS}x{MIN_ROWS}</Text>;
   if (settings) return <SettingsScreen s={settings} cols={cols} rows={rows} />;
@@ -762,11 +817,11 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
 }
 
 /** Run the app once; resolves with what the reader wants next. State lives on the review object and is saved as it changes. */
-export function show(review: Review, files: FileDiff[], beside?: Beside, blind = false, dryRun = false, defaults: Defaults = DEFAULTS, config?: Config, onConfig?: (cfg: Config) => void): Promise<Outcome> {
+export function show(review: Review, files: FileDiff[], beside?: Beside, blind = false, dryRun = false, defaults: Defaults = DEFAULTS, config?: Config, onConfig?: (cfg: Config) => void, resume?: Flow): Promise<Outcome> {
   return new Promise((resolve) => {
     let outcome: Outcome = { kind: "quit" };
     process.stdout.write("\x1b[?1049h\x1b[H");
-    const app = render(<App review={review} files={files} beside={beside} blind={blind} dryRun={dryRun} defaults={defaults} config={config} onConfig={onConfig} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
+    const app = render(<App review={review} files={files} beside={beside} blind={blind} dryRun={dryRun} defaults={defaults} config={config} onConfig={onConfig} resume={resume} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
     app.waitUntilExit().then(() => { app.clear(); process.stdout.write("\x1b[?1049l"); save(review); resolve(outcome); });
   });
 }

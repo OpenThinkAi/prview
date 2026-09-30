@@ -110,7 +110,7 @@ What you get is a full-screen review, not a diff dump:
   moves focus into it (its border turns cyan and its title says `focused`), where the arrows and `PgUp`/`PgDn` scroll
   it, and `Tab` or Esc comes back. A finding pages with `PgUp`/`PgDn` directly. `v c` makes the content area
   full-screen, under the status area and beside the key panel, where the arrows scroll it; Esc or `v c` restores the
-  layout. The submit preview always reads full-screen. `v z` (zen) hides the table of contents so the code has the
+  layout. The submit flow's send step always reads full-screen. `v z` (zen) hides the table of contents so the code has the
   width, and shows it again.
 - **Your editor for the real code.** `v e` opens the file at the line under the cursor in a
   worktree at the PR head (`$PRVIEW_EDITOR`, else `editor = "..."` in the config, else `$EDITOR`, else `hx`;
@@ -128,18 +128,27 @@ What you get is a full-screen review, not a diff dump:
   "whole file" row (`g g` and `g e` land on them): `Enter` there makes a file-level finding, posted to GitHub as a
   file-level review comment, or, if GitHub will not take it, in the summary under the file's name.
   Everything is saved as you go; `q` and come back later.
-- **Submit.** `s` picks a verdict; Enter takes request changes when you blocked on a finding. The
-  preview then lists every finding with its action (`(default)` when you left it), the write-up (notes with file
-  and line, how much you read, the findings not ignored and their action) and what Enter will do: write the finished document to `$PRVIEW_HOME/submitted/<name>.json`
-  (and `.md`), post your verdict and comments to the PR, and, if the document asks for one, run its
-  `on_submit` command. That command is shown in full and runs only if you press `x` in the preview;
-  Enter alone skips it. `v` adds a line saying how much you read to the posted summary (off by
-  default). On GitHub (through `gh`) this is one review: the head commit is checked first (a PR that
-  moved since the review is refused), a pending review gets your line comments (right side for lines
-  in the new file, left for the old), file-level comments follow one by one, then it is submitted with your verdict and summary. A failed
-  post or command is reported, and the file is kept. Only your own words are posted: a finding
-  reaches the PR only as the `b`/`c` comment you saved for it; one left on its default action posts nothing.
-  `--dry-run` prints the API calls a submit would make and does nothing else.
+- **Submit.** `s` opens four steps in the content area (full-screen when a step needs the room; the last always
+  is). `Tab` goes on a step, `shift-Tab` back one, `Esc` leaves and sends nothing.
+  1. **Findings**: every finding with its severity, its action (`(default)` when you left it) and its title. Block
+     and comment start ticked, ignore unticked; `↑`/`↓` move, `Space` ticks one, `a` ticks (or unticks) all. A
+     ticked finding posts a comment on its line: the one you wrote with `b`/`c`, or, left on its default, the
+     finding's own text (never who raised it). Unticked ones post nothing and are recorded as ignored.
+  2. **Verdict**: the platform's verdicts as a radio (GitHub: approve, request changes, comment), starting on
+     what the ticks imply (any ticked block: request changes; else anything ticked: comment; nothing: no
+     selection). The in-house and imported suggestions show beside it as information; `↑`/`↓` change it.
+  3. **Comment**: the review's top-level comment, several lines (`Enter` adds one). This is where the old `N`
+     summary comment went: the box starts with any summary comments the review already has. `Esc` stops typing,
+     then `v e` writes it in your editor and brings you back here.
+  4. **Send**: exactly what will be posted (the verdict, the comment, each ticked finding's comment on its file
+     and line), then what `Enter` does: write the finished document to `$PRVIEW_HOME/submitted/<name>.json`
+     (and `.md`) first, post to the PR, and run the document's `on_submit` command if you ticked it. Two
+     checkboxes, both off (`↑`/`↓`, `Space`): that command, shown in full, and a line saying how much you read,
+     added to the posted comment.
+  On GitHub (through `gh`) this is one review: the head commit is checked first (a PR that moved since the
+  review is refused), a pending review gets the line comments (right side for lines in the new file, left for
+  the old), whole-file comments follow one by one, then it is submitted with your verdict and comment. A failed post or command is reported, and the
+  file is kept. `--dry-run` prints the API calls a submit would make and does nothing else.
 - **Blind first pass.** With `blind = true` in the config (or `--blind` for a run, `--no-blind` to turn
   it off) findings stay hidden in a chapter until you have visited every hunk in it, so you read the
   code before you read the critic. The gutter shows no `▲`, `→` and `g f` find nothing there, and the
@@ -252,8 +261,8 @@ Not yet: posting to GitLab or Azure DevOps.
 
 Text that did not come from you (an imported document, a PR's title and body, a model's reply) has
 terminal control characters and escape sequences stripped before it is stored or shown, so it cannot
-rewrite your screen or retitle your terminal. A document's `on_submit` command never runs without your
-`x` in that submit's preview, and its `> path` must land inside the review's worktree (`..`, absolute
+rewrite your screen or retitle your terminal. A document's `on_submit` command never runs unless you
+tick it in that submit's send step, and its `> path` must land inside the review's worktree (`..`, absolute
 paths and symlinks that leave it are refused). The copy of the document it receives leaves out your
 private ignore notes. `prview import` fetches a PR head only from a remote already configured in
 your clone for that repo; if there is none it refuses instead of fetching from the repo a document names.

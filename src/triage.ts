@@ -55,28 +55,6 @@ export function bySeverity(findings: Finding[]): Record<Severity, number> {
   return out;
 }
 
-/**
- * The verdict submit starts from: request changes once the reader has blocked on something; otherwise no default, the
- * reader picks. A block that is only a default does not count, since it has no comment of the reader's to post.
- */
-export function defaultVerdict(findings: Finding[], h: Pick<Human, "decisions">): Verdict | undefined {
-  return findings.some((f) => decisionOf(h, f.id)?.kind === "block") ? "request_changes" : undefined;
-}
-
-/**
- * The submit preview's list of every finding with its action, so what the review says about each is seen before
- * anything posts. `hidden`: blind chapters still hold findings back. Empty when there are no findings.
- */
-export function actionsNote(findings: Finding[], h: Pick<Human, "decisions">, place: (hunk: string, line: number | null) => string, defaults: Defaults = DEFAULTS, hidden = false, note = ""): string {
-  if (!findings.length && !hidden) return "";
-  const out = [`── Findings (${findings.length})`, ""];
-  if (note) out.splice(1, 0, note);
-  for (const f of findings) out.push(`▲ ${place(f.hunk, f.file ? null : f.line)}${f.file ? " (whole file)" : ""} · ${f.severity} · ${actionText(actionOf(h, f, defaults))} · ${titleOf(f)}`);
-  if (findings.length) out.push("", "What posts is the comments you saved with b or c; a finding on its default action posts nothing.");
-  if (hidden) out.push("Chapters you have not read yet still hide their findings.");
-  return out.join("\n") + "\n\n";
-}
-
 const freshId = (comments: Comment[]) => {
   const taken = new Set(comments.map((c) => c.id));
   let n = comments.length + 1;
