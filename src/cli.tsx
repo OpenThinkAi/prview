@@ -41,6 +41,8 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
            With a box open only its panel's keys, [f, Esc and paging act: a finding lists n b c u h ]f y,
            every other box h y ]f. With none open b/c/u do nothing.
          ? why this chapter matters   f next finding in this hunk   a ask about this hunk
+         / ask the docs: type what you want to do, Enter lists the matching actions with your keys (offline, no model;
+           j/k select, y copy the selected one, Esc close)
          y copy the open box (finding, ? why, ask answer) as clean text; with none open, the line's path:line
            (pbcopy, wl-copy, xclip, else OSC 52; PRVIEW_CLIPBOARD=osc52 forces the terminal route)
          e open the file here in your editor (inside tmux: in a split pane, this screen stays up)
