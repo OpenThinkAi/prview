@@ -42,7 +42,8 @@ export type Choices = { findings?: string[]; coverage?: boolean };
 /** The coverage line, in the reader's own voice: how much of the change they read. */
 export function coverageLine(d: Doc, files: FileDiff[]): string {
   const total = hunksOf(files).filter((x) => x.hunk).length;
-  return `I read ${d.human.visited.length} of ${total} hunks.`;
+  const seen = new Set(d.human.visited).size;
+  return `I read ${seen} of ${total} hunk${total === 1 ? "" : "s"}.`;
 }
 
 export function planOf(r: Review, files: FileDiff[], choices: Choices = {}): Plan {

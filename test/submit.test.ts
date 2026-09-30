@@ -167,6 +167,7 @@ test("github: refused before sending when GitHub would refuse it", () => {
   expect(github.describe(t, silent)).toStartWith("not posted:");
   // A coverage line is not words of your own.
   expect(() => github.post(t, postingOf("comment", [], () => undefined, { coverage: "I read 1 of 2 hunks." }), noNet, "/wt")).toThrow("needs a summary comment");
+  expect(() => github.post(t, postingOf("approve", [], () => undefined, { coverage: "I read 1 of 2 hunks." }), noNet, "/wt")).toThrow("coverage line needs a summary comment");
   expect(() => github.post({ ...t, url: undefined }, postingOf("approve", [], () => undefined), noNet, "/wt")).toThrow("no GitHub pull request URL");
   const down: Runner = () => ({ exit: 1, stdout: "", stderr: "gh: HTTP 404" });
   expect(() => github.post(t, postingOf("approve", [], () => undefined), down, "/wt")).toThrow("gh api failed (exit 1): gh: HTTP 404");
@@ -179,11 +180,11 @@ test("kept findings are posted only when chosen, as their claim alone; the cover
   expect(planOf(r, files).posting).toEqual({ verdict: "comment", body: "", comments: [] });
   // Even if asked for, a withdrawn or dismissed finding is not posted.
   const plan = planOf(r, files, { findings: ["1", "2", "3"], coverage: true });
-  expect(plan.posting).toEqual({ verdict: "comment", body: "", coverage: "I read 1 of 1 hunks.", comments: [{ path: "src/a.rs", side: "new", line: 11, text: "This can overflow when the count is zero." }] });
+  expect(plan.posting).toEqual({ verdict: "comment", body: "", coverage: "I read 1 of 1 hunk.", comments: [{ path: "src/a.rs", side: "new", line: 11, text: "This can overflow when the count is zero." }] });
   const { calls, run } = fakeGh();
   github.post(r.doc.target, plan.posting!, run, "/wt");
   expect(JSON.stringify(calls.map((c) => c.body))).not.toMatch(/stamp|security|prview|critic|evidence|see the loop/i);
-  expect(calls[2]!.body.body).toBe("I read 1 of 1 hunks.");
+  expect(calls[2]!.body.body).toBe("I read 1 of 1 hunk.");
 });
 
 test("dry run: prints the API calls, writes nothing, posts nothing, records nothing", () => {

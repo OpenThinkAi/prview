@@ -66,6 +66,8 @@ function githubProblem(t: Target, p: Posting): string | undefined {
   if (!prOf(t)) return "no GitHub pull request URL in the document's target";
   // GitHub wants words with a change request or a comment; prview never writes them for you.
   if (p.verdict !== "approve" && !p.body.trim() && !p.comments.length) return `${p.verdict === "request_changes" ? "requesting changes" : "a comment"} needs a summary comment (N) or a line comment (n) to post`;
+  // The coverage line is opt-in and is never the whole review: there must be words of the human's own beside it.
+  if (p.coverage && !p.body.trim() && !p.comments.length) return "a coverage line needs a summary comment (N) or a line comment (n) to go with it";
   return undefined;
 }
 
