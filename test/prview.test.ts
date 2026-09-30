@@ -193,11 +193,11 @@ test("a document is parsed defensively: another schema or no commits refused, ba
   expect(() => parseDocument("{")).toThrow("not JSON");
   expect(() => parseDocument({ schema: "prview-review/2" })).toThrow("(it says prview-review/2)");
   expect(() => parseDocument({ schema: SCHEMA, target: { base: A, head: "main" } })).toThrow("commit ids");
-  const d = parseDocument(JSON.stringify(foreign({ human: { dismissals: [1, "nope"], verdict: "ship it" }, on_submit: { run: ["notify", 3] } })));
+  const d = parseDocument(JSON.stringify(foreign({ human: { dismissals: [1, "nope"], verdict: "ship it" }, on_submit: { run: ["notify"] } })));
   expect(d.findings.map((f) => [f.id, f.source, f.severity, f.kind])).toEqual([["1", "hal9k", "blocking", "bug"], ["1.2", "hal9k", "warn", "finding"]]);
   expect(d.plan.by).toBe("files");
   expect(d.human).toEqual({ comments: [], dismissals: ["1"], visited: [] });
-  expect(d.on_submit).toBeUndefined();
+  expect(d.on_submit).toBeUndefined(); // a command from a document is never kept silently
   expect(d.target.label).toBe("aaaaaaaa..bbbbbbbb");
 });
 

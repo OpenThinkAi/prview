@@ -19,7 +19,10 @@ export type Verdict = "approve" | "request_changes" | "comment";
 export type Target = { repo: string; base: string; head: string; url?: string; platform?: string; title: string; body: string; label: string };
 export type Comment = { hunk: string | null; side: "new" | "old"; line: number | null; text: string; at: string };
 export type Human = { comments: Comment[]; dismissals: string[]; visited: string[]; verdict?: Verdict };
-/** Declared by a producer, carried with the document; running it belongs to submission. */
+/**
+ * Reserved: a producer's command to run after submit. A document can come from anyone, so a command
+ * it names is never kept silently; it is dropped on read until submission can show it and ask first.
+ */
 export type OnSubmit = { run: string[] };
 export type Doc = { schema: typeof SCHEMA; target: Target; plan: Plan; findings: Finding[]; human: Human; on_submit?: OnSubmit };
 
@@ -89,10 +92,8 @@ export function parseDocument(input: unknown): Doc {
   };
   if (VERDICTS.has(h.verdict as Verdict)) human.verdict = h.verdict as Verdict;
 
-  const doc: Doc = { schema: SCHEMA, target, plan, findings, human };
-  const run = isObj(j.on_submit) ? arr(j.on_submit.run) : [];
-  if (run.length && run.every((a) => typeof a === "string")) doc.on_submit = { run: run as string[] };
-  return doc;
+  // `on_submit` is deliberately not read (see OnSubmit).
+  return { schema: SCHEMA, target, plan, findings, human };
 }
 
 // ---------------------------------------------------------------- holding it to the diff
@@ -145,7 +146,11 @@ export function merge(into: Doc, incoming: Doc): Doc {
     findings.push({ ...f, id });
   }
   const seen = new Set(into.human.comments.map(commentKey));
-  const comments = [...into.human.comments, ...incoming.human.comments.filter((c) => !seen.has(commentKey(c)) && !!seen.add(commentKey(c)))];
+  const comments = [...into.human.comments];
+  for (const c of incoming.human.comments) {
+    if (seen.has(commentKey(c))) continue;
+    seen.add(commentKey(c)); comments.push(c);
+  }
   const human: Human = {
     comments,
     dismissals: [...new Set([...into.human.dismissals, ...incoming.human.dismissals.map((d) => renamed.get(d) ?? d)])],
@@ -154,8 +159,5 @@ export function merge(into: Doc, incoming: Doc): Doc {
   const verdict = into.human.verdict ?? incoming.human.verdict;
   if (verdict) human.verdict = verdict;
   const plan = into.plan.by === "files" && incoming.plan.by !== "files" && incoming.plan.chapters.length ? incoming.plan : into.plan;
-  const out: Doc = { ...into, plan, findings, human };
-  const onSubmit = into.on_submit ?? incoming.on_submit;
-  if (onSubmit) out.on_submit = onSubmit;
-  return out;
+  return { ...into, plan, findings, human };
 }

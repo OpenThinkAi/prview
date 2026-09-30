@@ -92,7 +92,7 @@
       }
     },
     "on_submit": {
-      "description": "A command the producer wants run after the review is submitted.",
+      "description": "Reserved. A command the producer wants run after the review is submitted; prview drops it on import until submission can show it and ask the human first.",
       "type": "object",
       "required": ["run"],
       "properties": { "run": { "type": "array", "minItems": 1, "items": { "type": "string" } } }

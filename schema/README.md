@@ -31,7 +31,7 @@ wrote a document; the only trace of a producer is the `source` on each finding.
 - **`line`** is a line number in the new file (`side: "new"`) or the old one (`side: "old"`).
   One the hunk does not show is moved to the hunk's first line; a finding on a hunk that is not
   in the diff is dropped.
-- **`source`** is your tool's name, short. It is shown next to the finding (`▲ hal9k · security`)
+- **`source`** is your tool's name, short. It is shown next to the finding (`▲ hal9k · security · blocking`)
   and used to recognise a finding you already sent: importing the same finding twice (same
   source, hunk, side, line and claim) keeps one.
 - **`id`** only has to be unique within your document; prview renames one that clashes with a
@@ -45,6 +45,8 @@ wrote a document; the only trace of a producer is the `source` on each finding.
   the file-by-file fallback. `plan.mechanical` is ignored: prview classifies mechanical hunks
   (lock files, whitespace, pure moves) itself, by rule.
 - **`on_submit`**: `{ "run": ["argv", "..."] }`, a command you want run once the human submits.
+  Reserved: a document can come from anywhere, so prview does not keep a command it names until
+  submission can show it to the human and ask before running it. Today it is dropped on import.
 - **`human`**: the reader's comments, dismissals, coverage and verdict. prview writes this;
   a producer normally leaves it out. `prview export <name>` prints a whole document, `human`
   included, so a review moves between clones with `export` and `import`.

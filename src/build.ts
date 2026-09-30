@@ -275,7 +275,11 @@ export async function reopen(slug: string, opts: BuildOpts): Promise<Review> {
 
 // ---------------------------------------------------------------- importing a document
 
-/** Make sure the clone has the document's commits; a GitHub PR's head can be fetched, anything else has to be there. */
+/**
+ * Make sure the clone has the document's commits; a GitHub PR's head can be fetched, anything else
+ * has to be there. Only the head is fetched: the base is the merge base, an ancestor of the head,
+ * so fetching the head brings it too (in any clone that is not shallow).
+ */
 function haveCommits(repo: string, t: Target): void {
   const has = (c: string) => Bun.spawnSync(["git", "cat-file", "-e", `${c}^{commit}`], { cwd: repo }).exitCode === 0;
   const pr = nwoOf(t.url);

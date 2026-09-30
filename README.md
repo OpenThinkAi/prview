@@ -17,7 +17,7 @@ What you get is a full-screen review, not a diff dump:
   rule, never by the model, and come last.
 - **Findings in the gutter.** A critic (a model) raises findings anchored to a line; each one is
   handed to a fresh call with more of the file to refute, and only the survivors are shown (`▲`).
-  `f` reads one (titled with who raised it: `▲ critic · bug`), `d` dismisses it.
+  `f` reads one (titled with who raised it: `▲ critic · bug · warn`), `d` dismisses it.
 - **A floating box** for whatever wants explaining: `?` the chapter's intent, `f` a finding,
   `a` a question about the hunk in front of you.
 - **Your editor for the real code.** `e` opens the file at the line under the cursor in a
