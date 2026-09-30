@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { earlyTitles } from "./blind.ts";
+import { clean, visible } from "./sanitize.ts";
 import { LABEL } from "./triage.ts";
 import { parseDiff, type FileDiff } from "./diff.ts";
 import { blank, Fail, fit, merge, parseDocument, SCHEMA, suggestions, type Comment, type Doc, type Suggested, type Target } from "./document.ts";
@@ -69,12 +70,13 @@ function defaultBranch(repo: string): string {
 }
 
 /** The remote that points at this GitHub repo, so a stamp-server origin still finds the PR refs. */
-function githubRemote(repo: string, nwo: string): string {
+function githubRemote(repo: string, nwo: string): string | undefined {
+  const tail = `/${nwo.toLowerCase()}`;
   for (const name of git(["remote"], repo).split("\n").filter(Boolean)) {
-    const url = git(["remote", "get-url", name], repo);
-    if (url.replace(/\.git$/, "").toLowerCase().endsWith(nwo.toLowerCase())) return name;
+    const url = git(["remote", "get-url", name], repo).replace(/\.git$/, "").replace(/:(?=[^/])/, "/").toLowerCase();
+    if (url.endsWith(tail)) return name;
   }
-  return `https://github.com/${nwo}.git`;
+  return undefined;
 }
 
 type Source = { slug: string; target: Target };
@@ -84,10 +86,16 @@ const prSlug = (repo: string, n: string | number) => `${basename(repo)}-pr-${n}`
 /** A branch name as a slug part; a full commit id is cut to twelve characters. */
 const slugPart = (s: string) => s.replace(/^([0-9a-f]{12})[0-9a-f]{28}$/, "$1").replace(/[^\w.-]+/g, "-");
 
-/** Fetch a PR's head into refs/prview so a clone that never saw it (or whose origin is not GitHub) has it. */
-function fetchPR(repo: string, nwo: string, n: string | number, base?: string): string {
+/**
+ * Fetch a PR's head into refs/prview so a clone that never saw it (or whose origin is not GitHub) has it.
+ * `known` is for a repo name prview did not get from `gh` in this clone (an imported document names it):
+ * then only a remote already configured here for that repo is used, never a URL the document chose.
+ */
+function fetchPR(repo: string, nwo: string, n: string | number, base?: string, known = false): string {
   const ns = `refs/prview/pr-${n}`;
-  git(["fetch", "-q", githubRemote(repo, nwo), `+refs/pull/${n}/head:${ns}/head`, ...(base ? [`+refs/heads/${base}:${ns}/base`] : [])], repo);
+  const remote = githubRemote(repo, nwo);
+  if (!remote && known) throw new Fail(`no remote in ${repo} points at github.com/${nwo}, so prview will not fetch the PR from there: add one (git remote add <name> https://github.com/${nwo}.git) or fetch the commits yourself, then import again`);
+  git(["fetch", "-q", remote ?? `https://github.com/${nwo}.git`, `+refs/pull/${n}/head:${ns}/head`, ...(base ? [`+refs/heads/${base}:${ns}/base`] : [])], repo);
   return ns;
 }
 
@@ -99,7 +107,7 @@ function fromPR(repo: string, ref: string): Source {
   if (headSha !== j.headRefOid) throw new Fail(`fetched head ${headSha.slice(0, 8)} is not the PR head ${j.headRefOid.slice(0, 8)}; try again`);
   return {
     slug: prSlug(repo, j.number),
-    target: { repo: nwo, base: git(["merge-base", `${ns}/base`, headSha], repo), head: headSha, url: j.url, platform: "github", title: j.title, body: j.body ?? "", label: `${nwo}#${j.number}` },
+    target: { repo: nwo, base: git(["merge-base", `${ns}/base`, headSha], repo), head: headSha, url: j.url, platform: "github", title: clean(String(j.title ?? "")), body: clean(String(j.body ?? "")), label: `${nwo}#${j.number}` },
   };
 }
 
@@ -109,8 +117,8 @@ function fromRange(repo: string, spec: string | undefined): Source {
   if (!head) head = "HEAD";
   const headSha = git(["rev-parse", "--verify", `${head}^{commit}`], repo);
   const baseSha = git(["merge-base", base, headSha], repo);
-  const title = git(["log", "-1", "--format=%s", headSha], repo);
-  const body = git(["log", "--reverse", "--format=%s%n%n%b", `${baseSha}..${headSha}`], repo);
+  const title = clean(git(["log", "-1", "--format=%s", headSha], repo));
+  const body = clean(git(["log", "--reverse", "--format=%s%n%n%b", `${baseSha}..${headSha}`], repo));
   const slug = `${basename(repo)}-${slugPart(head === "HEAD" ? git(["rev-parse", "--abbrev-ref", "HEAD"], repo) : head)}`;
   return { slug, target: { repo: basename(repo), base: baseSha, head: headSha, title, body, label: `${base}..${head}` } };
 }
@@ -352,7 +360,7 @@ export async function reopen(slug: string, opts: BuildOpts): Promise<Review> {
 function haveCommits(repo: string, t: Target): void {
   const has = (c: string) => Bun.spawnSync(["git", "cat-file", "-e", `${c}^{commit}`], { cwd: repo }).exitCode === 0;
   const pr = nwoOf(t.url);
-  if (!has(t.head) && pr) fetchPR(repo, pr[1]!, pr[2]!);
+  if (!has(t.head) && pr) fetchPR(repo, pr[1]!, pr[2]!, undefined, true);
   for (const c of [t.base, t.head]) if (!has(c)) throw new Fail(`commit ${c.slice(0, 8)} is not in ${repo}: fetch it, then import again`);
 }
 
@@ -394,8 +402,18 @@ export function importDocument(text: string, explicitRepo?: string, mine = false
   return r;
 }
 
-/** The document as a producer or another clone would read it: nothing about this machine. */
-export const exportDocument = (r: Review) => JSON.stringify(r.doc, null, 2) + "\n";
+/**
+ * The document as a producer or another clone would read it: nothing about this machine. `redact` is the copy a
+ * producer's `on_submit` hook gets: the reasons the reader gave for "not an issue" are dropped, since they were never meant to be posted.
+ */
+export function exportDocument(r: Review, opts: { redact?: boolean } = {}): string {
+  let d = r.doc;
+  if (opts.redact && d.human.decisions) {
+    d = structuredClone(d);
+    for (const v of Object.values(d.human.decisions!)) delete v.reason;
+  }
+  return JSON.stringify(d, null, 2) + "\n";
+}
 
 // ---------------------------------------------------------------- the write-up
 
@@ -409,7 +427,7 @@ export function writeup(d: Doc, files: FileDiff[]): string {
   const place = (c: Comment) => {
     if (!c.hunk) return "General";
     const x = hunks.find((y) => y.id === c.hunk);
-    return `${x?.file.path ?? c.hunk}${c.line !== null ? `:${c.line}` : ""}`;
+    return `${visible(x?.file.path ?? c.hunk)}${c.line !== null ? `:${c.line}` : ""}`;
   };
   const out = [`# ${t.title}`, ``, `${h.verdict ? `**${VERDICT[h.verdict]}** · ` : ""}${t.url ?? t.label} · read ${seen} of ${total} hunks`, ``];
   const general = h.comments.filter((c) => !c.hunk), placed = h.comments.filter((c) => c.hunk);
@@ -422,7 +440,7 @@ export function writeup(d: Doc, files: FileDiff[]): string {
   const kept = d.findings.filter((f) => f.status !== "withdrawn" && h.decisions?.[f.id]?.kind !== "dismissed");
   if (kept.length) {
     out.push(`## Findings you kept`, ``);
-    for (const f of kept) { const k = h.decisions?.[f.id]?.kind; out.push(`- ${f.hunk.split("@")[0]} ${f.side} ${f.line} · ${f.severity} · ${titleOf(f)} · ${k ? `decided: ${LABEL[k]}` : "not decided"}`); }
+    for (const f of kept) { const k = h.decisions?.[f.id]?.kind; out.push(`- ${visible(f.hunk.split("@")[0]!)} ${f.side} ${f.line} · ${f.severity} · ${titleOf(f)} · ${k ? `decided: ${LABEL[k]}` : "not decided"}`); }
   }
   return out.join("\n") + "\n";
 }

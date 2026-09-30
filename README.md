@@ -164,6 +164,25 @@ A document is anchored on its head commit and is refused by a review at any othe
 
 Not yet: posting to GitLab or Azure DevOps.
 
+## Security and privacy
+
+Text that did not come from you (an imported document, a PR's title and body, a model's reply) has
+terminal control characters and escape sequences stripped before it is stored or shown, so it cannot
+rewrite your screen or retitle your terminal. A document's `on_submit` command never runs without your
+`x` in that submit's preview, and its `> path` must land inside the review's worktree (`..`, absolute
+paths and symlinks that leave it are refused). The copy of the document it receives leaves out your
+"not an issue" reasons. `prview import` fetches a PR head only from a remote already configured in
+your clone for that repo; if there is none it refuses instead of fetching from the repo a document names.
+Model prompts go to `claude -p` on stdin, not on its command line, so they are not in the process list.
+
+### What leaves your machine
+
+Only what the model roles need: the diff hunks, the PR title and body, and nearby source lines from the
+worktree go to the model configured for each role (guide, critic, refute, ask); with a local endpoint
+that is your machine. Nothing else is sent: no telemetry, no analytics. The only other network use is
+`gh` and `git`, for the PR you asked for and the review you submit. State stays under `~/.cache/prview`
+(`$PRVIEW_HOME`) until `prview done` removes it.
+
 ## Checking the guide's intents
 
 The intent line is what you read most, so its quality is measured, not assumed.

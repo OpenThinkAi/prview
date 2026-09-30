@@ -32,6 +32,7 @@ import { decide, decisionOf, defaultVerdict, LABEL, linkedComment, nextUndecided
 import { actionOf, BINDINGS_ACTION, bindingsHint, type KeyState, keyOf, startsChord } from "./keys.ts";
 import { answersBody, answersFor, answerText, type Answer } from "./ask-docs.ts";
 import { entriesOf, panelOf, panelTitle } from "./panel.ts";
+import { visible as printable } from "./sanitize.ts";
 import { MIN_COLS, MIN_ROWS, tooSmall, useTerminalSize } from "./resize.ts";
 
 /** `hook`: the human allowed the document's on_submit command for this submit (x in the preview). */
@@ -127,7 +128,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const lines = hunk?.lines ?? [];
   const line = Math.min(pos.line, Math.max(0, lines.length - 1));
   // Tabs become spaces before colouring so a token's columns are the columns it is drawn in.
-  const shape = useMemo(() => lines.map((l) => l.text.replace(/\t/g, "    ")), [item?.id]);
+  const shape = useMemo(() => lines.map((l) => printable(l.text.replace(/\t/g, "    "))), [item?.id]);
   const spans = useMemo(() => highlightLines(shape, item ? langOf(item.path) : undefined), [shape, item?.path]);
   const chapter = item ? d.plan.chapters[item.chapter] : undefined;
   const chapterTitle = item ? chapter?.title ?? "Mechanical" : "";
@@ -187,7 +188,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     setPos({ item: hit.item, line: hit.line });
     showFinding(hit.finding);
   };
-  const place = (id: string, l: number | null) => `${items.find((x) => x.id === id)?.path ?? id}${l !== null ? `:${l}` : ""}`;
+  const place = (id: string, l: number | null) => `${printable(items.find((x) => x.id === id)?.path ?? id)}${l !== null ? `:${l}` : ""}`;
   const reveal = () => {
     if (!item) return;
     const ids = chapters[item.chapter] ?? [];
@@ -469,7 +470,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
                 </Text>
                 {here && !L.narrow && mine.map((x) => {
                   const cur = x === item;
-                  return <Text key={x.id} color={cur ? "cyan" : undefined} dimColor={!cur && h.visited.includes(x.id)} wrap="truncate">   {cur ? "›" : " "} {x.path.split("/").pop()}:{x.hunk.newStart}{d.findings.some((f) => f.hunk === x.id && open(f)) ? " ▲" : ""}</Text>;
+                  return <Text key={x.id} color={cur ? "cyan" : undefined} dimColor={!cur && h.visited.includes(x.id)} wrap="truncate">   {cur ? "›" : " "} {printable(x.path.split("/").pop()!)}:{x.hunk.newStart}{d.findings.some((f) => f.hunk === x.id && open(f)) ? " ▲" : ""}</Text>;
                 })}
               </Box>
             );
@@ -479,8 +480,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
           {item && hunk ? (
             <>
               <Text wrap="truncate">
-                <Text bold>{item.path}</Text>
-                <Text dimColor>{hunk.context.trim() ? ` · ${hunk.context.trim()}` : ""} · {where(hunk)} · {pos.item + 1}/{items.length}{wrap ? " · wrapped" : x ? ` · →${x}` : ""}</Text>
+                <Text bold>{printable(item.path)}</Text>
+                <Text dimColor>{hunk.context.trim() ? ` · ${printable(hunk.context.trim())}` : ""} · {where(hunk)} · {pos.item + 1}/{items.length}{wrap ? " · wrapped" : x ? ` · →${x}` : ""}</Text>
               </Text>
               <Text wrap="truncate">
                 {item.mechanical

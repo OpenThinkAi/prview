@@ -9,6 +9,7 @@
 
 import type { FileDiff } from "./diff.ts";
 import { anchorLine, checkPlan, classify, clip, filePlan, fitLine, hunksOf, SEVERITIES, type Chapter, type Finding, type Mechanical, type Plan, type Severity } from "./guide.ts";
+import { clean, isClean } from "./sanitize.ts";
 import { withLegacy } from "./triage.ts";
 
 export const SCHEMA = "prview-review/1";
@@ -57,7 +58,7 @@ export const blank = (target: Target): Doc => ({
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 const arr = (v: unknown): unknown[] => Array.isArray(v) ? v : [];
-const str = (v: unknown, n: number) => typeof v === "string" ? clip(v.trim(), n) : "";
+const str = (v: unknown, n: number) => typeof v === "string" ? clip(clean(v).trim(), n) : "";
 const sha = (v: unknown) => typeof v === "string" && /^([0-9a-f]{40}|[0-9a-f]{64})$/.test(v) ? v : "";
 const side = (v: unknown): "new" | "old" => v === "old" ? "old" : "new";
 const VERDICTS = new Set<Verdict>(["approve", "request_changes", "comment"]);
@@ -82,7 +83,7 @@ export function parseDocument(input: unknown): Doc {
   const chapters: Chapter[] = arr(p.chapters).filter(isObj).map((c) => ({
     title: str(c.title, 60) || "Untitled", intent: str(c.intent, 200), why: str(c.why, 400), hunks: arr(c.hunks).filter((h): h is string => typeof h === "string"),
   }));
-  const mechanical: Mechanical[] = arr(p.mechanical).filter(isObj).flatMap((m) => typeof m.id === "string" ? [{ id: m.id, why: str(m.why, 200) }] : []);
+  const mechanical: Mechanical[] = arr(p.mechanical).filter(isObj).flatMap((m) => typeof m.id === "string" ? [{ id: clean(m.id), why: str(m.why, 200) }] : []);
   // A producer that ordered chapters but did not name itself still ordered them: only "files" means the fallback.
   const plan: Plan = { summary: str(p.summary, 400), chapters, mechanical, by: str(p.by, 40) || (chapters.length ? "producer" : "files") };
 
@@ -92,7 +93,7 @@ export function parseDocument(input: unknown): Doc {
     const claim = str(f.claim, 300), line = Number(f.line), title = fitLine(str(f.title, 300)).text;
     if (typeof f.hunk !== "string" || !claim || !Number.isInteger(line)) continue;
     // Ids only have to be unique within the document; a repeat or a missing one gets a fresh id.
-    let id = typeof f.id === "string" || typeof f.id === "number" ? clip(String(f.id), 80) : `f${findings.length}`;
+    let id = typeof f.id === "string" || typeof f.id === "number" ? clip(clean(String(f.id)), 80) : `f${findings.length}`;
     for (let k = 2; ids.has(id); k++) id = `${String(f.id ?? "f")}.${k}`;
     ids.add(id);
     findings.push({
@@ -157,7 +158,7 @@ export function argvOf(v: unknown): string[] | null {
     if (!split) return null;
     argv = split;
   } else return null;
-  if (!argv.length || !argv[0] || argv.length > 64 || argv.some((a) => a.length > 500 || a.includes("\0"))) return null;
+  if (!argv.length || !argv[0] || argv.length > 64 || argv.some((a) => a.length > 500 || !isClean(a))) return null;
   return argv;
 }
 
@@ -194,7 +195,7 @@ function submissionOf(s: Obj): Submission[] {
     if (argv) out.hook = {
       argv, cwd: str(k.cwd, 1000), ran: k.ran === true,
       ...(Number.isInteger(k.exit) || k.exit === null ? { exit: k.exit as number | null } : {}),
-      ...(typeof k.output === "string" ? { output: clip(k.output, 4000) } : {}),
+      ...(typeof k.output === "string" ? { output: clip(clean(k.output), 4000) } : {}),
       ...(str(k.error, 1000) ? { error: str(k.error, 1000) } : {}),
       ...(k.timed_out === true ? { timed_out: true } : {}),
     };

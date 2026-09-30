@@ -5,6 +5,7 @@
 
 import { tmpdir } from "node:os";
 import type { Resolved } from "./config.ts";
+import { clean } from "./sanitize.ts";
 
 async function firstModel(url: string, key: string | undefined): Promise<string> {
   const r = await fetch(`${url}/models`, { headers: key ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(3000) }).catch(() => { throw new Error(`no model server at ${url}`); });
@@ -50,12 +51,16 @@ export function claudeModelId(j: any): string | undefined {
 /** `claude [claude-opus-5-5]` as shown in progress lines: the configured name, then the concrete id, `default` until one is known. */
 export const modelLabel = (name: string, id?: string) => `${name} · ${id ?? "default"}`;
 
-async function claude(model: string | undefined, system: string, prompt: string, note: Note): Promise<string> {
+/** The argv for `claude -p`: flags and the system prompt only. The prompt holds PR text, so it goes on stdin, out of the process list. */
+export function claudeArgs(model: string | undefined, system: string): string[] {
   // Not --bare (that skips the subscription login). Tools, MCP and skills off, neutral cwd so no CLAUDE.md loads.
   const args = ["claude", "-p", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence", "--output-format", "json", "--system-prompt", system];
   if (model) args.push("--model", model);
-  args.push(prompt);
-  const p = Bun.spawn(args, { stdin: "ignore", cwd: tmpdir(), stdout: "pipe", stderr: "pipe" });
+  return args;
+}
+
+async function claude(model: string | undefined, system: string, prompt: string, note: Note): Promise<string> {
+  const p = Bun.spawn(claudeArgs(model, system), { stdin: Buffer.from(prompt), env: process.env, cwd: tmpdir(), stdout: "pipe", stderr: "pipe" });
   const [raw, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
   let j: any;
   try { j = JSON.parse(raw); } catch { throw new Error(`claude -p returned no JSON: ${(raw || err).slice(0, 300)}`); }
@@ -86,7 +91,8 @@ async function anthropic(base: string, key: string, model: string, system: strin
 export async function complete(m: Resolved, system: string, prompt: string, usage?: (u: Usage) => void): Promise<string> {
   const t0 = Date.now();
   const got: { cost?: number; model?: string } = {};
-  const text = await route(m, system, prompt, (n) => { got.cost ??= n.cost; got.model ??= n.model; });
+  // A reply is untrusted text: stripped of terminal control characters before anything parses or shows it.
+  const text = clean(await route(m, system, prompt, (n) => { got.cost ??= n.cost; got.model ??= n.model; }));
   usage?.({ ms: Date.now() - t0, ...got });
   return text;
 }

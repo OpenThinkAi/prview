@@ -76,6 +76,10 @@ A document can come from anywhere, so `on_submit` is only ever a request, and co
   quoting; `$VAR`, `;`, `|`, backticks and globs are passed through as plain text. The only thing
   prview puts into it is the written document's path, for `{file}`. One trailing `>` and a path
   (or `>path`) sends stdout to that file, relative to the worktree; prview writes it, not a shell.
+  The path has to resolve inside the worktree (symlinks followed): an absolute path elsewhere, a `..`
+  escape or a link pointing out is refused before the command runs, and the preview says why.
+- `{file}` is a copy of the document without the reasons the reader gave for "not an issue"; the
+  preview says so. Those reasons stay in the reader's own copy and are never posted.
 - Posting to the pull request carries only the human's verdict and comments, never anything a
   producer wrote.
 
