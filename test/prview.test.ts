@@ -369,6 +369,37 @@ test("import without --mine: their comments become findings to triage, their ver
   } finally { process.env.PRVIEW_HOME = join(tmp, "store"); }
 });
 
+
+test("import fetches a PR head only from a remote already configured for that repo; none: refused, nothing fetched", async () => {
+  const clone = join(tmp, "clone-refuse");
+  expect(Bun.spawnSync(["git", "clone", "-q", "--no-local", join(tmp, "repo"), clone]).exitCode).toBe(0);
+  const missing = "c".repeat(40);
+  const doc = JSON.parse(exportDocument(load((await build(join(tmp, "repo"), "main..feature", { ai: null })).slug))) as Doc;
+  const text = JSON.stringify({ ...doc, target: { ...doc.target, head: missing, url: "https://github.com/evil/pwn/pull/9" } });
+  process.env.PRVIEW_HOME = join(tmp, "store3");
+  try {
+    expect(() => importDocument(text, clone)).toThrow("no remote in");
+    // A remote whose URL merely ends in the same letters is not a match for evil/pwn.
+    Bun.spawnSync(["git", "remote", "add", "other", "file:///nowhere/notevil/pwn"], { cwd: clone });
+    expect(() => importDocument(text, clone)).toThrow("no remote in");
+    expect(Bun.spawnSync(["git", "for-each-ref", "refs/prview"], { cwd: clone }).stdout.toString()).toBe("");
+    // A matching remote is used (here it fails to fetch, which is past the refusal).
+    Bun.spawnSync(["git", "remote", "add", "gh", "file:///nowhere/evil/pwn.git"], { cwd: clone });
+    expect(() => importDocument(text, clone)).not.toThrow("no remote in");
+  } finally { process.env.PRVIEW_HOME = join(tmp, "store"); }
+});
+
+test("a commit message's terminal escapes do not reach the review's title or body", async () => {
+  const r = join(tmp, "esc");
+  const g = (...a: string[]) => Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: r });
+  Bun.spawnSync(["git", "init", "-q", "-b", "main", r]);
+  writeFileSync(join(r, "a.txt"), "1\n"); g("add", "."); g("commit", "-qm", "init");
+  g("checkout", "-qb", "f"); writeFileSync(join(r, "a.txt"), "2\n"); g("commit", "-qam", "fix \x1b]0;pwned\x07it\x1b[31m red");
+  const rev = load((await build(r, "main..f", { ai: null })).slug);
+  expect(rev.doc.target.title).toBe("fix it red");
+  expect(rev.doc.target.body).not.toContain("\x1b");
+});
+
 const F = (o: Partial<Finding>): Finding => ({ id: "0", source: "critic", hunk: "a@1:1", side: "new", line: 10, severity: "warn", kind: "bug", claim: "the loop never ends", evidence: "", status: "unrefuted", ...o });
 
 test("sampled critic runs merge: the same finding in different words counts once, with a vote per run", () => {

@@ -6,11 +6,13 @@
 //
 // The hook is a stranger's command: a document can come from anywhere. So it is an argv, run without
 // a shell; the only thing prview puts into it is the written file's path, for `{file}`; one trailing
-// `> path` sends its stdout to that file (prview writes it, no shell does); it runs in the head
-// worktree and is stopped after HOOK_TIMEOUT_MS. The preview shows exactly that before anything runs.
+// `> path` sends its stdout to that file (prview writes it, no shell does) and must land inside the head
+// worktree, symlinks followed, or the hook is refused before it runs; it runs in the head worktree and is
+// stopped after HOOK_TIMEOUT_MS. `{file}` is a copy of the document without the reader's "not an issue"
+// reasons. The preview shows exactly that before anything runs.
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { FileDiff } from "./diff.ts";
 import { hunksOf } from "./guide.ts";
 import { exportDocument, Fail, home, save, VERDICT, writeup, type Review } from "./build.ts";
@@ -19,8 +21,36 @@ import { adapterFor, postingOf, spawn, type Adapter, type Posting, type Runner }
 
 export const HOOK_TIMEOUT_MS = 60_000;
 
-/** The hook as it will run: `{file}` filled in, a trailing `> path` taken off the argv and resolved against the worktree. */
-export type Hook = { argv: string[]; cwd: string; stdout?: string; timeoutMs: number };
+/** The hook as it will run: `{file}` filled in, a trailing `> path` taken off the argv and resolved against the worktree. `refused` is why it will not run. */
+export type Hook = { argv: string[]; cwd: string; stdout?: string; timeoutMs: number; refused?: string };
+
+/**
+ * Why a `> path` may not be written, or undefined if it may: it has to resolve inside the worktree. The check is on
+ * the real location (every symlink followed, the deepest existing ancestor if the file is new), so neither `..`
+ * nor a link pointing out gets past it. The worktree's own `.git` is off limits too.
+ */
+export function redirectRefusal(cwd: string, target: string): string | undefined {
+  const abs = resolve(cwd, target);
+  const out = `the redirect to ${target} would write outside the worktree (${cwd})`;
+  let root: string;
+  try { root = realpathSync(cwd); } catch { root = resolve(cwd); }
+  const within = (p: string) => p === root || p.startsWith(root + sep);
+  const lexical = relative(resolve(cwd), abs);
+  if (lexical === ".." || lexical.startsWith(".." + sep) || resolve(lexical) === lexical) return out;
+  // The real place: follow the path itself if it exists (a dangling link is refused), else its deepest existing parent.
+  let real: string;
+  try {
+    let at = abs, tailParts: string[] = [];
+    for (;;) {
+      try { lstatSync(at); break; } catch { tailParts = [basename(at), ...tailParts]; const up = dirname(at); if (up === at) return out; at = up; }
+    }
+    real = join(realpathSync(at), ...tailParts);
+  } catch { return `the redirect to ${target} could not be resolved (a link that points nowhere?)`; }
+  if (!within(real)) return out;
+  if (real === root) return `the redirect to ${target} is the worktree itself`;
+  if (relative(root, real).split(sep)[0] === ".git") return `the redirect to ${target} is inside the worktree's .git`;
+  return undefined;
+}
 
 export function hookOf(run: string[], file: string, cwd: string, timeoutMs = HOOK_TIMEOUT_MS): Hook {
   let argv = run.map((a) => a.replaceAll("{file}", file));
@@ -28,11 +58,12 @@ export function hookOf(run: string[], file: string, cwd: string, timeoutMs = HOO
   const n = argv.length;
   if (n >= 3 && argv[n - 2] === ">" && argv[n - 1]) { stdout = argv[n - 1]; argv = argv.slice(0, -2); }
   else if (n >= 2 && argv[n - 1]!.startsWith(">") && argv[n - 1]!.length > 1) { stdout = argv[n - 1]!.slice(1); argv = argv.slice(0, -1); }
-  return { argv, cwd, timeoutMs, ...(stdout ? { stdout: isAbsolute(stdout) ? stdout : resolve(cwd, stdout) } : {}) };
+  const refused = stdout ? redirectRefusal(cwd, stdout) : undefined;
+  return { argv, cwd, timeoutMs, ...(stdout ? { stdout: resolve(cwd, stdout) } : {}), ...(refused ? { refused } : {}) };
 }
 
 /** Everything submit will do, worked out before it does any of it, so the preview can show it. */
-export type Plan = { file: string; md: string; target: Target; platform?: string; adapter?: Adapter; posting?: Posting; hook?: Hook };
+export type Plan = { file: string; md: string; hookFile: string; target: Target; platform?: string; adapter?: Adapter; posting?: Posting; hook?: Hook };
 
 export const submittedDir = () => join(home(), "submitted");
 
@@ -47,11 +78,11 @@ export function coverageLine(d: Doc, files: FileDiff[]): string {
 }
 
 export function planOf(r: Review, files: FileDiff[], choices: Choices = {}): Plan {
-  const file = join(submittedDir(), `${r.slug}.json`), md = join(submittedDir(), `${r.slug}.md`);
+  const file = join(submittedDir(), `${r.slug}.json`), md = join(submittedDir(), `${r.slug}.md`), hookFile = join(submittedDir(), `${r.slug}.hook.json`);
   const d = r.doc, platform = d.target.platform, adapter = adapterFor(platform);
   const paths = new Map(hunksOf(files).map((h) => [h.id, h.file.path]));
   const posting = d.human.verdict ? postingOf(d.human.verdict, d.human.comments, (id) => paths.get(id), { coverage: choices.coverage ? coverageLine(d, files) : undefined }) : undefined;
-  return { file, md, target: d.target, platform, adapter, posting, ...(d.on_submit ? { hook: hookOf(d.on_submit.run, file, r.worktree) } : {}) };
+  return { file, md, hookFile, target: d.target, platform, adapter, posting, ...(d.on_submit ? { hook: hookOf(d.on_submit.run, hookFile, r.worktree) } : {}) };
 }
 
 /** An argv the way a reader would type it back: plain words bare, anything else single-quoted. */
@@ -68,8 +99,10 @@ export function describe(p: Plan, allowed: boolean, dryRun = false): string {
       "3. The document asks to run this command:", "",
       `     ${shown(p.hook.argv)}`,
       ...(p.hook.stdout ? [`     stdout to ${p.hook.stdout}`] : []),
-      `   in ${p.hook.cwd}, no shell, stopped after ${Math.round(p.hook.timeoutMs / 1000)}s.`, "",
-      allowed ? "   [x] Allowed for this submit (x takes it back)." : "   [ ] Not allowed: it will not run. Press x to allow it for this submit.",
+      `   in ${p.hook.cwd}, no shell, stopped after ${Math.round(p.hook.timeoutMs / 1000)}s.`,
+      `   {file} is ${p.hookFile}: your review without the reasons you gave for "not an issue".`, "",
+      ...(p.hook.refused ? [`   REFUSED: ${p.hook.refused}. It will not run.`] : []),
+      ...(p.hook.refused ? [] : [allowed ? "   [x] Allowed for this submit (x takes it back)." : "   [ ] Not allowed: it will not run. Press x to allow it for this submit."]),
     );
   }
   return out.join("\n");
@@ -137,11 +170,18 @@ export function submit(r: Review, files: FileDiff[], opts: Choices & { allowHook
     const h = p.hook;
     const rec: NonNullable<Submission["hook"]> = { argv: [...h.argv, ...(h.stdout ? [">", h.stdout] : [])], cwd: h.cwd, ran: false };
     if (!opts.allowHook) parts.push("on_submit not run (not allowed)");
+    else if (h.refused) { rec.error = h.refused; parts.push(`on_submit REFUSED, not run: ${h.refused}`); ok = false; }
     else {
-      const res = (opts.hook ?? runHook)(h);
-      rec.ran = true; rec.exit = res.exit;
+      // The hook gets its own copy, minus the reasons behind "not an issue": those are the reader's, not the producer's.
+      let copyError = "";
+      try { writeFileSync(p.hookFile, exportDocument(r, { redact: true })); } catch (e) { copyError = `could not write ${p.hookFile}: ${(e as Error).message}`; }
+      const res = copyError ? { exit: null, stdout: "", stderr: "", timedOut: false, error: copyError } : (opts.hook ?? runHook)(h);
+      rec.ran = !copyError; rec.exit = res.exit;
       let writeError = "";
-      if (h.stdout && !res.error) { try { writeFileSync(h.stdout, res.stdout); } catch (e) { writeError = `could not write ${h.stdout}: ${(e as Error).message}`; } }
+      // Checked again now: the hook ran in the worktree and could have put a link where the path was clean a moment ago.
+      const late = h.stdout ? redirectRefusal(h.cwd, h.stdout) : undefined;
+      if (late) writeError = late;
+      else if (h.stdout && !res.error) { try { writeFileSync(h.stdout, res.stdout); } catch (e) { writeError = `could not write ${h.stdout}: ${(e as Error).message}`; } }
       rec.output = tail([h.stdout ? "" : res.stdout, res.stderr].filter(Boolean).join("\n"));
       if (res.timedOut) rec.timed_out = true;
       const error = res.error ?? (writeError || undefined);

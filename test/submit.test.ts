@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDiff } from "../src/diff.ts";
 import { hunksOf } from "../src/guide.ts";
 import { argvOf, merge, parseDocument, SCHEMA, splitArgs, type Doc } from "../src/document.ts";
 import { adapterFor, github, postingOf, type Runner } from "../src/platform.ts";
-import { describe, hookOf, planOf, runHook, shown, submit, type HookRunner } from "../src/submit.ts";
+import { describe, hookOf, planOf, redirectRefusal, runHook, shown, submit, type HookRunner } from "../src/submit.ts";
 import type { Review } from "../src/build.ts";
 import { decide } from "../src/triage.ts";
 
@@ -62,7 +62,7 @@ test("on_submit is an argv: a string is split with quotes and no shell; what can
 
 test("the hook as it runs: {file} is the only thing filled in; a trailing > path takes stdout, resolved in the worktree", () => {
   expect(hookOf(["cat", "{file}", ">", "out.txt"], "/h/s.json", "/wt")).toEqual({ argv: ["cat", "/h/s.json"], cwd: "/wt", stdout: "/wt/out.txt", timeoutMs: 60_000 });
-  expect(hookOf(["cat", "{file}", ">/tmp/x"], "/h/a b.json", "/wt")).toEqual({ argv: ["cat", "/h/a b.json"], cwd: "/wt", stdout: "/tmp/x", timeoutMs: 60_000 });
+  expect(hookOf(["cat", "{file}", ">sub/x"], "/h/a b.json", "/wt")).toEqual({ argv: ["cat", "/h/a b.json"], cwd: "/wt", stdout: "/wt/sub/x", timeoutMs: 60_000 });
   expect(hookOf(["tool", "--in={file}", "$HOME", "{target}"], "/f", "/wt").argv).toEqual(["tool", "--in=/f", "$HOME", "{target}"]);
   expect(hookOf([">", "x"], "/f", "/wt").stdout).toBeUndefined(); // a redirect with no command is just the argv
   expect(shown(["cat", "/h/a b.json", "it's"])).toBe(`cat '/h/a b.json' 'it'\\''s'`);
@@ -225,7 +225,7 @@ test("an allowed hook runs for real: `cat {file} > out` in the worktree produces
   expect(res.ok).toBe(true);
   expect(res.summary).toContain(`on_submit ran (exit 0, stdout in ${out})`);
   expect(parseDocument(readFileSync(out, "utf8")).target.head).toBe(B);
-  expect(r.doc.submissions![0]!.hook).toEqual({ argv: ["cat", res.submission.file, ">", out], cwd: r.worktree, ran: true, exit: 0, output: "" });
+  expect(r.doc.submissions![0]!.hook).toEqual({ argv: ["cat", res.submission.file.replace(/\.json$/, ".hook.json"), ">", out], cwd: r.worktree, ran: true, exit: 0, output: "" });
 });
 
 test("a hook the human did not allow never runs, and the summary says so", () => {
@@ -270,10 +270,60 @@ test("the preview spells out all three steps, the exact command, and whether it 
   const text = describe(p, false);
   expect(text).toContain(`1. Writes ${p.file}`);
   expect(text).toContain("2. No gitlab adapter yet: the written file is the review.");
-  expect(text).toContain(`     notify --file ${p.file}`);
+  expect(text).toContain(`     notify --file ${p.hookFile}`);
   expect(text).toContain("     stdout to /tmp/x y");
+  expect(text).toContain("REFUSED: the redirect to /tmp/x y would write outside the worktree");
+  expect(text).toContain("without the reasons you gave");
   expect(text).toContain(`in ${r.worktree}, no shell, stopped after 60s.`);
-  expect(text).toContain("[ ] Not allowed");
-  expect(describe(p, true)).toContain("[x] Allowed for this submit");
+  const ok = describe(planOf(review({ on_submit: { run: ["notify", "{file}", ">", "out.txt"] } }), files), false);
+  expect(ok).toContain("[ ] Not allowed");
+  expect(describe(planOf(review({ on_submit: { run: ["notify", "{file}", ">", "out.txt"] } }), files), true)).toContain("[x] Allowed for this submit");
   expect(describe(planOf(review(), files), false)).not.toContain("3.");
+});
+
+test("a > path must land inside the worktree: absolute, .. and symlinks out are refused, in-tree paths (new or existing) are fine", () => {
+  const wt = mkdtempSync(join(tmp, "rd-")), outside = mkdtempSync(join(tmp, "outside-"));
+  mkdirSync(join(wt, "sub"));
+  writeFileSync(join(wt, "there.txt"), "x");
+  symlinkSync(outside, join(wt, "linkdir"));
+  symlinkSync(join(outside, "target.txt"), join(wt, "linkfile"));
+  symlinkSync(join(wt, "there.txt"), join(wt, "inlink"));
+  for (const bad of [join(outside, "x"), "/etc/passwd", "../x", "sub/../../x", "linkdir/x", "linkdir/deep/new/x", "linkfile", ".git", ".git/config", ".", ""]) {
+    expect(redirectRefusal(wt, bad)).toBeTruthy();
+  }
+  for (const good of ["out.txt", "sub/out.txt", "sub/new/dir/out.txt", "there.txt", "inlink", "./sub/../out.txt", join(wt, "abs.txt")]) {
+    expect(redirectRefusal(wt, good)).toBeUndefined();
+  }
+  expect(hookOf(["cat", ">", "../x"], "/f", wt).refused).toContain("outside the worktree");
+  expect(hookOf(["cat", ">", "x"], "/f", wt).refused).toBeUndefined();
+});
+
+test("a refused redirect: the hook does not run, nothing is written outside, the record says why", () => {
+  const r = review({ on_submit: { run: ["cat", "{file}", ">", "../escaped.json"] } });
+  const res = submit(r, files, { allowHook: true, run: noNet, hook: noHook });
+  expect(res.ok).toBe(false);
+  expect(res.summary).toContain("on_submit REFUSED, not run");
+  expect(existsSync(join(r.worktree, "..", "escaped.json"))).toBe(false);
+  expect(r.doc.submissions![0]!.hook!.ran).toBe(false);
+  expect(r.doc.submissions![0]!.hook!.error).toContain("outside the worktree");
+  expect(existsSync(res.submission.file)).toBe(true); // the document is still written
+});
+
+test("a link planted by the hook itself is caught before stdout is written through it", () => {
+  const outside = mkdtempSync(join(tmp, "late-"));
+  const r = review({ on_submit: { run: ["cat", "{file}", ">", "late.txt"] } });
+  const res = submit(r, files, { allowHook: true, run: noNet, hook: () => { symlinkSync(join(outside, "stolen"), join(r.worktree, "late.txt")); return { exit: 0, stdout: "data", stderr: "", timedOut: false }; } });
+  expect(res.ok).toBe(false);
+  expect(existsSync(join(outside, "stolen"))).toBe(false);
+});
+
+test("the hook's copy of the document has the not-an-issue reasons removed; the kept document keeps them", () => {
+  const r = review({ on_submit: { run: ["cat", "{file}", ">", "copy.json"] }, findings: [{ id: "f1", source: "s", hunk: h1!.id, side: "new", line: 11, severity: "warn", kind: "bug", claim: "c", evidence: "", status: "upheld" }], human: { comments: [], visited: [], decisions: { f1: { kind: "dismissed", reason: "SECRET-REASON" } }, verdict: "comment" } });
+  const res = submit(r, files, { allowHook: true, run: noNet });
+  expect(res.ok).toBe(true);
+  const seen = readFileSync(join(r.worktree, "copy.json"), "utf8");
+  expect(seen).not.toContain("SECRET-REASON");
+  expect(parseDocument(seen).human.decisions!.f1!.kind).toBe("dismissed");
+  expect(readFileSync(res.submission.file, "utf8")).toContain("SECRET-REASON");
+  expect(describe(planOf(r, files), true)).toContain("without the reasons you gave");
 });

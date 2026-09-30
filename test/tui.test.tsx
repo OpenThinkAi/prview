@@ -5,7 +5,8 @@ import { join } from "node:path";
 import React from "react";
 import { cleanup, render } from "ink-testing-library";
 import { parseDiff } from "../src/diff.ts";
-import { hunksOf, type Finding } from "../src/guide.ts";
+import { criticPrompt, hunksOf, type Finding } from "../src/guide.ts";
+import { visible } from "../src/sanitize.ts";
 import type { Review } from "../src/build.ts";
 import type { Doc } from "../src/document.ts";
 import { chapterHidden, earlyTitles, hiddenHunks, revealBody, revealEarly } from "../src/blind.ts";
@@ -1260,4 +1261,20 @@ test("result keys are tabled like the other steps: unique, described, not remapp
   expect(() => effectiveKeys({ "results.copy": "z" })).toThrow(/unknown action/);
   expect(() => effectiveKeys({ "nav.ask_docs": "a" })).toThrow(/both "a"/); // collides with the model's ask
   expect(effectiveKeys({ "nav.ask_docs": "" }).nav.find((a) => a.id === "nav.ask_docs")!.key).toBe("");
+});
+
+test("a hunk line with an OSC/CSI payload is drawn with visible stand-ins; no raw ESC reaches the screen, and models still get the raw text", async () => {
+  const payload = "\x1b]0;pwned\x07\x1b[2Jboom\x85\r";
+  const evil = DIFF.replace("+new2", `+new2 ${payload}`);
+  const efiles = parseDiff(evil);
+  const r = fixture();
+  const app = render(<App review={r} files={efiles} onDone={() => {}} size={{ cols: 120, rows: 40 }} />);
+  await settle();
+  const all = app.frames.join("\n") + (app.lastFrame() ?? "");
+  expect(all.replace(/\x1b\[[0-9;]*m/g, "")).not.toMatch(/[\x00-\x08\x0b-\x1a\x1c-\x1f\x7f-\x9f]|\x1b/);
+  expect(app.lastFrame()).toContain("new2 ␛]0;pwned␇␛[2Jboom\\x85␍");
+  // What a model is sent is the code as written.
+  expect(efiles[0]!.hunks[0]!.lines.some((l) => l.text.includes("\x1b]0;pwned\x07"))).toBe(true);
+  expect(criticPrompt({ title: "t" }, { title: "c", intent: "i", why: "w", hunks: [hunksOf(efiles)[0]!.id] }, hunksOf(efiles))).toContain("\x1b]0;pwned\x07");
+  expect(visible("a\tb\x7f")).toBe("a\tb␡");
 });
