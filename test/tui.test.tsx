@@ -8,6 +8,10 @@ import { parseDiff } from "../src/diff.ts";
 import { hunksOf, type Finding } from "../src/guide.ts";
 import type { Review } from "../src/build.ts";
 import type { Doc } from "../src/document.ts";
+import { chapterHidden, earlyTitles, hiddenHunks, revealBody, revealEarly } from "../src/blind.ts";
+import { writeup } from "../src/build.ts";
+import { parseDocument, SCHEMA } from "../src/document.ts";
+import { parseConfig } from "../src/config.ts";
 import { App, type Outcome } from "../src/tui.tsx";
 import { highlightLines, langOf, sliceSpans, styleOf } from "../src/highlight.ts";
 import { clampScroll, clampX, floatHeight, layoutOf, pageStep, windowOf, wrapText } from "../src/layout.ts";
@@ -61,10 +65,10 @@ function fixture(over: Over = {}): Review {
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 30));
-async function open(over?: Over, props: { cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined } = {}) {
+async function open(over?: Over, props: { blind?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined } = {}) {
   const outcomes: Outcome[] = [];
   const r = fixture(over);
-  const app = render(<App review={r} files={files} onDone={(o) => outcomes.push(o)} beside={props.beside} size={{ cols: props.cols ?? 120, rows: props.rows ?? 40 }} />);
+  const app = render(<App review={r} files={files} onDone={(o) => outcomes.push(o)} beside={props.beside} blind={props.blind} size={{ cols: props.cols ?? 120, rows: props.rows ?? 40 }} />);
   await settle();
   // One key at a time: a handler closes over the state of its render, so two keys in one chunk would both see the old cursor.
   const press = async (keys: string) => { for (const k of keys.match(/\x1b\[\d+~|./gsu) ?? []) { app.stdin.write(k); await settle(); } };
@@ -281,4 +285,89 @@ test("a hunk taller than the screen scrolls its window and keeps each line's own
   // The keyword is bold inside the green line: colour alignment follows the line, not its position in the window.
   expect(row).toMatch(/\x1b\[1mconst\x1b\[22m/);
   expect(raw.split("\n").filter((l) => l.includes("filler")).every((l) => !/\x1b\[1m/.test(l))).toBe(true);
+});
+
+// ---------------------------------------------------------------- blind first pass
+
+test("blind gate (pure): hidden until every hunk is visited or revealed early; early reveal only counts when it skipped reading", () => {
+  const ch = [["a", "b"], ["c"]];
+  expect(chapterHidden(false, ch[0]!, { visited: [] })).toBe(false); // blind off: nothing is hidden
+  expect(chapterHidden(true, [], { visited: [] })).toBe(false);
+  expect([...hiddenHunks(true, ch, { visited: ["a"] })]).toEqual(["a", "b", "c"]);
+  expect([...hiddenHunks(true, ch, { visited: ["a", "b"] })]).toEqual(["c"]);
+  expect([...hiddenHunks(true, ch, { visited: [], revealed: ["c"] })]).toEqual(["a", "b"]);
+  expect(revealEarly(true, ch[0]!, { visited: ["a"] })).toEqual(["a"]);
+  expect(revealEarly(true, ch[0]!, { visited: ["a"], revealed: ["a"] })).toBeNull(); // already revealed
+  expect(revealEarly(true, ch[0]!, { visited: ["a", "b"] })).toBeNull(); // read: not early
+  expect(revealEarly(false, ch[0]!, { visited: [] })).toBeNull();
+  expect(earlyTitles([{ title: "One", ids: ["a", "b"] }, { title: "Two", ids: ["c"] }], { visited: [], revealed: ["c"] })).toEqual(["Two"]);
+  const body = revealBody([finding], [{ hunk: h1!.id, side: "new", line: 11, text: "why 42?", at: "" }], (h, l) => `${h}:${l}`);
+  expect(body).toContain("The model found 1:");
+  expect(body).toContain("answer is hard-coded");
+  expect(body).toContain("You noted 1:");
+  expect(body).toContain("why 42?");
+});
+
+test("blind: a document from before the pass loads, `revealed` is read defensively and merged, and the config key is checked", () => {
+  const sha = "a".repeat(40), tgt = { base: sha, head: "b".repeat(40) };
+  expect(parseDocument({ schema: SCHEMA, target: tgt }).human.revealed).toBeUndefined();
+  expect(parseDocument({ schema: SCHEMA, target: tgt, human: { revealed: ["x@1:1", 4, "x@1:1"] } }).human.revealed).toEqual(["x@1:1"]);
+  expect(parseDocument({ schema: SCHEMA, target: tgt, human: { revealed: "nope" } }).human.revealed).toBeUndefined();
+  expect(parseConfig("").blind).toBe(false);
+  expect(parseConfig("blind = true\n[roles]").blind).toBe(true);
+  expect(() => parseConfig('blind = "yes"')).toThrow(/blind/);
+});
+
+test("blind: before visiting, the gutter has no ▲, the rail shows ▲?, f and ]f are disabled and d does nothing", async () => {
+  // Two hunks in one chapter, cursor on the first: the chapter is not read yet.
+  const t = await open({ plan: { summary: "", by: "guide", mechanical: [], chapters: [{ title: "Both", intent: "Check it", why: "w", hunks: [h1!.id, h2!.id] }] } }, { blind: true });
+  expect(t.frame()).not.toContain("▲ ");
+  expect(t.frame()).toContain("Both ▲?");
+  expect(t.frame()).toContain("0 ▲?"); // header: nothing revealed, something hidden
+  expect(t.frame()).toContain("F reveal");
+  await t.press("f");
+  expect(t.frame()).toContain("Hidden until you have been through this chapter");
+  expect(t.frame()).not.toContain("answer is hard-coded");
+  await t.press("\x1b");
+  await t.press("]f");
+  expect(t.frame()).not.toContain("answer is hard-coded");
+  expect(t.r.pos.item).toBe(0);
+  await t.press("d");
+  expect(t.r.doc.human.dismissals).toEqual([]);
+  expect(t.r.doc.human.revealed).toBeUndefined();
+});
+
+test("blind: F reveals early, lists the findings beside the reader's comments, and the reveal is recorded and written up", async () => {
+  const t = await open({ comments: [{ hunk: h1!.id, side: "new", line: 11, text: "why 42?", at: "now" }], plan: { summary: "", by: "guide", mechanical: [], chapters: [{ title: "Both", intent: "Check it", why: "w", hunks: [h1!.id, h2!.id] }] } }, { blind: true });
+  await t.press("F");
+  const f = t.frame();
+  expect(f).toContain("what the model found");
+  expect(f).toContain("The model found 1:");
+  expect(f).toContain("answer is hard-coded");
+  expect(f).toContain("You noted 1:");
+  expect(f).toContain("why 42?");
+  expect(t.r.doc.human.revealed).toEqual([h1!.id]);
+  await t.press("\x1b");
+  expect(t.frame()).toContain("Both ▲1"); // and the gutter is back
+  expect(writeup(t.r.doc, files)).toContain("Findings seen before reading: Both");
+  await t.press("F"); // pressing again is not another early reveal
+  expect(t.r.doc.human.revealed).toEqual([h1!.id]);
+});
+
+test("blind: visiting every hunk of a chapter reveals it without recording anything", async () => {
+  const t = await open({ plan: { summary: "", by: "guide", mechanical: [], chapters: [{ title: "Both", intent: "Check it", why: "w", hunks: [h1!.id, h2!.id] }] } }, { blind: true });
+  expect(t.frame()).toContain("Both ▲?");
+  await t.press("l"); // visits the second hunk; the first was visited on open
+  expect(t.frame()).toContain("1 Both ▲1");
+  await t.press("h");
+  await t.press("]f");
+  expect(t.frame()).toContain("answer is hard-coded");
+  expect(t.r.doc.human.revealed).toBeUndefined();
+  expect(writeup(t.r.doc, files)).not.toContain("seen before reading");
+});
+
+test("blind off: nothing is hidden and the footer does not offer F", async () => {
+  const t = await open();
+  expect(t.frame()).toContain("▸ 1 Core change ▲1");
+  expect(t.frame()).not.toContain("F reveal");
 });

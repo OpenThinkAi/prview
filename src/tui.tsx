@@ -16,6 +16,7 @@ import { where, type DiffLine, type FileDiff } from "./diff.ts";
 import { hunksOf, MECHANICAL_INTENT, worstFirst, type Finding, type HunkAt } from "./guide.ts";
 import { ask, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
 import type { Doc, Verdict } from "./document.ts";
+import { chapterHidden, hiddenHunks, revealBody, revealEarly } from "./blind.ts";
 import { gotoLine, nextFinding, type NavItem } from "./nav.ts";
 import { highlightLines, langOf, lengthOf, sliceSpans, styleOf, type Span } from "./highlight.ts";
 import { clampScroll, clampX, floatHeight, floatRows, layoutOf, pageStep, rowsFor, windowOf, wrapText } from "./layout.ts";
@@ -46,9 +47,11 @@ export type AppProps = {
   beside?: Beside;
   /** Override the terminal size (tests, mostly: there is no real terminal to measure). */
   size?: { cols: number; rows: number };
+  /** Blind first pass: a chapter's findings stay hidden until every hunk in it has been visited (or `F`). */
+  blind?: boolean;
 };
 
-export function App({ review, files, onDone, beside, size }: AppProps) {
+export function App({ review, files, onDone, beside, size, blind = false }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const cols = size?.cols ?? (stdout.columns || 100), rows = (size?.rows ?? (stdout.rows || 40)) - 1;
@@ -85,8 +88,13 @@ export function App({ review, files, onDone, beside, size }: AppProps) {
   const chapterTitle = item ? chapter?.title ?? "Mechanical" : "";
 
   const live = (f: Finding) => f.status !== "withdrawn";
-  const kept = (f: Finding) => live(f) && !h.dismissals.includes(f.id);
-  const findingsHere = item ? d.findings.filter((f) => f.hunk === item.id && live(f)) : [];
+  // Blind: what the critic found is not shown, counted or reachable until the chapter has been read. Everything below that
+  // draws or steps through a finding goes through `unhidden`, so the gate cannot be bypassed by one key.
+  const chapters = items.reduce<string[][]>((acc, x) => { (acc[x.chapter] ??= []).push(x.id); return acc; }, []).filter(Boolean);
+  const hidden = hiddenHunks(blind, chapters, h);
+  const unhidden = (f: Finding) => !hidden.has(f.hunk);
+  const kept = (f: Finding) => live(f) && unhidden(f) && !h.dismissals.includes(f.id);
+  const findingsHere = item ? d.findings.filter((f) => f.hunk === item.id && live(f) && unhidden(f)) : [];
   const findingsAt = (l: DiffLine) => findingsHere.filter((f) => f.side === "new" ? l.n !== null && f.line === l.n : l.o !== null && f.line === l.o);
   const notesAt = (l: DiffLine) => h.comments.filter((n) => n.hunk === item?.id && n.line !== null && (n.side === "new" ? n.line === l.n : n.line === l.o));
 
@@ -110,10 +118,19 @@ export function App({ review, files, onDone, beside, size }: AppProps) {
     setFloat({ title: `▲ ${f.source} · ${f.kind} · ${f.severity}${f.votes && r.ai?.samples ? ` · ${f.votes}/${r.ai.samples}` : ""}${gone ? " · dismissed" : ""}`, color: SEV[f.severity], body: `${f.claim}\n\n${f.evidence}${f.refute ? `\n\nSecond look: ${f.refute}` : ""}\n\nd to ${gone ? "restore" : "dismiss"}.` });
   };
   const jumpFinding = (dir: 1 | -1) => {
-    const hit = nextFinding(items, d.findings.filter(live), { item: pos.item, line }, dir);
-    if (!hit) { setFloat({ title: "Findings", body: dir > 0 ? "No more findings after this point." : "No findings before this point." }); return; }
+    const hit = nextFinding(items, d.findings.filter((f) => live(f) && unhidden(f)), { item: pos.item, line }, dir);
+    if (!hit) { setFloat({ title: "Findings", body: (dir > 0 ? "No more findings after this point." : "No findings before this point.") + (hidden.size ? " Chapters you have not read yet keep theirs hidden; F reveals one." : "") }); return; }
     setPos({ item: hit.item, line: hit.line });
     showFinding(hit.finding);
+  };
+  const place = (id: string, l: number | null) => `${items.find((x) => x.id === id)?.path ?? id}${l !== null ? `:${l}` : ""}`;
+  const reveal = () => {
+    if (!item) return;
+    const ids = chapters[item.chapter] ?? [];
+    const early = revealEarly(blind, ids, h);
+    if (early) { h.revealed = early; redraw(); } // recorded: a finding seen before the reading is part of how the review went
+    const mine = new Set(ids);
+    setFloat({ title: `${item.chapter + 1} · ${chapterTitle} · what the model found`, tall: true, color: "yellow", body: revealBody(d.findings.filter((f) => live(f) && mine.has(f.hunk)), h.comments.filter((c) => c.hunk !== null && mine.has(c.hunk)), place) });
   };
   const preview = () => setFloat({ title: `${VERDICT[h.verdict!]} · Enter submits, Esc goes back, j/k or PgUp/PgDn scroll`, color: "green", tall: true, body: writeup(d, files) });
 
@@ -191,7 +208,9 @@ export function App({ review, files, onDone, beside, size }: AppProps) {
       const body = item.mechanical ? `${MECHANICAL_INTENT}\n\nMechanical: ${item.mechanical}. Classified by rule, not by a model.` : `${chapter?.intent ? chapter.intent + "\n\n" : ""}${chapter?.why || "The guide gave no reason for this chapter."}`;
       setFloat({ title: `${item.chapter + 1} · ${chapterTitle}`, body });
     }
+    else if (ch === "F") reveal();
     else if (ch === "f") { // the next finding in this hunk, from the cursor, wrapping
+      if (item && hidden.has(item.id)) { setFloat({ title: "Findings", body: "Hidden until you have been through this chapter. F reveals them now (and the review notes you did)." }); return; }
       if (!findingsHere.length) { setFloat({ title: "Findings", body: "None in this hunk. ]f jumps to the next one anywhere." }); return; }
       let at = lines.findIndex((l, i) => i > line && findingsAt(l).length);
       if (at < 0) at = lines.findIndex((l) => findingsAt(l).length);
@@ -225,6 +244,7 @@ export function App({ review, files, onDone, beside, size }: AppProps) {
   const codeCols = codeW - 1; // the +/- sign takes the first column
   const total = items.filter((i) => !i.mechanical).length, seen = items.filter((i) => !i.mechanical && h.visited.includes(i.id)).length;
   const liveFindings = d.findings.filter(kept).length;
+  const anyHidden = d.findings.some((f) => live(f) && !unhidden(f));
 
   // The float sits right under the cursor line, so the window keeps that many rows free below it.
   const floatLines = float ? wrapText(float.body, floatInner) : [];
@@ -254,7 +274,7 @@ export function App({ review, files, onDone, beside, size }: AppProps) {
       case "preview": return <Text wrap="truncate" dimColor> Enter submits · Esc back to the verdict · j/k PgUp/PgDn scroll</Text>;
       case "nav": return <Text wrap="truncate" dimColor> {L.narrow
         ? "j/k h/l hunk  ]f find  ? why  a ask  e edit  n note  w wrap  s send  q quit"
-        : "j/k line  h/l hunk  J/K chapter  ]f finding  ? why  f/d finding  a ask  e edit  n/N note  w wrap  H/L pan  s submit  q quit"}{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
+        : `j/k line  h/l hunk  J/K chapter  ]f finding  ${blind ? "F reveal  " : ""}? why  f/d finding  a ask  e edit  n/N note  w wrap  H/L pan  s submit  q quit`}{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
       default: return <Text><Text color="cyan" bold> {mode.kind === "ask" ? "ask" : mode.general ? "summary comment" : "comment"} › </Text>{input}<Text inverse> </Text><Text dimColor>  (Enter to send, Esc to cancel)</Text></Text>;
     }
   };
@@ -263,7 +283,7 @@ export function App({ review, files, onDone, beside, size }: AppProps) {
     <Box flexDirection="column" width={cols} height={rows}>
       <Box justifyContent="space-between">
         <Box width={cols - 34}><Text wrap="truncate"><Text bold> {d.target.title}</Text><Text dimColor>  {d.target.url ?? d.target.label}</Text></Text></Box>
-        <Box width={32} justifyContent="flex-end"><Text>{seen}/{total} read · <Text color="yellow">{liveFindings} ▲</Text> · {h.comments.length} comment{h.comments.length === 1 ? "" : "s"} </Text></Box>
+        <Box width={32} justifyContent="flex-end"><Text>{seen}/{total} read · <Text color="yellow">{liveFindings} ▲{anyHidden ? "?" : ""}</Text> · {h.comments.length} comment{h.comments.length === 1 ? "" : "s"} </Text></Box>
       </Box>
       <Box flexGrow={1}>
         <Box width={railW} flexDirection="column" borderStyle="single" borderRight borderTop={false} borderBottom={false} borderLeft={false} borderColor="gray" paddingRight={1}>
@@ -273,10 +293,11 @@ export function App({ review, files, onDone, beside, size }: AppProps) {
             const done = mine.length > 0 && mine.every((x) => h.visited.includes(x.id));
             const here = item?.chapter === i;
             const fs = d.findings.filter((f) => kept(f) && mine.some((x) => x.id === f.hunk)).length;
+            const blindFs = chapterHidden(blind, chapters[i] ?? [], h) && d.findings.some((f) => live(f) && mine.some((x) => x.id === f.hunk));
             return (
               <Box key={i} flexDirection="column">
                 <Text color={here ? "cyan" : done ? "green" : undefined} bold={here} wrap="truncate">
-                  {here ? "▸" : done ? "✓" : " "}{L.narrow ? "" : " "}{i + 1}{L.narrow ? "" : ` ${title}`}{fs ? <Text color="yellow">{L.narrow ? "" : " "}▲{fs}</Text> : null}
+                  {here ? "▸" : done ? "✓" : " "}{L.narrow ? "" : " "}{i + 1}{L.narrow ? "" : ` ${title}`}{fs ? <Text color="yellow">{L.narrow ? "" : " "}▲{fs}</Text> : blindFs ? <Text color="yellow">{L.narrow ? "" : " "}▲?</Text> : null}
                 </Text>
                 {here && !L.narrow && mine.map((x) => {
                   const cur = x === item;
@@ -342,11 +363,11 @@ export function App({ review, files, onDone, beside, size }: AppProps) {
 }
 
 /** Run the app once; resolves with what the reader wants next. State lives on the review object and is saved as it changes. */
-export function show(review: Review, files: FileDiff[], beside?: Beside): Promise<Outcome> {
+export function show(review: Review, files: FileDiff[], beside?: Beside, blind = false): Promise<Outcome> {
   return new Promise((resolve) => {
     let outcome: Outcome = { kind: "quit" };
     process.stdout.write("\x1b[?1049h\x1b[H");
-    const app = render(<App review={review} files={files} beside={beside} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
+    const app = render(<App review={review} files={files} beside={beside} blind={blind} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
     app.waitUntilExit().then(() => { app.clear(); process.stdout.write("\x1b[?1049l"); save(review); resolve(outcome); });
   });
 }

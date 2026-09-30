@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { earlyTitles } from "./blind.ts";
 import { parseDiff, type FileDiff } from "./diff.ts";
 import { blank, Fail, fit, merge, parseDocument, SCHEMA, type Comment, type Doc, type Target } from "./document.ts";
 import {
@@ -371,6 +372,8 @@ export function writeup(d: Doc, files: FileDiff[]): string {
   for (const c of general) out.push(c.text, ``);
   if (placed.length) out.push(`## Comments`, ``);
   for (const c of placed) out.push(`**${place(c)}**`, c.text, ``);
+  const early = earlyTitles([...d.plan.chapters.map((c) => ({ title: c.title, ids: c.hunks })), { title: "Mechanical", ids: d.plan.mechanical.map((m) => m.id) }], h);
+  if (early.length) out.push(`Findings seen before reading: ${early.join(", ")}`, ``);
   const kept = d.findings.filter((f) => f.status !== "withdrawn" && !h.dismissals.includes(f.id));
   if (kept.length) {
     out.push(`## Findings you kept`, ``);
