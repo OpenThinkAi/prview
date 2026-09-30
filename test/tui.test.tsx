@@ -11,13 +11,14 @@ import type { Review } from "../src/build.ts";
 import type { Doc } from "../src/document.ts";
 import { chapterHidden, earlyTitles, hiddenHunks } from "../src/blind.ts";
 import { writeup } from "../src/build.ts";
-import { entriesOf, panelCap, panelOf } from "../src/panel.ts";
+import { entriesOf, panelOf, panelTitle, plain, type Entry } from "../src/panel.ts";
 import { DEFAULT_KEYMAP, effectiveKeys, installKeymap, keyOf, type KeyState } from "../src/keys.ts";
 import { parseDocument, SCHEMA } from "../src/document.ts";
 import { parseConfig } from "../src/config.ts";
 import { App, type Outcome } from "../src/tui.tsx";
 import { highlightLines, langOf, sliceSpans, styleOf } from "../src/highlight.ts";
-import { clampScroll, floatHeight, layoutOf, pageStep, windowOf, wrapText } from "../src/layout.ts";
+import { bottomHeight, boxLines, clampScroll, layoutOf, pageStep, windowOf, wrapText } from "../src/layout.ts";
+import { DROP_ORDER, fitFields, statusFields, type StatusInput } from "../src/status.ts";
 import { editorArgs, tmuxSplit, besideIn } from "../src/editor.ts";
 import { nextBySeverity, nextFindingWrapping, fileEdge, chapterStart } from "../src/nav.ts";
 
@@ -72,9 +73,9 @@ function fixture(over: Over = {}): Review {
 const DOWN = "\x1b[B", UP = "\x1b[A", RIGHT = "\x1b[C", LEFT = "\x1b[D", SDOWN = "\x1b[1;2B", SUP = "\x1b[1;2A", TAB = "\t", ESC = "\x1b", PGDN = "\x1b[6~", PGUP = "\x1b[5~";
 const KEY = /\x1b\[[0-9;]*[A-Za-z~]|./gsu;
 
-// The key panel draws each entry as its keys, then its label; a second column is three spaces from the first.
+// The key panel draws each entry as its keys, then its label; a second column is at least two spaces from the first.
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const row = (keys: string, label: string) => new RegExp(`(?:│ |   )${esc(keys)} +${esc(label)}(?: |\\s*│)`);
+const row = (keys: string, label: string) => new RegExp(`(?:│ |  )${esc(keys)} +${esc(label)}(?: |\\s*│)`);
 const listing = (e: { keys: string; label: string }[]) => e.map((x) => `${x.keys} ${x.label}`);
 const settle = () => new Promise((r) => setTimeout(r, 30));
 async function open(over?: Over, props: { ai?: Review["ai"]; suggested?: Review["suggested"]; blind?: boolean; dryRun?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined } = {}) {
@@ -86,10 +87,20 @@ async function open(over?: Over, props: { ai?: Review["ai"]; suggested?: Review[
   await settle();
   // One key at a time: a handler closes over the state of its render, so two keys in one chunk would both see the old cursor.
   const press = async (keys: string) => { for (const k of keys.match(KEY) ?? []) { app.stdin.write(k); await settle(); } };
-  return { r, app, press, outcomes, frame: () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "") };
+  return { r, app, press, outcomes, cols: props.cols ?? 120, rows: props.rows ?? 40, frame: () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "") };
 }
-const shown = (t: { frame: () => string }, s: KeyState) => { for (const e of entriesOf(s)) expect(t.frame(), `${e.keys} ${e.label}`).toMatch(row(e.keys, e.label)); };
-const notShown = (t: { frame: () => string }, s: KeyState) => expect(entriesOf(s).filter((e) => !/copy|submit|quit|…$/.test(e.label)).some((e) => row(e.keys, e.label).test(t.frame()))).toBe(false);
+type Shown = { frame: () => string; cols: number; rows: number };
+/** The key panel for state `s` as the screen lays it out at this size: the submit preview (and `full`) is the full-screen one. */
+const panelAt = (t: Shown, s: KeyState, full = false) => {
+  const L = layoutOf(t.cols, t.rows - 1, { full: full || (s.state === "submit" && s.step === "preview") });
+  return panelOf(panelTitle(s), entriesOf(s), L.panelW, L.bottomH);
+};
+/** Every line of the state's key panel is on the screen, and the grid holds every entry, secondaries included, at this size. */
+const shown = (t: Shown, s: KeyState, full = false) => {
+  const p = panelAt(t, s, full);
+  for (const l of p.lines) expect(t.frame(), plain(l)).toContain(plain(l).trimEnd());
+  if (p.fit === "grid") for (const e of entriesOf(s)) expect(t.frame(), `${e.keys} ${e.label}`).toMatch(row(e.keys, e.label));
+};
 
 test("rail: the current chapter is marked with its hunks, a read chapter is ticked, findings are counted", async () => {
   const t = await open();
@@ -100,6 +111,25 @@ test("rail: the current chapter is marked with its hunks, a read chapter is tick
   expect(t.frame()).toContain("✓ 1 Core change");
   expect(t.frame()).toContain("▸ 2 The ts side");
   expect(t.r.doc.human.visited).toEqual([h1!.id, h2!.id]);
+});
+
+test("layout: the bottom panel is a third of the screen, 8 to 14 rows; the middle keeps its room; full-screen takes all but the status area", () => {
+  // The rows the app lays out are the terminal's less one.
+  expect([24, 28, 32, 40, 60, 80].map((r) => bottomHeight(r - 1))).toEqual([8, 9, 10, 13, 14, 14]);
+  for (const [cols, rows] of [[120, 31], [100, 27], [80, 23], [60, 19], [200, 59]] as const) {
+    const L = layoutOf(cols, rows);
+    expect(4 + L.middleH + L.bottomH + 1, `${cols}x${rows}`).toBe(rows); // status, middle, bottom panel, footer
+    expect(L.middleH, `${cols}x${rows}`).toBeGreaterThanOrEqual(8);
+    expect(L.contentW + L.panelW).toBe(cols);
+    expect(L.contentW / cols).toBeGreaterThanOrEqual(0.6); // the content area is about two thirds
+    // The finding box on its line never leaves the code window fewer than three rows.
+    expect(L.middleH - 2 - (3 + boxLines(L.middleH)), `${cols}x${rows}`).toBeGreaterThanOrEqual(3);
+  }
+  expect(boxLines(16)).toBe(2);
+  const F = layoutOf(120, 31, { full: true });
+  expect(F.middleH).toBe(0);
+  expect(F.bottomH).toBe(31 - 4 - 1);
+  expect(F.contentRows).toBe(F.bottomH - 3);
 });
 
 test("rail: below 100 columns it collapses to chapter numbers and the code keeps the room", async () => {
@@ -234,7 +264,7 @@ test("Enter on a line writes your own finding there, shown under the line with a
   await t.press("\r");
   expect(t.r.doc.human.comments.map((n) => [n.hunk, n.side, n.line, n.text])).toEqual([[h1!.id, "new", 11, "why 42?"]]);
   expect(t.frame()).toMatch(/» why 42\?/);
-  expect(t.frame()).toContain("1 comment");
+  expect(t.frame()).toContain("comments 1");
 });
 
 test("submit flow: s asks for a verdict, previews the write-up, Esc goes back, Enter submits", async () => {
@@ -406,18 +436,15 @@ test("highlight: on changed lines only weight and slant differ, so the +/- colou
   expect(sliceSpans([{ kind: "keyword", text: "const" }, { kind: "plain", text: " x" }], 3, 6)).toEqual([{ kind: "keyword", text: "st" }, { kind: "plain", text: " " }]);
 });
 
-test("layout: 100 columns is the edge of the narrow rail; the float never takes the cursor's room; pages stay in range", () => {
-  expect(layoutOf(99).narrow).toBe(true);
-  expect(layoutOf(100).narrow).toBe(false);
-  expect(layoutOf(80).codeW).toBeGreaterThan(60);
-  for (const rows of [12, 20, 31, 60]) for (const tall of [false, true]) {
-    const h = floatHeight(500, rows, tall);
-    expect(rows - 5 - h).toBeGreaterThanOrEqual(3);
-  }
-  expect(floatHeight(1, 40, false)).toBe(4);
-  expect(clampScroll(99, 40, 10)).toBe(33);
-  expect(clampScroll(-5, 40, 10)).toBe(0);
-  expect(pageStep(10)).toBe(6);
+test("layout: 100 columns is the edge of the narrow rail; zen gives the code the rail's width; pages stay in range", () => {
+  expect(layoutOf(99, 31).narrow).toBe(true);
+  expect(layoutOf(100, 31).narrow).toBe(false);
+  expect(layoutOf(80, 23).codeW).toBeGreaterThan(60);
+  expect(layoutOf(120, 31, { zen: true }).railW).toBe(0);
+  expect(layoutOf(120, 31, { zen: true }).codeW).toBe(layoutOf(120, 31).codeW + layoutOf(120, 31).railW);
+  expect(clampScroll(99, 40, 7)).toBe(33);
+  expect(clampScroll(-5, 40, 7)).toBe(0);
+  expect(pageStep(7)).toBe(6);
   expect(wrapText("aaa bbb ccc\n\nd", 7)).toEqual(["aaa bbb", "ccc", "", "d"]);
 });
 
@@ -468,7 +495,7 @@ test("blind: before visiting, the gutter has no ▲, the rail shows ▲?, → an
   const t = await open({ plan: { summary: "", by: "guide", mechanical: [], chapters: [{ title: "Both", intent: "Check it", why: "w", hunks: [h1!.id, h2!.id] }] } }, { blind: true });
   expect(t.frame()).not.toContain("▲ ");
   expect(t.frame()).toContain("Both ▲?");
-  expect(t.frame()).toContain("0 ▲?"); // header: nothing revealed, something hidden
+  expect(t.frame()).toContain("to decide none · more hidden ▲?"); // status: nothing revealed, something hidden
   await t.press("jj" + RIGHT);
   expect(t.frame()).toContain("Hidden until you have been through this chapter");
   expect(t.frame()).not.toContain("answer is hard-coded");
@@ -559,7 +586,7 @@ test("triage i: ignore takes an optional private note, never a comment; each mov
   expect(t.r.doc.human.comments).toEqual([]);
   expect(t.frame()).toContain("3/3 decided");
   expect(t.frame()).toContain("Every finding is decided");
-  expect(t.frame()).toContain("0 ▲"); // the header counts what is left to decide
+  expect(t.frame()).toContain("to decide none"); // the status area counts what is left to decide
 });
 
 test("triage: pressing b, c or i again changes the decision; the comment is edited, not duplicated, and ignoring drops it", async () => {
@@ -728,12 +755,12 @@ test("resize: a terminal that changes size recomputes the layout, and wipes the 
   expect(app.frames.includes(WIPE)).toBe(true);
 });
 
-test("resize: a terminal below 40x10 shows a one-line notice, and the review comes back when it grows", async () => {
+test("resize: a terminal below 60x20 shows a one-line notice, and the review comes back when it grows", async () => {
   const r = fixture();
   const app = render(<App review={r} files={files} onDone={() => {}} />);
   const out = app.stdout as unknown as { columns: number; rows: number; emit: (e: string) => boolean };
   const strip = () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "");
-  resizeTo(out, 30, 8);
+  resizeTo(out, 59, 30);
   await new Promise((r) => setTimeout(r, 120));
   expect(strip()).toContain("terminal too small");
   expect(strip().split("\n").length).toBe(1);
@@ -743,10 +770,10 @@ test("resize: a terminal below 40x10 shows a one-line notice, and the review com
   expect(strip()).not.toContain("too small");
 });
 
-test("tooSmall: the limits are 40 columns and 10 rows", () => {
-  expect(tooSmall({ cols: 39, rows: 40 })).toBe(true);
-  expect(tooSmall({ cols: 120, rows: 9 })).toBe(true);
-  expect(tooSmall({ cols: 40, rows: 10 })).toBe(false);
+test("tooSmall: the limits are 60 columns and 20 rows", () => {
+  expect(tooSmall({ cols: 59, rows: 40 })).toBe(true);
+  expect(tooSmall({ cols: 120, rows: 19 })).toBe(true);
+  expect(tooSmall({ cols: 60, rows: 20 })).toBe(false);
 });
 
 test("an imported review's verdict is in the opening summary as information only; submit does not start from it", async () => {
@@ -765,6 +792,7 @@ test("an imported review's verdict is in the opening summary as information only
 test("the in-house suggestion shows its reason in the summary and as a picker hint, and never becomes the default", async () => {
   const t = await open({}, { suggested: [{ by: "prview", verdict: "comment", reason: "1 warn: Off by one" }, { by: "imported", verdict: "approve" }] });
   expect(t.frame()).toContain("prview's review suggested Comment: 1 warn: Off by one.");
+  expect(t.frame()).toContain("suggested Comment"); // and in the status area, the in-house one only
   await t.press("s");
   expect(t.frame()).toContain("verdict ›");
   expect(t.frame()).toContain("suggested, information only: prview Comment, imported Approve");
@@ -778,14 +806,13 @@ const SUMMARY = "Replaces the hard-coded answer with one derived from the input.
 const withSummary = (plan: Partial<Doc["plan"]> = {}) => ({ plan: { summary: SUMMARY, by: "guide", mechanical: [], chapters: [{ title: "Core change", intent: "Check the answer is derived", why: "It is the heart of it.", hunks: [h1!.id] }, { title: "The ts side", intent: "Check the type", why: "Second.", hunks: [h2!.id] }], ...plan } });
 const models = { guide: "g", critic: "c", refute: "r", ask: "a" };
 
-test("opening summary: a double-ruled box titled as the summary, above the code; the code's keys act beside it; Esc closes it", async () => {
+test("opening summary: in the content area under the code, titled as the summary; the code's keys act beside it; Esc closes it", async () => {
   const t = await open(withSummary());
   const f = t.frame();
   expect(f).toContain("Summary of this change · not a finding");
   expect(f).toContain(SUMMARY);
-  expect(f).toContain("╔"); // findings are round boxes (╭), so the two cannot be mistaken
-  expect(f).not.toContain("╭");
-  expect(f.indexOf("Summary of this change")).toBeLessThan(f.indexOf("keep")); // above the first code line, not hugging the ▲ line
+  expect(f).not.toContain("╭"); // no box over the code: only a finding has one, on its line
+  expect(f.indexOf("Summary of this change")).toBeGreaterThan(f.indexOf("keep")); // below the code, in the bottom panel
   expect(f).not.toMatch(/Prepared by/); // no provenance without runs
   expect(f).toContain("Esc closes this; a i brings it back"); // the box names its keys, as bound now
   shown(t, { state: "code" }); // the code's panel: the summary is only something to read
@@ -803,34 +830,34 @@ test("a i brings the summary back after Esc closed it; with none, it says so", a
   expect(t.frame()).not.toContain("Summary of this change");
   await t.press("ai");
   expect(t.frame()).toContain("Summary of this change · not a finding");
-  expect(t.frame()).toContain("╔");
+  expect(t.frame()).toContain(SUMMARY);
   const none = await open(withSummary({ summary: "" }));
   expect(none.frame()).not.toContain("Summary of this change");
+  expect(none.frame()).toContain("Nothing here. a i shows the summary"); // the empty content area says how to fill it
   await none.press("ai");
   expect(none.frame()).toContain("no summary for this review");
-  expect(none.frame()).not.toContain("╔");
 });
 
-test("opening summary: a finding box keeps its own look, and the summary names who prepared it only when every run has a model id", async () => {
+test("opening summary: a finding opens on its line and in the content area, and the summary names who prepared it only when every run has a model id", async () => {
   const t = await open(withSummary(), { ai: { models, at: "now", errors: [], runs: [{ role: "guide", model: "claude-opus-5-5", ms: 1 }, { role: "critic", model: "claude-opus-5-5", ms: 1 }] } });
   expect(t.frame()).toContain("Prepared by claude-opus-5-5 (guide, critic)");
   await t.press("gf");
-  expect(t.frame()).toContain("╭");
-  expect(t.frame()).not.toContain("╔");
+  expect(t.frame()).toContain("╭ ▲ critic · bug · blocking");
+  expect(t.frame()).not.toContain("Prepared by"); // the content area shows one thing at a time
   const old = await open(withSummary(), { ai: { models, at: "now", errors: [], runs: [{ role: "guide", ms: 1 }, { role: "critic", ms: 1 }] } });
   expect(old.frame()).toContain(SUMMARY);
   expect(old.frame()).not.toContain("Prepared by");
   expect(old.frame()).not.toContain("unknown");
 });
 
-test("Tab moves focus into the box: the arrows scroll it, y copies it, Tab or Esc comes back; with nothing there it says so", async () => {
+test("Tab moves focus into the content area: the arrows scroll it, y copies it, Tab or Esc comes back; with nothing there it says so", async () => {
   const long = Array.from({ length: 60 }, (_, i) => `line ${i}`).join("\n");
   const t = await open(withSummary({ summary: long }));
   expect(t.frame()).toContain("Tab to scroll"); // the box says it scrolls, and how
   await t.press(TAB);
   expect(t.frame()).toContain("focused");
   shown(t, { state: "content" });
-  expect(listing(entriesOf({ state: "content" }))).toEqual(["↓/↑ j/k scroll", "PgDn/PgUp ctrl-d/ctrl-u page", "y copy", "Tab back"]);
+  expect(listing(entriesOf({ state: "content" }))).toEqual(["↓/↑ j/k scroll", "PgDn/PgUp ctrl-d/ctrl-u page", "y copy", "Tab back", "v view…"]);
   await t.press("jj" + DOWN);
   expect(t.r.pos.line).toBe(0); // the arrows scroll the box, not the code
   expect(t.frame()).toMatch(/· 4-\d+\/\d+/);
@@ -858,7 +885,7 @@ test("← shows the chapter's intent and why (where the table of contents will);
 
 test("keys that come with later changes say so, and do nothing else", async () => {
   const t = await open();
-  for (const [keys, id] of [["fh", "filter.high"], ["vz", "view.zen"], ["vc", "view.fullscreen"], ["as", "ai.draft"], ["\\", "review.settings"]] as const) {
+  for (const [keys, id] of [["fh", "filter.high"], ["as", "ai.draft"], ["\\", "review.settings"]] as const) {
     await t.press(keys);
     expect(t.frame(), id).toContain(`${keyOf(id)} `);
     expect(t.frame(), id).toContain("not built yet, coming with");
@@ -945,7 +972,7 @@ test("verdict and preview: the panel lists what acts; x and v appear only when t
   expect(g.outcomes).toEqual([{ kind: "submit", hook: true, coverage: true }]);
 });
 
-test("the panel never covers the cursor line or the open box's text, at any width or height", async () => {
+test("the bottom panel never covers the cursor line or the finding's box, and its text is all reachable, at any width or height", async () => {
   for (const [cols, rows] of [[140, 40], [100, 30], [90, 28], [80, 24], [60, 20], [100, 20]] as const) {
     const t = await open(undefined, { cols, rows });
     await t.press("gf"); // a finding box open under the cursor line, with its panel
@@ -953,7 +980,9 @@ test("the panel never covers the cursor line or the open box's text, at any widt
     const at = `${cols}x${rows}`;
     expect(f, at).toContain("let answer = 42"); // the cursor line
     expect(f, at).toContain("Hard-coded answer in main");
-    expect(f, at).toContain("42 appears with no source"); // the box's text, to its last line
+    // The finding's whole text is in the content area; on a short screen the last of it is a page down.
+    for (let i = 0; i < 3 && !t.frame().includes("42 appears with no source"); i++) await t.press(PGDN);
+    expect(t.frame(), at).toContain("42 appears with no source");
     expect(f.split("\n").length, at).toBeLessThanOrEqual(rows);
     for (const line of f.split("\n")) expect([...line].length, at).toBeLessThanOrEqual(cols);
     await t.press("x");
@@ -962,32 +991,36 @@ test("the panel never covers the cursor line or the open box's text, at any widt
   }
 });
 
-test("below 100 columns the code's panel still lists every key in a grid; too short, it collapses to one line", async () => {
-  const t = await open(undefined, { cols: 90, rows: 40 });
-  shown(t, { state: "code" });
-  for (const line of t.frame().split("\n")) expect([...line].length).toBeLessThanOrEqual(90);
-  const short = await open(undefined, { cols: 90, rows: 14 });
-  const lines = short.frame().split("\n");
-  expect(lines.some((l) => l.includes("↓/↑ j/k line"))).toBe(true);
-  expect(short.frame()).not.toContain("┌"); // no box: one dim line
+test("the key panel at narrow widths: the grid drops the secondaries, then flows; every primary and label is still there", async () => {
+  for (const [cols, rows] of [[90, 40], [80, 24], [60, 20]] as const) {
+    const t = await open(undefined, { cols, rows });
+    shown(t, { state: "code" });
+    const p = panelAt(t, { state: "code" });
+    if (p.fit !== "flow") for (const e of entriesOf({ state: "code" })) expect(t.frame(), `${cols}x${rows} ${e.label}`).toMatch(row(e.prim, e.label));
+    for (const line of t.frame().split("\n")) expect([...line].length).toBeLessThanOrEqual(cols);
+    expect(t.frame().split("\n").length).toBeLessThanOrEqual(rows);
+  }
 });
 
-test("panelOf: the fewest columns that fit the height; one line when none fits; always within the width", () => {
-  const e = (n: number) => Array.from({ length: n }, (_, i) => ({ keys: String.fromCharCode(97 + i), label: `act${i}` }));
-  const one = panelOf("t", e(4), 80, 40);
-  expect(one).toMatchObject({ boxed: true, height: 7 }); // border, title, four rows
-  const wide = panelOf("t", e(20), 80, 40); // cap 13 → 10 inner rows → two columns
-  expect(wide.boxed).toBe(true);
-  expect(wide.lines.length).toBe(10);
-  expect(wide.width).toBeLessThanOrEqual(80);
-  expect(panelOf("t", e(20), 12, 40)).toMatchObject({ boxed: false, height: 1 }); // no grid fits 12 columns
-  const tiny = panelOf("t", e(20), 30, 12);
-  expect(tiny.boxed).toBe(false);
-  expect(tiny.lines[0]!.length).toBeLessThanOrEqual(29);
-  expect(tiny.lines[0]).toMatch(/…$/);
-  expect(panelCap(40)).toBe(13);
-  expect(panelCap(19)).toBe(1); // never so tall that a box and the code lose their room
-  for (const rows of [19, 24, 30, 40, 80]) expect(rows - panelCap(rows)).toBeGreaterThanOrEqual(18);
+test("panelOf: the fewest columns that fit the height, secondaries dim; without them when too wide; flowing, then cut with …", () => {
+  const e = (n: number, sec = ""): Entry[] => Array.from({ length: n }, (_, i) => ({ keys: [String.fromCharCode(97 + i), sec].filter(Boolean).join(" "), prim: String.fromCharCode(97 + i), sec, label: `act${i}` }));
+  const one = panelOf("t", e(4, "x"), 40, 10);
+  expect(one.fit).toBe("grid");
+  expect(one.lines.map(plain)).toEqual(["a x  act0", "b x  act1", "c x  act2", "d x  act3"]);
+  expect(one.lines[0]!.find((s) => s.text === " x")?.dim).toBe(true); // the secondary is drawn dim
+  const two = panelOf("t", e(12), 40, 10); // 7 rows inside the border and title: two columns
+  expect(two.fit).toBe("grid");
+  expect(two.lines.length).toBe(7);
+  expect(plain(two.lines[0]!)).toBe("a  act0  h  act7");
+  const noSec = panelOf("t", e(12, "shift-x"), 30, 10); // with secondaries the two columns are wider than 26
+  expect(noSec.fit).toBe("primaries");
+  expect(noSec.lines.map(plain).join(" ")).not.toContain("shift-x");
+  const flow = panelOf("t", e(20), 30, 6); // 3 rows: no grid fits, the entries flow
+  expect(flow.fit).toBe("flow");
+  expect(flow.lines.length).toBe(3);
+  expect(plain(flow.lines[2]!)).toMatch(/…$/);
+  for (const l of flow.lines) expect(plain(l).length).toBeLessThanOrEqual(26);
+  expect(panelOf("t", [], 30, 6).lines).toEqual([]);
 });
 
 // ---------------------------------------------------------------- configurable bindings
@@ -1059,7 +1092,7 @@ test("? a question: the top answers show the action, the user's key, where it wo
   expect(f).toMatch(/1\. ignore: i, in an open finding/);
   expect(f).toMatch(/[2-4]\. /); // several answers, not one
   expect(f).not.toMatch(/5\. /);
-  expect(listing(entriesOf({ state: "content", results: true }))).toEqual(["↓/↑ j/k select", "PgDn/PgUp ctrl-d/ctrl-u page", "y copy", "Tab close"]);
+  expect(listing(entriesOf({ state: "content", results: true }))).toEqual(["↓/↑ j/k select", "PgDn/PgUp ctrl-d/ctrl-u page", "y copy", "Tab close", "v view…"]);
   shown(t, { state: "content", results: true }); // focus is in the results
   await t.press(ESC);
   expect(t.frame()).not.toContain("Search the docs ·");
@@ -1131,4 +1164,160 @@ test("a hunk line with an OSC/CSI payload is drawn with visible stand-ins; no ra
   expect(efiles[0]!.hunks[0]!.lines.some((l) => l.text.includes("\x1b]0;pwned\x07"))).toBe(true);
   expect(criticPrompt({ title: "t" }, { title: "c", intent: "i", why: "w", hunks: [hunksOf(efiles)[0]!.id] }, hunksOf(efiles))).toContain("\x1b]0;pwned\x07");
   expect(visible("a\tb\x7f")).toBe("a\tb␡");
+});
+
+// ---------------------------------------------------------------- layout v2: the regions
+
+/** The rows of a frame: the status area is the first four, the bottom panel and the footer the last ones. */
+const regions = (t: Shown) => {
+  const lines = t.frame().split("\n"), L = layoutOf(t.cols, t.rows - 1);
+  return { status: lines.slice(0, 4).join("\n"), middle: lines.slice(4, 4 + L.middleH).join("\n"), bottom: lines.slice(4 + L.middleH, 4 + L.middleH + L.bottomH).join("\n"), footer: lines[4 + L.middleH + L.bottomH] ?? "" };
+};
+
+test("status area: the title on its own line, then separate labelled fields; the in-house suggestion only", async () => {
+  const t = await open({ findings: [finding, f2, f3] }, { suggested: [{ by: "prview", verdict: "request_changes" }, { by: "imported", verdict: "approve" }] });
+  const { status, middle } = regions(t);
+  const [top, title, fields, bottom] = status.split("\n");
+  expect(top).toMatch(/^┌─+┐$/);
+  expect(title).toMatch(/^│ A change\s+│?$/);
+  expect(fields).toContain("branches main ← x   read 1/2   to decide ▲ 1 high · 1 medium · 1 low   comments 0   suggested Request changes");
+  expect(fields).not.toContain("Approve");
+  expect(bottom).toMatch(/^└─+┘$/);
+  expect(middle).toContain("READ IN ORDER");
+});
+
+test("status fields (pure): a PR shows its number and commits, a range its branches; narrow widths drop whole fields in order", () => {
+  const base: StatusInput = { label: "acme/app#1016", base: "a".repeat(40), head: "b".repeat(40), read: { seen: 1, total: 5 }, open: { blocking: 2, warn: 1, nit: 0 }, hidden: false, withdrawn: 0, comments: 3, suggested: "Comment" };
+  const all = statusFields(base);
+  expect(all.map((f) => `${f.label} ${f.value}`)).toEqual(["PR #1016", "commits aaaaaaa ← bbbbbbb", "read 1/5", "to decide ▲ 2 high · 1 medium", "comments 3", "suggested Comment"]);
+  expect(statusFields({ ...base, label: "main..feature", suggested: undefined }).map((f) => f.key)).toEqual(["branch", "read", "findings", "comments"]);
+  expect(statusFields({ ...base, open: { blocking: 0, warn: 0, nit: 0 }, hidden: true, withdrawn: 2 }).find((f) => f.key === "findings")!.value).toBe("none · more hidden ▲? · 2 withdrawn");
+  const w = (fs: ReturnType<typeof statusFields>) => fs.map((f) => `${f.label} ${f.value}`).join("   ").length;
+  expect(fitFields(all, 200)).toEqual(all);
+  let prev = all.length;
+  const dropped: string[] = [];
+  for (let width = w(all); width > 0; width--) {
+    const kept = fitFields(all, width);
+    if (kept.length < prev) { dropped.push(...all.filter((f) => !kept.includes(f) && !dropped.includes(f.key)).map((f) => f.key)); prev = kept.length; }
+    if (kept.length > 1) expect(w(kept)).toBeLessThanOrEqual(width); // whole fields only, never one cut to fit another
+  }
+  expect(dropped).toEqual([...DROP_ORDER]);
+  expect(fitFields(all, 5).map((f) => f.key)).toEqual(["findings"]); // never dropped
+});
+
+test("bottom panel: the content area on the left and the key panel on the right share the same rows, under the code", async () => {
+  for (const [cols, rows] of [[120, 32], [100, 28], [80, 24]] as const) {
+    const t = await open(withSummary(), { cols, rows });
+    const { middle, bottom } = regions(t);
+    const at = `${cols}x${rows}`;
+    expect(middle, at).toContain("let answer");
+    expect(bottom, at).toContain("Summary of this change");
+    const title = bottom.split("\n")[1]!;
+    expect(title, at).toMatch(/Summary of this change.*keys/); // one row: content left, keys right
+    expect(bottom.split("\n").length, at).toBe(layoutOf(cols, rows - 1).bottomH);
+    shown(t, { state: "code" });
+  }
+});
+
+test("content area: prompts, docs search, answers and the verdict show there, one at a time, not over the code", async () => {
+  const t = await open(withSummary());
+  await t.press("\r");
+  expect(regions(t).bottom).toContain("new finding ›");
+  expect(regions(t).bottom).toContain("Your own finding at src/a.rs:10");
+  expect(regions(t).bottom).not.toContain(SUMMARY); // one thing at a time
+  await t.press(ESC);
+  expect(regions(t).bottom).toContain(SUMMARY); // the prompt gone, what was there is back
+  await t.press("?");
+  expect(regions(t).bottom).toContain("search the docs ›");
+  await t.press("mark this finding as wrong\r");
+  expect(regions(t).bottom).toContain("Search the docs · mark this finding as wrong");
+  expect(regions(t).bottom).toMatch(/1\. ignore: i/);
+  await t.press(ESC + "gfi");
+  expect(regions(t).bottom).toContain("ignore · private note ›");
+  expect(regions(t).middle).toContain("╭ ▲ critic"); // the finding stays open on its line
+  await t.press(ESC + ESC + "s");
+  expect(regions(t).bottom).toContain("verdict ›");
+  expect(regions(t).middle).toContain("let answer");
+});
+
+test("finding: a short box on its line (header in its border, bold title, at most two lines), the detail in the content area", async () => {
+  const evidence = Array.from({ length: 6 }, (_, i) => `evidence-${i}`).join("\n");
+  const t = await open({ findings: [{ ...finding, evidence }] });
+  await t.press("gf");
+  const { middle, bottom } = regions(t);
+  const box = middle.split("\n").filter((l) => /[╭│╰]/.test(l.slice(t.cols > 100 ? 34 : 9)));
+  expect(middle).toMatch(/╭ ▲ critic · bug · blocking · 0\/1 decided ─+╮/);
+  expect(middle).toContain("Hard-coded answer in main");
+  expect(middle).toContain("answer is hard-coded");
+  expect(middle).toContain("evidence-0");
+  expect(middle).not.toContain("evidence-1"); // two lines at most in the box
+  expect(box.length).toBeLessThanOrEqual(5);
+  for (let i = 0; i < 6; i++) expect(bottom).toContain(`evidence-${i}`); // all of it below
+});
+
+test("v z hides the table of contents and gives the code its width; again brings it back", async () => {
+  const t = await open();
+  const longs = () => (regions(t).middle.match(/long/g) ?? []).length;
+  expect(regions(t).middle).toContain("READ IN ORDER");
+  const before = longs();
+  await t.press("vz");
+  expect(regions(t).middle).not.toContain("READ IN ORDER");
+  expect(regions(t).middle).not.toContain("Core change");
+  expect(regions(t).middle).toContain("· zen");
+  expect(longs()).toBeGreaterThan(before + 5); // the long line shows more of itself
+  await t.press("j"); // the code's keys act as before
+  expect(t.r.pos.line).toBe(1);
+  await t.press("vz");
+  expect(regions(t).middle).toContain("READ IN ORDER");
+});
+
+test("v c makes the content area full-screen: the arrows scroll it, Esc or v c restores it; with nothing there it says so", async () => {
+  const long = Array.from({ length: 60 }, (_, i) => `line ${i}`).join("\n");
+  const t = await open(withSummary({ summary: long }), { cols: 120, rows: 32 });
+  await t.press("vc");
+  const lines = t.frame().split("\n");
+  expect(t.frame()).not.toContain("READ IN ORDER"); // no middle
+  expect(t.frame()).not.toContain("let answer");
+  expect(lines[4]).toMatch(/^┌/); // the content area starts right under the status area
+  expect(t.frame()).toContain("line 20"); // far more of the text than the bottom panel holds
+  expect(t.frame()).toContain("· focused");
+  expect(regions(t).footer).toContain("v c or Esc restores the layout");
+  shown(t, { state: "content" }, true);
+  await t.press("jjj");
+  expect(t.r.pos.line).toBe(0); // the arrows scroll the content, not the code
+  expect(t.frame()).toMatch(/· 4-\d+\/\d+/);
+  await t.press(ESC);
+  expect(t.frame()).toContain("READ IN ORDER");
+  expect(t.frame()).not.toContain("focused");
+  await t.press("vc");
+  expect(t.frame()).not.toContain("READ IN ORDER");
+  await t.press("vc");
+  expect(t.frame()).toContain("READ IN ORDER");
+  await t.press(ESC + "vc"); // the summary closed: nothing to make full-screen
+  expect(t.frame()).toContain("the content area is empty");
+  expect(t.frame()).toContain("READ IN ORDER");
+});
+
+test("the submit preview reads full-screen; Esc goes back to the verdict with the code in view", async () => {
+  const t = await open();
+  await t.press("sa");
+  expect(t.frame()).not.toContain("READ IN ORDER");
+  expect(t.frame()).toContain("Approve · Enter submits");
+  shown(t, { state: "submit", step: "preview", dryRun: false, hook: null, coverage: null });
+  await t.press(ESC);
+  expect(t.frame()).toContain("READ IN ORDER");
+  expect(t.frame()).toContain("verdict ›");
+});
+
+test("smoke sizes: every region fits 120x32 and 100x28, in each state", async () => {
+  for (const [cols, rows] of [[120, 32], [100, 28]] as const) {
+    for (const keys of ["", "gf", TAB, "vc", "g", "\r", "?mark this finding as wrong\r", "s", "sa"]) {
+      const t = await open(withSummary(), { cols, rows });
+      await t.press(keys);
+      const f = t.frame(), at = `${cols}x${rows} ${JSON.stringify(keys)}`;
+      expect(f.split("\n").length, at).toBeLessThanOrEqual(rows);
+      for (const l of f.split("\n")) expect([...l].length, at).toBeLessThanOrEqual(cols);
+      expect(regions(t).status, at).toContain("A change");
+    }
+  }
 });

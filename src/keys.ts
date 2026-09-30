@@ -118,8 +118,8 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "filter.all", states: OUTSIDE, prefix: "f", key: "a", label: "all", description: "Show every finding.", coming: "filters" },
 
   // ---- v: view
-  { id: "view.zen", states: READING, prefix: "v", key: "z", label: "zen", description: "Hide or show the table of contents.", coming: "the new layout" },
-  { id: "view.fullscreen", states: READING, prefix: "v", key: "c", label: "full-screen content", description: "Make the content area full-screen, or restore it.", coming: "the new layout" },
+  { id: "view.zen", states: READING, prefix: "v", key: "z", label: "zen", description: "Hide or show the table of contents." },
+  { id: "view.fullscreen", states: [...READING, "content"], prefix: "v", key: "c", label: "full-screen content", description: "Make the content area full-screen, where the arrows scroll it, or restore it; Esc restores it too." },
   { id: "view.editor", states: READING, prefix: "v", key: "e", label: "editor", description: "Open the file in your editor at the cursor line." },
   { id: "view.wrap", states: READING, prefix: "v", key: "w", label: "wrap", description: "Wrap long lines onto more rows, or cut them again." },
 

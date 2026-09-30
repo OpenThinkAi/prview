@@ -27,11 +27,12 @@ What you get is a full-screen review, not a diff dump:
   rule may have missed.
 - **Findings in the gutter.** A critic (a model) raises findings anchored to a line; each one is
   handed to a fresh call with more of the file to refute, and only the survivors are shown (`▲`).
-  `→` on its line (or `g f` from anywhere) opens one: a bold title of at most 12 words first ("Missing test: X isn't covered"), the detail
-  beneath, and a header saying who raised it (`▲ critic · bug · warn`). A finding with no title of
+  `→` on its line (or `g f` from anywhere) opens one: a short box on its line with a header in its border saying who
+  raised it (`▲ critic · bug · warn`), a bold title of at most 12 words ("Missing test: X isn't covered") and at most two
+  lines of its text, and the whole of it in the content area. A finding with no title of
   its own shows its claim's first sentence.
   A withdrawal has to cite the line or lines that handle the case; one that cites no line it was shown
-  is kept as upheld. A downgrade has to cite a line too, or the severity stands. The header counts the
+  is kept as upheld. A downgrade has to cite a line too, or the severity stands. The status area counts the
   withdrawn findings (`2 withdrawn`); they are never decided or posted.
 - **The pull request is data, never instructions.** Its title, description, paths, code and file
   excerpts (and anything a model wrote about them) reach every model inside delimited `<pr_data>`
@@ -43,41 +44,54 @@ What you get is a full-screen review, not a diff dump:
   the next; `⇧↓`/`⇧↑` (`J`/`K`) move a chapter (terminals that send shift-arrows as `\x1b[1;2B` and the like are
   read; `J`/`K` always work). `→` (`l`) opens the finding on the cursor line, `←` (`h`) shows the chapter's intent
   and why (where the table of contents will), `Enter` writes your own finding on the line. Everything else sits
-  behind a letter prefix: `a` AI (`a i` the summary, `a ?` ask the model about this block), `v` view (`v e` your
-  editor, `v w` wrap), `g` go to (`g f`/`g F` next/previous finding, wrapping; `g h`/`g H` by severity, every
+  behind a letter prefix: `a` AI (`a i` the summary, `a ?` ask the model about this block), `v` view (`v z` zen,
+  hiding the table of contents; `v c` the content area full-screen; `v e` your editor; `v w` wrap), `g` go to (`g f`/`g F` next/previous finding, wrapping; `g h`/`g H` by severity, every
   blocking one first; `g g`/`g e` top/end of the file; `g 120 Enter` that line; `g c 3 Enter` that chapter) and
   `f` filter. `s` submits, `y` copies, `?` searches the docs, `q` quits. `Esc` backs out of anything: a pending
-  prefix, a finding, a prompt. Keys that arrive with later changes (the table of contents, `\` settings,
-  `a s` drafts, `f` filters, `v z` zen, `v c` full screen) are in the tables already and say so when pressed.
-- **A key panel, always there.** The bottom-left panel lists the keys for where you are, primary then secondary
+  prefix, full-screen, the content area, a finding, a prompt. Keys that arrive with later changes (the table of
+  contents, `\` settings, `a s` drafts, `f` filters) are in the tables already and say so when pressed.
+- **The screen.** A status area on top: the PR's title, then separate fields, each with a dim label: the PR number,
+  the branches (or commits), `read 3/5`, the findings still to decide by severity (`▲ 2 high · 1 medium`), the
+  comments, and the in-house review's suggested verdict when there is one. No field is cut to make room for another:
+  on a narrow terminal whole fields drop, the suggested verdict first, then the branches, the comments, the PR
+  number and the reading progress; the findings count stays. In the middle, the table of contents (the rail) and the
+  code. At the bottom, a panel of a third of the height (8 to 14 rows): the content area on the left and the key panel
+  on the right. The last row says what a key just did (`copied 214 chars`) or shows a chord being typed (`g 12`).
+  Below 60 columns or 20 rows the screen shows a one-line notice until the terminal is larger.
+- **A key panel, always there.** The bottom-right panel lists the keys for where you are, primary then secondary (dim)
   (`↓/↑ j/k line`), then the prefixes (`g go to…`); press a prefix and it shows that prefix's second keys. It is
   drawn from the same tables the key handler reads, and a test holds the two together per state and per prefix,
-  so it lists exactly what acts. It takes its rows out of the screen, so it never covers the cursor line or a
-  box's text: a third of the height at most, laid out in as many columns as the width needs, and on a short
-  terminal it collapses to one line.
+  so it lists exactly what acts. It has the bottom panel's height and a third of the width: its keys are laid out in
+  as few columns as the height allows; when that is too wide it drops the secondary keys, and when even that is too
+  wide the entries flow along the rows, cut with `…` at the end.
 - **Deciding on findings, one key each.** Step through them with `g f` and decide each as it opens: `b` block
   on it, `c` comment, `i` ignore; `x` (or `←`) closes it without deciding. `b` and `c` open the comment line at the
   finding's line, prefilled with its title, or with the comment you already wrote for it, so pressing one again
   edits it: `ctrl-u` clears the line, Enter saves it as your own line comment, Esc cancels. `i` takes an optional
   private note, kept in the document and never posted. Deciding again changes the decision (ignoring drops the
   comment a block or comment wrote). After each decision the next undecided finding opens, so a whole pass is
-  `g f` and then one key per finding; the box says how far along you are (`3/9 decided`), and the `▲` counts on
-  the rail and header are what is left to decide. Decisions are saved as you go (`human.decisions`).
-  `y` copies the open box (a finding, the chapter's why, an answer) as clean text: the original strings,
-  no borders, padding or hard wraps. With no box open it copies the line's `path:line`. It uses `pbcopy`,
+  `g f` and then one key per finding; the finding's header says how far along you are (`3/9 decided`), and the `▲`
+  counts on the rail and in the status area are what is left to decide. Decisions are saved as you go (`human.decisions`).
+  `y` copies the content area's main text (a finding, the summary, the chapter's why, an answer) as clean text: the
+  original strings, no borders, padding or hard wraps, never the key panel. With the content area empty it copies the
+  line's `path:line`. It uses `pbcopy`,
   `wl-copy` or `xclip`, else OSC 52 (works through tmux with `allow-passthrough on`, and over ssh);
   `PRVIEW_CLIPBOARD=osc52` forces the terminal route.
-- **Search the docs.** `?` opens a one-line question box: type what you want to do, in your own words ("mark
+- **Search the docs.** `?` opens a one-line question in the content area: type what you want to do, in your own words ("mark
   this finding as wrong"), and Enter shows the best three actions, each with its label, the key it has for you
   now, where it works and a line on how it works. `j`/`k` select, `y` copies the selected answer as plain text,
   Esc or Tab closes. It searches a small index committed with prview, so it is offline, calls no model and needs
   no config or models; a remapped key shows as you mapped it. (`a ?` is different: it asks a model.)
-- **A box** for whatever wants explaining: `←` the chapter's intent, a finding, an `a ?` answer. A review with a
-  summary opens on it: a double-ruled magenta box titled "Summary of this change · not a finding" at the top of
-  the hunk (findings are round boxes under their line), with "Prepared by …" only when the review recorded which
-  models ran. Esc closes it and `a i` brings it back (or says the review has no summary). The code's keys keep
-  working beside a box; `Tab` moves focus into it, where the arrows and `PgUp`/`PgDn` scroll it, and `Tab` or
-  Esc comes back. A finding pages with `PgUp`/`PgDn` directly.
+- **The content area** shows one thing at a time, with a title: the summary, `←` the chapter's intent and why, an
+  open finding's detail, docs search results, an `a ?` answer, a prompt (your own finding, a block or comment, an
+  ignore note, a question) and the submit steps. A review with a summary opens on it ("Summary of this change · not a
+  finding"), with "Prepared by …" only when the review recorded which models ran; Esc empties the content area and
+  `a i` brings the summary back (or says the review has no summary). The code's keys keep working beside it; `Tab`
+  moves focus into it (its border turns cyan and its title says `focused`), where the arrows and `PgUp`/`PgDn` scroll
+  it, and `Tab` or Esc comes back. A finding pages with `PgUp`/`PgDn` directly. `v c` makes the content area
+  full-screen, under the status area and beside the key panel, where the arrows scroll it; Esc or `v c` restores the
+  layout. The submit preview always reads full-screen. `v z` (zen) hides the table of contents so the code has the
+  width, and shows it again.
 - **Your editor for the real code.** `v e` opens the file at the line under the cursor in a
   worktree at the PR head (`$EDITOR`, default `hx`; VS Code, Zed and vim forms are handled).
   Quit the editor and you are back where you were. Inside tmux the editor opens in a split pane
@@ -139,7 +153,7 @@ and `prview keys` prints all of them by state and by prefix (action, primary, se
 any action with a `[keys]` table in the same config: `"<action>" = "k"` sets its primary key, and
 `"<action>" = { primary = "k", secondary = "j" }` either or both (`secondary = ""` removes the alias,
 `primary = ""` unbinds it). A prefixed action's key is its second key: `"go.next_finding" = "n"` makes it `g n`.
-The panel, the hints in boxes, docs search and `prview keys` all show your keys.
+The panel, the hints in the content area, docs search and `prview keys` all show your keys.
 
 ```toml
 [keys]
@@ -180,7 +194,7 @@ own words. So importing never merges someone else's comments, decisions or verdi
 each of their comments arrives as a finding (kind `comment`, source the document's producer, or
 `imported` when its findings name more than one) that you decide on like any other, `c` or `b`
 to adopt it as your own comment (prefilled with its title, yours to edit) and `i` to ignore it.
-Their verdict is shown in the opening summary box as information; submit never picks it for you.
+Their verdict is shown in the opening summary as information; submit never picks it for you.
 Their coverage, reveals and decisions are dropped. Only `--mine`, for your own export, keeps the
 `human` layer as it is.
 
