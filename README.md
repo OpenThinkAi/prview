@@ -32,13 +32,18 @@ What you get is a full-screen review, not a diff dump:
   pan sideways, `w` wraps it instead. In an open box `PgUp`/`PgDn` (or `ctrl-u`/`ctrl-d`) page.
 - **Notes and coverage.** `n` notes the line, `N` the whole change. Everything is saved as you go;
   `q` and come back later.
-- **Submit.** `s` picks a verdict and previews the write-up (notes with file and line, how much you
-  read, the findings you kept) and what Enter will do: write the finished document to
-  `$PRVIEW_HOME/submitted/<name>.json` (and `.md`), post your verdict and comments to the PR
-  (GitHub, through `gh`; a change with no platform stops at the file), and, if the document asks for
-  one, run its `on_submit` command. That command is shown in full and runs only if you press `x` in
-  the preview; Enter alone skips it. A failed post or command is reported, and the file is kept.
-  Only your own words are posted.
+- **Submit.** `s` picks a verdict, then (if you kept any findings) asks whether to post them as
+  comments: `y` or `n`, Enter is no, and only the finding's claim is posted, as your own line comment.
+  The preview then shows the write-up (notes with file and line, how much you read, the findings you
+  kept) and what Enter will do: write the finished document to `$PRVIEW_HOME/submitted/<name>.json`
+  (and `.md`), post your verdict and comments to the PR, and, if the document asks for one, run its
+  `on_submit` command. That command is shown in full and runs only if you press `x` in the preview;
+  Enter alone skips it. `v` adds a line saying how much you read to the posted summary (off by
+  default). On GitHub (through `gh`) this is one review: the head commit is checked first (a PR that
+  moved since the review is refused), a pending review gets your line comments (right side for lines
+  in the new file, left for the old), then it is submitted with your verdict and summary. A failed
+  post or command is reported, and the file is kept. Only your own words are posted.
+  `--dry-run` prints the API calls a submit would make and does nothing else.
 - **Blind first pass.** With `blind = true` in the config (or `--blind` for a run, `--no-blind` to turn
   it off) findings stay hidden in a chapter until you have visited every hunk in it, so you read the
   code before you read the critic. The gutter shows no `▲`, `f`, `d` and `]f` do nothing there, and the

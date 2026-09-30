@@ -24,7 +24,7 @@ import type { Beside } from "./editor.ts";
 import { describe, planOf } from "./submit.ts";
 
 /** `hook`: the human allowed the document's on_submit command for this submit (x in the preview). */
-export type Outcome = { kind: "quit" } | { kind: "submit"; hook: boolean } | { kind: "edit"; path: string; line: number };
+export type Outcome = { kind: "quit" } | { kind: "submit"; hook: boolean; findings: string[]; coverage: boolean } | { kind: "edit"; path: string; line: number };
 
 /** Everything the rail steps through, in reading order: each chapter's hunks, then the mechanical ones. */
 type Item = NavItem & { at: HunkAt; mechanical?: string };
@@ -41,7 +41,7 @@ function itemsOf(d: Doc, files: FileDiff[]): Item[] {
 const PAN = 8;
 const SEV = { blocking: "red", warn: "yellow", nit: "blue" } as const;
 type Float = { title: string; body: string; color?: string; tall?: boolean };
-type Mode = { kind: "nav" } | { kind: "comment"; general: boolean } | { kind: "ask" } | { kind: "verdict" } | { kind: "preview"; hook: boolean };
+type Mode = { kind: "nav" } | { kind: "comment"; general: boolean } | { kind: "ask" } | { kind: "verdict" } | { kind: "include" } | { kind: "preview"; hook: boolean; findings: string[]; coverage: boolean };
 
 export type AppProps = {
   review: Review; files: FileDiff[]; onDone: (o: Outcome) => void;
@@ -51,9 +51,11 @@ export type AppProps = {
   size?: { cols: number; rows: number };
   /** Blind first pass: a chapter's findings stay hidden until every hunk in it has been visited (or `F`). */
   blind?: boolean;
+  /** `--dry-run`: the preview says that submit will only print the API calls. */
+  dryRun?: boolean;
 };
 
-export function App({ review, files, onDone, beside, size, blind = false }: AppProps) {
+export function App({ review, files, onDone, beside, size, blind = false, dryRun = false }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const cols = size?.cols ?? (stdout.columns || 100), rows = (size?.rows ?? (stdout.rows || 40)) - 1;
@@ -136,10 +138,10 @@ export function App({ review, files, onDone, beside, size, blind = false }: AppP
   };
   // The preview ends with what Enter will do: where the file goes, where it posts, and the document's
   // command, if it has one, which runs only after its own keypress (x) in this preview.
-  const preview = (hook: boolean) => {
-    const p = planOf(r, files);
-    setMode({ kind: "preview", hook });
-    setFloat({ title: `${VERDICT[h.verdict!]} · Enter submits${p.hook ? `, x ${hook ? "disallows" : "allows"} the command` : ""}, Esc goes back`, color: "green", tall: true, body: `${writeup(d, files)}\n${describe(p, hook)}` });
+  const preview = (hook: boolean, findings: string[], coverage: boolean) => {
+    const p = planOf(r, files, { findings, coverage });
+    setMode({ kind: "preview", hook, findings, coverage });
+    setFloat({ title: `${VERDICT[h.verdict!]} · Enter ${dryRun ? "prints the calls" : "submits"}${p.hook ? `, x ${hook ? "disallows" : "allows"} the command` : ""}${p.adapter ? `, v ${coverage ? "drops" : "adds"} the coverage line` : ""}, Esc goes back`, color: "green", tall: true, body: `${writeup(d, files)}\n${describe(p, hook, dryRun)}` });
   };
 
   // Fast typing or a paste can deliver several plain characters in one chunk ("781G"): take them one at a time.
@@ -156,13 +158,23 @@ export function App({ review, files, onDone, beside, size, blind = false }: AppP
     if (mode.kind === "verdict") {
       const v: Verdict | undefined = ch === "a" ? "approve" : ch === "r" ? "request_changes" : ch === "c" ? "comment" : undefined;
       if (key.escape) { setMode({ kind: "nav" }); return; }
-      if (v) { h.verdict = v; save(r); preview(false); }
+      if (v) {
+        h.verdict = v; save(r);
+        // Kept findings are the critic's, not yours: posting them is a choice, and the answer starts as no.
+        if (d.findings.some(kept)) { setMode({ kind: "include" }); setFloat(null); } else preview(false, [], false);
+      }
+      return;
+    }
+    if (mode.kind === "include") {
+      if (key.escape) { setMode({ kind: "verdict" }); return; }
+      if (ch === "y" || ch === "n" || key.return) preview(false, ch === "y" ? d.findings.filter(kept).map((f) => f.id) : [], false);
       return;
     }
     if (mode.kind === "preview") {
       if (key.escape) { setMode({ kind: "verdict" }); setFloat(null); return; }
-      if (key.return) { onDone({ kind: "submit", hook: mode.hook }); exit(); return; }
-      if (ch === "x" && d.on_submit) { const at = scroll; preview(!mode.hook); setScroll(at); return; }
+      if (key.return) { onDone({ kind: "submit", hook: mode.hook, findings: mode.findings, coverage: mode.coverage }); exit(); return; }
+      if (ch === "x" && d.on_submit) { const at = scroll; preview(!mode.hook, mode.findings, mode.coverage); setScroll(at); return; }
+      if (ch === "v" && planOf(r, files).adapter) { const at = scroll; preview(mode.hook, mode.findings, !mode.coverage); setScroll(at); return; }
       scrollFloat(ch, key);
       return;
     }
@@ -280,7 +292,8 @@ export function App({ review, files, onDone, beside, size, blind = false }: AppP
   const footer = () => {
     switch (mode.kind) {
       case "verdict": return <Text><Text color="green" bold> verdict › </Text>a approve   r request changes   c comment   <Text dimColor>Esc cancel</Text></Text>;
-      case "preview": return <Text wrap="truncate" dimColor> Enter submits{d.on_submit ? ` · x ${mode.hook ? "disallow" : "allow"} the document's command` : ""} · Esc back to the verdict · j/k PgUp/PgDn scroll</Text>;
+      case "include": return <Text><Text color="green" bold> post your {d.findings.filter(kept).length} kept finding{d.findings.filter(kept).length === 1 ? "" : "s"} as comments? › </Text>y yes   <Text bold>n no</Text> (Enter)   <Text dimColor>Esc back</Text></Text>;
+      case "preview": return <Text wrap="truncate" dimColor> Enter {dryRun ? "prints the calls" : "submits"}{planOf(r, files).adapter ? ` · v ${mode.coverage ? "drop" : "add"} coverage line` : ""}{d.on_submit ? ` · x ${mode.hook ? "disallow" : "allow"} the document's command` : ""} · Esc back to the verdict · j/k PgUp/PgDn scroll</Text>;
       case "nav": return <Text wrap="truncate" dimColor> {L.narrow
         ? "j/k h/l hunk  ]f find  ? why  a ask  e edit  n note  w wrap  s send  q quit"
         : `j/k line  h/l hunk  J/K chapter  ]f finding  ${blind ? "F reveal  " : ""}? why  f/d finding  a ask  e edit  n/N note  w wrap  H/L pan  s submit  q quit`}{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
@@ -372,11 +385,11 @@ export function App({ review, files, onDone, beside, size, blind = false }: AppP
 }
 
 /** Run the app once; resolves with what the reader wants next. State lives on the review object and is saved as it changes. */
-export function show(review: Review, files: FileDiff[], beside?: Beside, blind = false): Promise<Outcome> {
+export function show(review: Review, files: FileDiff[], beside?: Beside, blind = false, dryRun = false): Promise<Outcome> {
   return new Promise((resolve) => {
     let outcome: Outcome = { kind: "quit" };
     process.stdout.write("\x1b[?1049h\x1b[H");
-    const app = render(<App review={review} files={files} beside={beside} blind={blind} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
+    const app = render(<App review={review} files={files} beside={beside} blind={blind} dryRun={dryRun} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
     app.waitUntilExit().then(() => { app.clear(); process.stdout.write("\x1b[?1049l"); save(review); resolve(outcome); });
   });
 }

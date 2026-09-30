@@ -65,10 +65,10 @@ function fixture(over: Over = {}): Review {
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 30));
-async function open(over?: Over, props: { blind?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined } = {}) {
+async function open(over?: Over, props: { blind?: boolean; dryRun?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined } = {}) {
   const outcomes: Outcome[] = [];
   const r = fixture(over);
-  const app = render(<App review={r} files={files} onDone={(o) => outcomes.push(o)} beside={props.beside} blind={props.blind} size={{ cols: props.cols ?? 120, rows: props.rows ?? 40 }} />);
+  const app = render(<App review={r} files={files} onDone={(o) => outcomes.push(o)} beside={props.beside} blind={props.blind} dryRun={props.dryRun} size={{ cols: props.cols ?? 120, rows: props.rows ?? 40 }} />);
   await settle();
   // One key at a time: a handler closes over the state of its render, so two keys in one chunk would both see the old cursor.
   const press = async (keys: string) => { for (const k of keys.match(/\x1b\[\d+~|./gsu) ?? []) { app.stdin.write(k); await settle(); } };
@@ -163,21 +163,23 @@ test("submit flow: s asks for a verdict, previews the write-up, Esc goes back, E
   expect(t.frame()).toContain("verdict ›");
   await t.press("r");
   expect(t.r.doc.human.verdict).toBe("request_changes");
+  expect(t.frame()).toContain("kept finding as comments?"); // the critic's finding is kept: posting it is asked, not assumed
+  await t.press("\r"); // Enter is no
   expect(t.frame()).toContain("Request changes");
   expect(t.frame()).toContain("why 42?");
   await t.press("\x1b");
   expect(t.frame()).toContain("verdict ›");
-  await t.press("c");
+  await t.press("cn");
   expect(t.outcomes).toEqual([]);
   await t.press("\r");
-  expect(t.outcomes).toEqual([{ kind: "submit", hook: false }]);
+  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, findings: [], coverage: false }]);
   expect(t.frame()).not.toContain("x allows"); // no command in the document, nothing to allow
 });
 
 test("submit flow: the document's command is shown in full and runs only after its own key, x", async () => {
   const t = await open();
   t.r.doc.on_submit = { run: ["notify-tool", "--file", "{file}"] };
-  await t.press("sa");
+  await t.press("san");
   await t.press("\x1b[6~\x1b[6~\x1b[6~"); // page down to the end of the preview
   expect(t.frame()).toContain("notify-tool --file");
   expect(t.frame()).toContain("t.json"); // {file}, filled in: the path the document is written to
@@ -189,16 +191,51 @@ test("submit flow: the document's command is shown in full and runs only after i
   expect(t.frame()).toContain("[ ] Not allowed");
   await t.press("x");
   await t.press("\r");
-  expect(t.outcomes).toEqual([{ kind: "submit", hook: true }]);
+  expect(t.outcomes).toEqual([{ kind: "submit", hook: true, findings: [], coverage: false }]);
 });
 
 test("submit flow: allowing the command does not outlive the preview; back to the verdict and it is off again", async () => {
   const t = await open();
   t.r.doc.on_submit = { run: ["notify-tool"] };
-  await t.press("sax");
+  await t.press("sanx");
   await t.press("\x1b");
-  await t.press("a\r");
-  expect(t.outcomes).toEqual([{ kind: "submit", hook: false }]);
+  await t.press("an\r");
+  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, findings: [], coverage: false }]);
+});
+
+test("submit flow: kept findings are only posted on a y; dismissed ones are not asked about", async () => {
+  const t = await open();
+  await t.press("say");
+  await t.press("\r");
+  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, findings: ["1"], coverage: false }]);
+
+  const u = await open({ findings: [finding] });
+  await u.press("d"); // dismiss the finding under the cursor
+  u.r.doc.human.dismissals = ["1"];
+  await u.press("sa");
+  expect(u.frame()).not.toContain("kept finding"); // nothing kept, nothing to ask
+  expect(u.frame()).toContain("On submit");
+});
+
+test("submit flow: v adds the coverage line for a platform that posts; off again with v; Esc backs out of the question", async () => {
+  const t = await open();
+  t.r.doc.target.platform = "github";
+  await t.press("sa");
+  await t.press("\x1b");
+  expect(t.frame()).toContain("verdict ›");
+  await t.press("an");
+  expect(t.frame()).toContain("v add coverage line");
+  await t.press("v");
+  expect(t.frame()).toContain("v drop coverage line");
+  await t.press("\r");
+  expect(t.outcomes).toEqual([{ kind: "submit", hook: false, findings: [], coverage: true }]);
+});
+
+test("submit flow: with --dry-run the preview says nothing will be posted", async () => {
+  const t = await open(undefined, { dryRun: true });
+  await t.press("san");
+  expect(t.frame()).toContain("Enter prints the calls");
+  expect(t.frame()).toContain("DRY RUN");
 });
 
 test("long lines: cut with an ellipsis, H/L pan, w wraps onto more rows and back", async () => {

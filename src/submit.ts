@@ -14,7 +14,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import type { FileDiff } from "./diff.ts";
 import { hunksOf } from "./guide.ts";
 import { exportDocument, Fail, home, save, VERDICT, writeup, type Review } from "./build.ts";
-import type { Submission, Target } from "./document.ts";
+import type { Doc, Submission, Target } from "./document.ts";
 import { adapterFor, postingOf, spawn, type Adapter, type Posting, type Runner } from "./platform.ts";
 
 export const HOOK_TIMEOUT_MS = 60_000;
@@ -36,11 +36,21 @@ export type Plan = { file: string; md: string; target: Target; platform?: string
 
 export const submittedDir = () => join(home(), "submitted");
 
-export function planOf(r: Review, files: FileDiff[]): Plan {
+/** What the human opted into at submit: the ids of kept findings to post as their own comments, and a coverage line. Both default to nothing. */
+export type Choices = { findings?: string[]; coverage?: boolean };
+
+/** The coverage line, in the reader's own voice: how much of the change they read. */
+export function coverageLine(d: Doc, files: FileDiff[]): string {
+  const total = hunksOf(files).filter((x) => x.hunk).length;
+  return `I read ${d.human.visited.length} of ${total} hunks.`;
+}
+
+export function planOf(r: Review, files: FileDiff[], choices: Choices = {}): Plan {
   const file = join(submittedDir(), `${r.slug}.json`), md = join(submittedDir(), `${r.slug}.md`);
   const d = r.doc, platform = d.target.platform, adapter = adapterFor(platform);
   const paths = new Map(hunksOf(files).map((h) => [h.id, h.file.path]));
-  const posting = d.human.verdict ? postingOf(d.human.verdict, d.human.comments, (id) => paths.get(id)) : undefined;
+  const chosen = d.findings.filter((f) => choices.findings?.includes(f.id) && f.status !== "withdrawn" && !d.human.dismissals.includes(f.id));
+  const posting = d.human.verdict ? postingOf(d.human.verdict, d.human.comments, (id) => paths.get(id), { findings: chosen, coverage: choices.coverage ? coverageLine(d, files) : undefined }) : undefined;
   return { file, md, target: d.target, platform, adapter, posting, ...(d.on_submit ? { hook: hookOf(d.on_submit.run, file, r.worktree) } : {}) };
 }
 
@@ -48,11 +58,11 @@ export function planOf(r: Review, files: FileDiff[]): Plan {
 export const shown = (argv: string[]) => argv.map((a) => /^[\w@%+=:,./{}-]+$/.test(a) ? a : `'${a.replaceAll("'", `'\\''`)}'`).join(" ");
 
 /** The preview's account of what Enter will do; `allowed` is whether the human has let the hook run. */
-export function describe(p: Plan, allowed: boolean): string {
+export function describe(p: Plan, allowed: boolean, dryRun = false): string {
   const post = !p.platform ? "No platform in the document's target: the written file is the review."
     : !p.adapter ? `No ${p.platform} adapter yet: the written file is the review.`
     : p.posting ? p.adapter.describe(p.target, p.posting) : "Pick a verdict first.";
-  const out = ["── On submit", "", `1. Writes ${p.file}`, `   and ${p.md}`, `2. ${post[0]!.toUpperCase()}${post.slice(1)}`];
+  const out = ["── On submit", ...(dryRun ? ["", "DRY RUN: only the API calls are printed; nothing is written, posted or run."] : []), "", `1. Writes ${p.file}`, `   and ${p.md}`, `2. ${post[0]!.toUpperCase()}${post.slice(1)}`];
   if (p.hook) {
     out.push(
       "3. The document asks to run this command:", "",
@@ -85,11 +95,17 @@ export type Result = { submission: Submission; summary: string; ok: boolean };
  * Submit the review. Throws only if the document itself cannot be written (step 1); anything after
  * that is caught, recorded in `submissions`, and summed up in one line.
  */
-export function submit(r: Review, files: FileDiff[], opts: { allowHook: boolean; run?: Runner; hook?: HookRunner; now?: () => Date }): Result {
+export function submit(r: Review, files: FileDiff[], opts: Choices & { allowHook: boolean; run?: Runner; hook?: HookRunner; now?: () => Date; dryRun?: boolean }): Result {
   const d = r.doc;
   if (!d.human.verdict) throw new Fail("pick a verdict before submitting");
-  const p = planOf(r, files);
+  const p = planOf(r, files, opts);
   const at = (opts.now ?? (() => new Date()))().toISOString();
+
+  // A dry run is a read-only account of the post: nothing is written, sent or run, and no submission is recorded.
+  if (opts.dryRun) {
+    const calls = p.adapter && p.posting ? p.adapter.dryRun(d.target, p.posting).join("\n\n") : `no ${p.platform ?? "platform"} adapter: there is nothing to post`;
+    return { submission: { at, verdict: d.human.verdict, file: p.file }, summary: `Dry run (${VERDICT[d.human.verdict]}): nothing written or posted.\n\n${calls}`, ok: true };
+  }
 
   // 1. The document, before anything that can fail for reasons outside this machine.
   try {
