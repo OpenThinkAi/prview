@@ -78,6 +78,17 @@ export type AppProps = {
   copier?: Copier;
 };
 
+/** The opening box: the summary, the suggested verdicts and who prepared it. `S` reopens exactly this; null when a review has neither. */
+export function summaryFloat(review: Review): Float | null {
+  const d = review.doc;
+  // An imported review's verdict is only ever information here: submit never starts from it.
+  const verdicts = (review.suggested ?? []).map((v) => `${v.by === "imported" ? "An imported review" : `${v.by}'s review`} suggested ${VERDICT[v.verdict]}${v.reason ? `: ${v.reason.replace(/[.\s]+$/, "")}` : ""}.`);
+  const suggested = verdicts.length ? [...verdicts, "That is information only: you pick your own verdict at submit."].join("\n") : "";
+  if (!d.plan.summary && !suggested) return null;
+  const hint = `${keyOf(BINDINGS_ACTION)} shows the keys for where you are; ${keyOf("info.hide")} closes this; ${keyOf("nav.summary")} brings it back.`;
+  return { title: "Summary of this change · not a finding", summary: true, color: "magenta", copy: d.plan.summary || suggested, body: [d.plan.summary, suggested, preparedBy(review.ai?.runs), hint].filter(Boolean).join("\n\n") };
+}
+
 export function App({ review, files, onDone, beside, size, blind = false, dryRun = false, copier = systemCopier }: AppProps) {
   const { exit } = useApp();
   const term = useTerminalSize(size);
@@ -89,10 +100,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const redraw = () => { save(r); bump((n) => n + 1); };
   const [pos, setPosRaw] = useState<Pos>(() => ({ item: Math.min(r.pos.item, Math.max(0, items.length - 1)), line: r.pos.line }));
   const setPos = (p: Pos) => { r.pos = p; setPosRaw(p); };
-  // An imported review's verdict is only ever information here: submit never starts from it.
-  const verdicts = (review.suggested ?? []).map((v) => `${v.by === "imported" ? "An imported review" : `${v.by}'s review`} suggested ${VERDICT[v.verdict]}${v.reason ? `: ${v.reason.replace(/[.\s]+$/, "")}` : ""}.`);
-  const suggested = verdicts.length ? [...verdicts, "That is information only: you pick your own verdict at submit."].join("\n") : "";
-  const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary || suggested ? { title: "Summary of this change · not a finding", summary: true, color: "magenta", copy: d.plan.summary || suggested, body: [d.plan.summary, suggested, preparedBy(review.ai?.runs), `${keyOf(BINDINGS_ACTION)} shows the keys for where you are; ${keyOf("info.hide")} closes this.`].filter(Boolean).join("\n\n") } : null);
+  const opening = () => summaryFloat(review);
+  const [float, setFloatRaw] = useState<Float | null>(() => opening());
   const [scroll, setScroll] = useState(0);
   // What `y` just did, shown in the footer until the next key.
   const [note, setNote] = useState<string | null>(null);
@@ -340,6 +349,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       case "nav.prev_finding": case "finding.prev": case "info.prev_finding": jumpFinding(-1); return;
       case "finding.hide": case "info.hide": setFloat(null); return;
       case "nav.bindings": toggleBindings(); return;
+      case "nav.summary": setFloat(opening() ?? { title: "Summary", body: `There is no summary for this review. ${keyOf("info.hide")} closes this.` }); return;
       case "nav.why": {
         if (!item) return;
         const body = item.mechanical ? `${MECHANICAL_INTENT}\n\nMechanical: ${item.mechanical}. Classified by rule, not by a model.` : `${chapter?.intent ? chapter.intent + "\n\n" : ""}${chapter?.why || "The guide gave no reason for this chapter."}`;

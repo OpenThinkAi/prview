@@ -90,6 +90,7 @@ export const NAV_KEYS: NavAction[] = [
   { id: "nav.reveal", key: "F", label: "reveal", blind: true, description: "Reveal this chapter's findings before you have been through it." },
   { id: "nav.withdrawn", key: "W", label: "withdrawn", description: "Show or hide the findings the second look withdrew, dimmed in the gutter with its reason; they are never decided or posted." },
   { id: "nav.why", key: "?", label: "why", description: "Explain why this chapter is here and what to check in it." },
+  { id: "nav.summary", key: "S", label: "summary", description: "Show the summary of this change again: the overview, any suggested verdicts and who prepared it." },
   { id: "nav.copy", key: "y", label: "copy", description: "Copy the cursor line's path:line reference." },
   { id: "nav.ask", key: "a", label: "ask", description: "Ask the model a question about this hunk." },
   { id: "nav.ask_docs", key: "/", label: "ask the docs", description: "Ask how to do something in your own words and see the actions that answer it, with your keys; offline, no model." },

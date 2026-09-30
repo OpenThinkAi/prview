@@ -825,6 +825,29 @@ test("opening summary: a double-ruled box titled as the summary, above the code 
   expect(t.frame()).toContain("\\ bindings");
 });
 
+test("S brings the summary back after h closed it, with the same box and a hint that names the key", async () => {
+  const t = await open(withSummary());
+  expect(t.frame()).toContain("h closes this; S brings it back");
+  await t.press("h");
+  expect(t.frame()).not.toContain("Summary of this change");
+  await t.press("S");
+  const f = t.frame();
+  expect(f).toContain("Summary of this change · not a finding");
+  expect(f).toContain(SUMMARY);
+  expect(f).toContain("╔");
+  await t.press("h");
+  expect(t.frame()).not.toContain("Summary of this change");
+  expect(t.r.pos.item).toBe(0);
+});
+
+test("S on a review with no summary and no suggestion says so", async () => {
+  const t = await open(withSummary({ summary: "" }));
+  expect(t.frame()).not.toContain("Summary of this change");
+  await t.press("S");
+  expect(t.frame()).toContain("no summary for this review");
+  expect(t.frame()).not.toContain("╔");
+});
+
 test("opening summary: a finding box keeps its own look, and the summary names who prepared it only when every run has a model id", async () => {
   const t = await open(withSummary(), { ai: { models, at: "now", errors: [], runs: [{ role: "guide", model: "claude-opus-5-5", ms: 1 }, { role: "critic", model: "claude-opus-5-5", ms: 1 }] } });
   expect(t.frame()).toContain("Prepared by claude-opus-5-5 (guide, critic)");
@@ -884,7 +907,7 @@ test("nav: the panel comes from NAV_KEYS, every listed key acts, b/c/u are not i
   expect(wide.frame()).not.toMatch(row("j/k", "line")); // nothing open: only the footer's hint
   await wide.press("\\");
   for (const e of entriesOf({ box: null, blind: false })) expect(wide.frame()).toMatch(row(e.keys, e.label));
-  expect(listing(entriesOf({ box: null, blind: false }))).toEqual(["j/k line", "h/l hunk", "J/K chapter", "]f/f find", "W withdrawn", "? why", "y copy", "a ask", "/ ask the docs", "e edit", "n/N note", "w wrap", "H/L pan", "s submit", "\\ bindings", "q quit"]);
+  expect(listing(entriesOf({ box: null, blind: false }))).toEqual(["j/k line", "h/l hunk", "J/K chapter", "]f/f find", "W withdrawn", "? why", "S summary", "y copy", "a ask", "/ ask the docs", "e edit", "n/N note", "w wrap", "H/L pan", "s submit", "\\ bindings", "q quit"]);
   expect(listing(entriesOf({ box: null, blind: false })).join("|")).not.toMatch(/decide|F reveal/);
   expect(listing(entriesOf({ box: null, blind: true }))).toContain("F reveal");
   expect(NAV_KEYS.some((k) => /[bcu]/.test(k.key.replace("]f", "")) && k.key !== "q")).toBe(false);
@@ -903,7 +926,7 @@ test("nav: the panel comes from NAV_KEYS, every listed key acts, b/c/u are not i
   // Letters the table does not list do nothing without a box.
   const t = await open(undefined, { cols: 140 });
   const before = t.frame();
-  for (const ch of "bcdgimoprtuvxzACDEGIMOPQRSTUVXYZ".split("")) {
+  for (const ch of "bcdgimoprtuvxzACDEGIMOPQRTUVXYZ".split("")) {
     if (ch === "g" || ch === "G") continue;
     await t.press(ch);
     expect(t.frame(), `key ${ch}`).toBe(before);

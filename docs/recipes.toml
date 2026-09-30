@@ -80,6 +80,11 @@ actions = ["nav.reveal"]
 why = "Blind mode hides a chapter's findings until you have been through it; this lifts that for one chapter."
 
 [[recipe]]
+q = ["how do I see the summary again", "where did the overview go", "bring back the summary of this change", "I closed the opening box by mistake"]
+actions = ["nav.summary"]
+why = "Reopens the box the review opened with: the summary, any suggested verdicts and who prepared it. It says so when the review has no summary."
+
+[[recipe]]
 q = ["how do I see the withdrawn findings", "show findings the second look knocked down", "what did the model decide was not a problem after all", "why did a finding disappear"]
 actions = ["nav.withdrawn"]
 why = "Toggles the withdrawn findings, dimmed in the gutter; open one to read why the second look withdrew it. The header counts them."
