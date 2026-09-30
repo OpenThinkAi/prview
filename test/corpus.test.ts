@@ -21,7 +21,7 @@ test("no recipe names an action that does not exist", () => {
 
 test("every recipe has 2-4 phrasings, a one-line why, and each phrasing is unique", () => {
   for (const r of recipes) {
-    expect({ q: r.q[0], ok: r.q.length >= 1 && r.q.length <= 4 }).toEqual({ q: r.q[0], ok: true });
+    expect({ q: r.q[0], ok: r.q.length >= 2 && r.q.length <= 4 }).toEqual({ q: r.q[0], ok: true });
     expect(r.why).not.toContain("\n");
   }
   const all = recipes.flatMap((r) => r.q.map((q) => q.toLowerCase()));
