@@ -73,7 +73,7 @@ What you get is a full-screen review, not a diff dump:
   `a` a question about the hunk in front of you. A review with a summary opens on it: a double-ruled
   magenta box titled "Summary of this change · not a finding" at the top of the hunk (findings are round
   boxes under their line), with "Prepared by …" only when the review recorded which models ran.
-  `h` closes it; `h`/`l` then move between hunks.
+  `h` closes it, `S` brings it back (or says the review has no summary); `h`/`l` then move between hunks.
 - **Your editor for the real code.** `e` opens the file at the line under the cursor in a
   worktree at the PR head (`$EDITOR`, default `hx`; VS Code, Zed and vim forms are handled).
   Quit the editor and you are back where you were. Inside tmux the editor opens in a split pane
