@@ -21,6 +21,7 @@ import { gotoLine, nextFinding, type NavItem } from "./nav.ts";
 import { highlightLines, langOf, lengthOf, sliceSpans, styleOf, type Span } from "./highlight.ts";
 import { clampScroll, clampX, floatHeight, floatRows, layoutOf, pageStep, rowsFor, windowOf, wrapText } from "./layout.ts";
 import type { Beside } from "./editor.ts";
+import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
 import { describe, planOf } from "./submit.ts";
 
 /** `hook`: the human allowed the document's on_submit command for this submit (x in the preview). */
@@ -40,7 +41,8 @@ function itemsOf(d: Doc, files: FileDiff[]): Item[] {
 /** Columns a press of H or L moves the code sideways. */
 const PAN = 8;
 const SEV = { blocking: "red", warn: "yellow", nit: "blue" } as const;
-type Float = { title: string; body: string; color?: string; tall?: boolean };
+/** `copy` is the float's source text for `y`: what it means, not the wrapped and boxed lines drawn from `body`. */
+type Float = { title: string; body: string; color?: string; tall?: boolean; copy?: string };
 type Mode = { kind: "nav" } | { kind: "comment"; general: boolean } | { kind: "ask" } | { kind: "verdict" } | { kind: "include" } | { kind: "preview"; hook: boolean; findings: string[]; coverage: boolean };
 
 export type AppProps = {
@@ -53,9 +55,11 @@ export type AppProps = {
   blind?: boolean;
   /** `--dry-run`: the preview says that submit will only print the API calls. */
   dryRun?: boolean;
+  /** How `y` reaches the clipboard; tests pass one that records instead of touching it. */
+  copier?: Copier;
 };
 
-export function App({ review, files, onDone, beside, size, blind = false, dryRun = false }: AppProps) {
+export function App({ review, files, onDone, beside, size, blind = false, dryRun = false, copier = systemCopier }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const cols = size?.cols ?? (stdout.columns || 100), rows = (size?.rows ?? (stdout.rows || 40)) - 1;
@@ -66,8 +70,10 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const redraw = () => { save(r); bump((n) => n + 1); };
   const [pos, setPosRaw] = useState<Pos>(() => ({ item: Math.min(r.pos.item, Math.max(0, items.length - 1)), line: r.pos.line }));
   const setPos = (p: Pos) => { r.pos = p; setPosRaw(p); };
-  const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary ? { title: "What this change is", body: `${d.plan.summary}\n\n? why this chapter · f finding · ]f next finding · w wrap · a ask · e editor · n comment · N summary · s submit · q quit` } : null);
+  const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary ? { title: "What this change is", copy: d.plan.summary, body: `${d.plan.summary}\n\n? why this chapter · f finding · ]f next finding · w wrap · a ask · e editor · n comment · N summary · s submit · q quit` } : null);
   const [scroll, setScroll] = useState(0);
+  // What `y` just did, shown in the footer until the next key.
+  const [note, setNote] = useState<string | null>(null);
   const setFloat = (f: Float | null) => { setScroll(0); setFloatRaw(f); };
   const [mode, setMode] = useState<Mode>({ kind: "nav" });
   const [input, setInput] = useState("");
@@ -119,7 +125,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   };
   const showFinding = (f: Finding) => {
     const gone = h.dismissals.includes(f.id);
-    setFloat({ title: `▲ ${f.source} · ${f.kind} · ${f.severity}${f.votes && r.ai?.samples ? ` · ${f.votes}/${r.ai.samples}` : ""}${gone ? " · dismissed" : ""}`, color: SEV[f.severity], body: `${f.claim}\n\n${f.evidence}${f.refute ? `\n\nSecond look: ${f.refute}` : ""}\n\nd to ${gone ? "restore" : "dismiss"}.` });
+    setFloat({ title: `▲ ${f.source} · ${f.kind} · ${f.severity}${f.votes && r.ai?.samples ? ` · ${f.votes}/${r.ai.samples}` : ""}${gone ? " · dismissed" : ""}`, color: SEV[f.severity], copy: findingText(f, place(f.hunk, f.line)), body: `${f.claim}\n\n${f.evidence}${f.refute ? `\n\nSecond look: ${f.refute}` : ""}\n\nd to ${gone ? "restore" : "dismiss"}.` });
   };
   const jumpFinding = (dir: 1 | -1) => {
     const hit = nextFinding(items, d.findings.filter((f) => live(f) && unhidden(f)), { item: pos.item, line }, dir);
@@ -134,7 +140,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     const early = revealEarly(blind, ids, h);
     if (early) { h.revealed = early; redraw(); } // recorded: a finding seen before the reading is part of how the review went
     const mine = new Set(ids);
-    setFloat({ title: `${item.chapter + 1} · ${chapterTitle} · what the model found`, tall: true, color: "yellow", body: revealBody(d.findings.filter((f) => live(f) && mine.has(f.hunk)), h.comments.filter((c) => c.hunk !== null && mine.has(c.hunk)), place) });
+    const body = revealBody(d.findings.filter((f) => live(f) && mine.has(f.hunk)), h.comments.filter((c) => c.hunk !== null && mine.has(c.hunk)), place);
+    setFloat({ title: `${item.chapter + 1} · ${chapterTitle} · what the model found`, tall: true, color: "yellow", body, copy: body });
   };
   // The preview ends with what Enter will do: where the file goes, where it posts, and the document's
   // command, if it has one, which runs only after its own keypress (x) in this preview.
@@ -189,7 +196,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
         }
         if (mode.kind === "ask" && item) {
           setBusy("asking…"); setFloat({ title: text || "Explain this hunk", body: "…" });
-          ask(r, files, item.id, text).then((a) => setFloat({ title: text || "This hunk", body: a }), (e) => setFloat({ title: "ask failed", body: String((e as Error).message), color: "red" })).finally(() => setBusy(null));
+          ask(r, files, item.id, text).then((a) => setFloat({ title: text || "This hunk", body: a, copy: askText(text || "Explain this hunk", a) }), (e) => setFloat({ title: "ask failed", body: String((e as Error).message), color: "red" })).finally(() => setBusy(null));
         }
         return;
       }
@@ -200,6 +207,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
 
     // ---- nav
     const count = countRef.current, pending = pendingRef.current;
+    setNote(null);
     if (key.escape) { setFloat(null); setCount(""); setPending(null); return; }
     if (pending) {
       const p = pending; setPending(null);
@@ -227,7 +235,13 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     else if (ch === "?") {
       if (!item) return;
       const body = item.mechanical ? `${MECHANICAL_INTENT}\n\nMechanical: ${item.mechanical}. Classified by rule, not by a model.` : `${chapter?.intent ? chapter.intent + "\n\n" : ""}${chapter?.why || "The guide gave no reason for this chapter."}`;
-      setFloat({ title: `${item.chapter + 1} · ${chapterTitle}`, body });
+      setFloat({ title: `${item.chapter + 1} · ${chapterTitle}`, body, copy: item.mechanical ? body : whyText(chapterTitle, chapter?.intent, chapter?.why || "The guide gave no reason for this chapter.") });
+    }
+    else if (ch === "y") {
+      // An open box copies its own text; with none open, the cursor line's reference, which is what you paste into a note.
+      const l = lines[line], at = l ? l.n ?? l.o : null;
+      const text = float ? float.copy : item && at !== null ? `${item.path}:${at}` : undefined;
+      setNote(text ? confirmation(copier(text)) : "nothing to copy here");
     }
     else if (ch === "F") reveal();
     else if (ch === "f") { // the next finding in this hunk, from the cursor, wrapping
@@ -294,9 +308,10 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       case "verdict": return <Text><Text color="green" bold> verdict › </Text>a approve   r request changes   c comment   <Text dimColor>Esc cancel</Text></Text>;
       case "include": return <Text><Text color="green" bold> post your {d.findings.filter(kept).length} kept finding{d.findings.filter(kept).length === 1 ? "" : "s"} as comments? › </Text>y yes   <Text bold>n no</Text> (Enter)   <Text dimColor>Esc back</Text></Text>;
       case "preview": return <Text wrap="truncate" dimColor> Enter {dryRun ? "prints the calls" : "submits"}{planOf(r, files).adapter ? ` · v ${mode.coverage ? "drop" : "add"} coverage line` : ""}{d.on_submit ? ` · x ${mode.hook ? "disallow" : "allow"} the document's command` : ""} · Esc back to the verdict · j/k PgUp/PgDn scroll</Text>;
-      case "nav": return <Text wrap="truncate" dimColor> {L.narrow
-        ? "j/k h/l hunk  ]f find  ? why  a ask  e edit  n note  w wrap  s send  q quit"
-        : `j/k line  h/l hunk  J/K chapter  ]f finding  ${blind ? "F reveal  " : ""}? why  f/d finding  a ask  e edit  n/N note  w wrap  H/L pan  s submit  q quit`}{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
+      case "nav": if (note) return <Text wrap="truncate" color="green"> {note}</Text>;
+        return <Text wrap="truncate" dimColor> {L.narrow
+        ? "j/k h/l hunk  ]f find  ? why  y copy  a ask  e edit  n note  w wrap  s send  q quit"
+        : `j/k line  h/l hunk  J/K chapter  ]f finding  ${blind ? "F reveal  " : ""}? why  y copy  f/d finding  a ask  e edit  n/N note  w wrap  H/L pan  s submit  q quit`}{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
       default: return <Text><Text color="cyan" bold> {mode.kind === "ask" ? "ask" : mode.general ? "summary comment" : "comment"} › </Text>{input}<Text inverse> </Text><Text dimColor>  (Enter to send, Esc to cancel)</Text></Text>;
     }
   };

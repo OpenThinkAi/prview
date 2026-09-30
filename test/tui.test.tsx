@@ -436,3 +436,77 @@ test("blind off: nothing is hidden and the footer does not offer F", async () =>
   expect(t.frame()).toContain("▸ 1 Core change ▲1");
   expect(t.frame()).not.toContain("F reveal");
 });
+
+// ---------------------------------------------------------------- clipboard
+
+import { askText, confirmation, copyText, findingText, osc52, routes, whyText } from "../src/clipboard.ts";
+
+test("clipboard text: a finding is path:line — lead, then the detail; a titled finding leads with its title", () => {
+  expect(findingText(finding, "src/a.rs:11")).toBe("src/a.rs:11 — answer is hard-coded\n\n42 appears with no source");
+  expect(findingText({ ...finding, refute: "still true" }, "src/a.rs:11")).toBe("src/a.rs:11 — answer is hard-coded\n\n42 appears with no source\n\nSecond look: still true");
+  expect(findingText({ ...finding, title: "Hard-coded answer" }, "src/a.rs:11")).toBe("src/a.rs:11 — Hard-coded answer\n\nanswer is hard-coded\n\n42 appears with no source");
+  expect(whyText("Core change", "Check the answer is derived", "It is the heart of it.")).toBe("Core change\n\nCheck the answer is derived\n\nIt is the heart of it.");
+  expect(whyText("Mechanical", undefined, "why")).toBe("Mechanical\n\nwhy");
+  expect(askText("why 42?", "Because.")).toBe("why 42?\n\nBecause.");
+});
+
+test("clipboard routes: pbcopy on macOS, wl-copy/xclip on Linux by display, OSC 52 last, and alone over ssh or when forced", () => {
+  expect(routes("darwin", {})).toEqual([{ kind: "cmd", argv: ["pbcopy"] }, { kind: "osc52" }]);
+  expect(routes("linux", { WAYLAND_DISPLAY: "w", DISPLAY: ":0" })).toEqual([{ kind: "cmd", argv: ["wl-copy"] }, { kind: "cmd", argv: ["xclip", "-selection", "clipboard"] }, { kind: "osc52" }]);
+  expect(routes("linux", { DISPLAY: ":0" })).toEqual([{ kind: "cmd", argv: ["xclip", "-selection", "clipboard"] }, { kind: "osc52" }]);
+  expect(routes("linux", {})).toEqual([{ kind: "osc52" }]);
+  expect(routes("freebsd", {})).toEqual([{ kind: "osc52" }]);
+  expect(routes("darwin", { SSH_CONNECTION: "1 2 3 4" })).toEqual([{ kind: "osc52" }]);
+  expect(routes("darwin", { PRVIEW_CLIPBOARD: "osc52" })).toEqual([{ kind: "osc52" }]);
+});
+
+test("clipboard: the first route that works wins, a failing tool falls through, OSC 52 is base64 and tmux-wrapped", () => {
+  const ran: string[][] = [], wrote: string[] = [];
+  const base = { platform: "linux", write: (s: string) => { wrote.push(s); } };
+  const env = { WAYLAND_DISPLAY: "w", DISPLAY: ":0" };
+  const r = copyText("héllo\nworld", { ...base, env, run: (argv, input) => { ran.push([...argv, input]); return argv[0] === "xclip"; } });
+  expect(r).toEqual({ ok: true, chars: 11, via: "xclip" });
+  expect(ran.map((a) => a[0])).toEqual(["wl-copy", "xclip"]);
+  expect(wrote).toEqual([]);
+  expect(copyText("x", { ...base, env, run: () => { throw new Error("spawn"); } })).toEqual({ ok: true, chars: 1, via: "osc52" });
+  expect(wrote[0]).toBe(`\x1b]52;c;${Buffer.from("x").toString("base64")}\x07`);
+  expect(osc52("x", { TMUX: "/tmp/tmux" })).toBe(`\x1bPtmux;\x1b\x1b]52;c;eA==\x07\x1b\\`);
+  expect(copyText("x", { platform: "linux", env: {}, run: () => true, write: () => { throw new Error("closed"); } })).toEqual({ ok: false, message: "no clipboard route worked (tried osc52)" });
+  expect(copyText("", { ...base, env, run: () => true })).toEqual({ ok: false, message: "nothing to copy" });
+  expect(confirmation({ ok: true, chars: 214, via: "pbcopy" })).toBe("copied 214 chars");
+});
+
+async function copying(over?: Over) {
+  const copied: string[] = [];
+  const copier = (t: string) => { copied.push(t); return { ok: true as const, chars: t.length, via: "pbcopy" }; };
+  const r = fixture(over);
+  const app = render(<App review={r} files={files} onDone={() => {}} copier={copier} size={{ cols: 120, rows: 40 }} />);
+  await settle();
+  const press = async (keys: string) => { for (const k of keys.match(/./gsu) ?? []) { app.stdin.write(k); await settle(); } };
+  return { copied, press, frame: () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "") };
+}
+
+test("y: with a finding open copies its source text and the footer says how much; with a ? box open, the why; with none, path:line", async () => {
+  const t = await copying();
+  await t.press("y");
+  expect(t.copied).toEqual(["src/a.rs:10"]); // no float yet: the cursor line
+  expect(t.frame()).toContain("copied 11 chars");
+  await t.press("j");
+  expect(t.frame()).not.toContain("copied 11 chars");
+  await t.press("f");
+  await t.press("y");
+  expect(t.copied[1]).toBe("src/a.rs:11 — answer is hard-coded\n\n42 appears with no source");
+  expect(t.copied[1]).not.toMatch(/[│─╭╮╰╯]/);
+  await t.press("?");
+  await t.press("y");
+  expect(t.copied[2]).toBe("Core change\n\nCheck the answer is derived\n\nIt is the heart of it.");
+  expect(t.frame()).toContain(`copied ${t.copied[2]!.length} chars`);
+});
+
+test("y: a box with no source text says so instead of copying the hints", async () => {
+  const t = await copying({ findings: [] });
+  await t.press("f");
+  await t.press("y");
+  expect(t.copied).toEqual([]);
+  expect(t.frame()).toContain("nothing to copy here");
+});
