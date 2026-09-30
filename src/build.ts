@@ -17,12 +17,14 @@ import {
   applyReask, applyRefute, classify, CRITIC_SYSTEM, criticPrompt, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, numbered,
   mergeFindings, parseCritic, readGuide, REASK_SYSTEM, reaskPrompt, REFUTE_SYSTEM, refutePrompt, type Finding, type HunkAt, type Mechanical, type Plan,
 } from "./guide.ts";
-import { complete, pool, type Provider, type Usage } from "./llm.ts";
+import { DEFAULT_MODEL, loadConfig, realLookups, resolveModel, resolveRoles, type Resolved, type Role } from "./config.ts";
+import { complete, pool, type Usage } from "./llm.ts";
 
 export { Fail };
 /** One model call: which role, how long, what it cost where the provider reports it. */
 export type Run = { role: "guide" | "critic" | "refute"; ms: number; cost?: number };
-export type Ai = { provider: Provider; at: string; errors: string[]; samples?: number; runs?: Run[] };
+/** `models` names what each role used, so `ask` in a reopened review talks to the same model. */
+export type Ai = { models: Record<Role, string>; at: string; errors: string[]; samples?: number; runs?: Run[] };
 export type Pos = { item: number; line: number };
 /** `ref` is what was asked for (a PR number or a range), so the review can be rebuilt at a newer head. */
 export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; ai?: Ai; doc: Doc };
@@ -103,23 +105,23 @@ export type Progress = (s: string) => void;
  * The guide's pass: one call, and one more only if the parser had to cut a line to fit. A failed
  * re-ask keeps the cut plan; a failed first call throws, and the caller falls back to file order.
  */
-export async function runGuide(provider: Provider, src: { title: string; body: string }, hunks: HunkAt[], mechanical: Mechanical[], say: Progress = () => {}, usage?: (u: Usage) => void): Promise<{ plan: Plan; reasked: number; errors: string[] }> {
-  const { plan, cuts, summarySaid } = readGuide(await complete(provider, GUIDE_SYSTEM, guidePrompt(src, hunks, mechanical), usage), hunks, mechanical);
+export async function runGuide(model: Resolved, src: { title: string; body: string }, hunks: HunkAt[], mechanical: Mechanical[], say: Progress = () => {}, usage?: (u: Usage) => void): Promise<{ plan: Plan; reasked: number; errors: string[] }> {
+  const { plan, cuts, summarySaid } = readGuide(await complete(model, GUIDE_SYSTEM, guidePrompt(src, hunks, mechanical), usage), hunks, mechanical);
   if (!cuts.length) return { plan, reasked: 0, errors: [] };
   say(`guide: ${cuts.length} line${cuts.length === 1 ? "" : "s"} too long, asking once more…`);
-  try { return { plan: applyReask(plan, cuts, await complete(provider, REASK_SYSTEM, reaskPrompt(src.title, cuts, summarySaid), usage)), reasked: cuts.length, errors: [] }; }
+  try { return { plan: applyReask(plan, cuts, await complete(model, REASK_SYSTEM, reaskPrompt(src.title, cuts, summarySaid), usage)), reasked: cuts.length, errors: [] }; }
   catch (e) { return { plan, reasked: cuts.length, errors: [`guide re-ask: ${(e as Error).message}`] }; }
 }
 
 /** The default producer: the guide orders the hunks, the critic raises findings, refute re-checks them. */
-async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, provider: Provider, samples: number, say: Progress): Promise<{ doc: Doc; errors: string[]; runs: Run[] }> {
+async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, models: Record<Role, Resolved>, samples: number, say: Progress): Promise<{ doc: Doc; errors: string[]; runs: Run[] }> {
   const errors: string[] = [], runs: Run[] = [];
   const timed = (role: Run["role"]) => (u: Usage) => { runs.push({ role, ...u }); };
   const mechanical = classify(files);
   const hunks = hunksOf(files);
   let plan: Plan;
   say(`guide: reading ${hunks.length - mechanical.length} hunks (${mechanical.length} mechanical)…`);
-  try { const g = await runGuide(provider, src, hunks, mechanical, say, timed("guide")); plan = g.plan; errors.push(...g.errors); }
+  try { const g = await runGuide(models.guide, src, hunks, mechanical, say, timed("guide")); plan = g.plan; errors.push(...g.errors); }
   catch (e) { errors.push(`guide: ${(e as Error).message}`); plan = filePlan(files, mechanical); }
   say(`guide: ${plan.chapters.length} chapters${plan.by === "files" ? " (by file: the guide failed)" : ""}`);
 
@@ -129,7 +131,7 @@ async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, 
   const reviews = await pool(plan.chapters.map((c, i) => async () => {
     const prompt = criticPrompt(src, c, hunks);
     const each = await Promise.all(Array.from({ length: samples }, () =>
-      complete(provider, CRITIC_SYSTEM, prompt, timed("critic")).then((t) => parseCritic(t, c, hunks, 0)).catch((e) => e instanceof Error ? e : new Error(String(e)))));
+      complete(models.critic, CRITIC_SYSTEM, prompt, timed("critic")).then((t) => parseCritic(t, c, hunks, 0)).catch((e) => e instanceof Error ? e : new Error(String(e)))));
     const ok = each.filter((r): r is Finding[] => !(r instanceof Error));
     for (const r of each) if (r instanceof Error) errors.push(`critic (${c.title}): ${r.message}`);
     if (!ok.length) throw new Error("every run failed");
@@ -147,7 +149,7 @@ async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, 
     const h = at.get(f.hunk)!;
     const file = join(worktree, h.file.path);
     const text = f.side === "new" && existsSync(file) ? readFileSync(file, "utf8") : null;
-    return applyRefute(f, await complete(provider, REFUTE_SYSTEM, refutePrompt(f, h.hunk!, text), timed("refute")));
+    return applyRefute(f, await complete(models.refute, REFUTE_SYSTEM, refutePrompt(f, h.hunk!, text), timed("refute")));
   }));
   const settled = new Map<string, Finding>();
   verdicts.forEach((v, i) => { if (v instanceof Error) errors.push(`refute: ${v.message}`); else settled.set(contested[i]!.id, v); });
@@ -167,7 +169,11 @@ export async function ask(r: Review, files: FileDiff[], hunkId: string, question
   const file = join(r.worktree, h.file.path);
   const around = existsSync(file) ? readFileSync(file, "utf8").split("\n").slice(Math.max(0, h.hunk.newStart - 30), h.hunk.newStart + h.hunk.newCount + 30).join("\n") : "";
   const prompt = `# ${d.target.title}\n${d.plan.summary}\n\n## Chapter: ${chapter?.title ?? "?"}\n${chapter?.intent ?? ""}. ${chapter?.why ?? ""}\n\n## Hunk ${h.id}\n${numbered(h.hunk)}\n\n## The file after the change, around it\n${around}\n\n## Question\n${question.trim() || "(none: explain the hunk)"}`;
-  return (await complete(r.ai?.provider ?? "claude", ASK_SYSTEM, prompt)).trim();
+  // Resolved now, not at build time, so ask works on a review built with --no-ai and picks up a key added since.
+  const cfg = loadConfig();
+  const name = r.ai?.models?.ask && cfg.models[r.ai.models.ask] ? r.ai.models.ask : undefined;
+  // Only the ask model's credential is needed; an unset key for another role must not break asking.
+  return (await complete(resolveModel(cfg, name ?? cfg.roles.ask ?? DEFAULT_MODEL, realLookups()), ASK_SYSTEM, prompt)).trim();
 }
 
 // ---------------------------------------------------------------- the store
@@ -260,11 +266,13 @@ function worktreeAt(repo: string, slug: string, head: string): string {
 
 // ---------------------------------------------------------------- building
 
-export type BuildOpts = { context?: number; ai?: Provider | null; fresh?: boolean; samples?: number; say?: Progress };
+export type BuildOpts = { context?: number; /** a model name (--ai) for every role, undefined for the configured roles, null for no models. */ ai?: string | null; fresh?: boolean; samples?: number; say?: Progress };
 
 export async function build(repo: string, target: string | undefined, opts: BuildOpts = {}): Promise<Review> {
   const context = opts.context ?? 3, say = opts.say ?? (() => {});
   repo = git(["rev-parse", "--show-toplevel"], repo);
+  // Roles and credentials are resolved before anything is fetched or checked out, so a missing key costs nothing.
+  const models = opts.ai === null ? null : resolveRoles(loadConfig(), realLookups(), opts.ai);
   const { slug, target: t } = isPR(target) ? fromPR(repo, target!.replace(/^#/, "")) : fromRange(repo, target);
   if (t.base === t.head) throw new Fail(`${t.label} has no changes`);
   const worktree = worktreeAt(repo, slug, t.head);
@@ -279,11 +287,11 @@ export async function build(repo: string, target: string | undefined, opts: Buil
     say(`reusing the review document from ${prior.ai?.at.slice(0, 16).replace("T", " ") ?? "before"} (--fresh redoes it)`);
   } else {
     if (prior) r.doc.human.comments = prior.doc.human.comments;
-    if (opts.ai) {
+    if (models) {
       const samples = Math.max(1, Math.floor(opts.samples ?? 2));
-      const { doc, errors, runs } = await guideAndCritic(t, files, worktree, opts.ai, samples, say);
+      const { doc, errors, runs } = await guideAndCritic(t, files, worktree, models, samples, say);
       r.doc = merge(r.doc, fit(doc, files));
-      r.ai = { provider: opts.ai, at: new Date().toISOString(), errors, samples, runs };
+      r.ai = { models: Object.fromEntries(Object.entries(models).map(([k, v]) => [k, v.def.name])) as Record<Role, string>, at: new Date().toISOString(), errors, samples, runs };
       for (const e of errors) say(`warning: ${e}`);
     }
   }

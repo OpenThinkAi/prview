@@ -4,7 +4,7 @@
 // again. It is the check behind any change to GUIDE_SYSTEM or the limits: run it before and after.
 //
 //   bun scripts/eval-intents.ts                       the five default merges below, with claude
-//   bun scripts/eval-intents.ts --ai qwen             another provider
+//   bun scripts/eval-intents.ts --ai NAME             another model from your config (prview models)
 //   bun scripts/eval-intents.ts ~/src/x@abc123 ...    your own: DIR@MERGE (its two parents) or DIR@BASE..HEAD
 //
 // It calls the model for real (one guide call per change, one more when a line had to be cut), so
@@ -15,7 +15,8 @@ import { join } from "node:path";
 import { runGuide } from "../src/build.ts";
 import { parseDiff } from "../src/diff.ts";
 import { classify, hunksOf, MECHANICAL_INTENT, rubric, twoSentences } from "../src/guide.ts";
-import { pool, PROVIDERS, type Provider } from "../src/llm.ts";
+import { loadConfig, realLookups, resolveModel } from "../src/config.ts";
+import { pool } from "../src/llm.ts";
 
 // Recent merges across three repos of different shapes (a Rust CLI, a TypeScript CLI, a web app).
 // Pinned so two runs read the same diffs; they live on the author's machine, so pass your own elsewhere.
@@ -30,13 +31,13 @@ const DEFAULTS = [
 const PASS_RATE = 0.9;
 
 const argv = process.argv.slice(2);
-let provider: Provider = "claude";
+let name = "claude"; // the built-in claude -p model unless --ai names one from the config
 const specs: string[] = [];
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === "--ai") {
-    const p = argv[++i] as Provider;
-    if (!PROVIDERS.includes(p)) { console.error(`--ai takes one of ${PROVIDERS.join(", ")}`); process.exit(2); }
-    provider = p;
+    const n = argv[++i];
+    if (!n) { console.error("--ai takes a model name from your config"); process.exit(2); }
+    name = n;
   } else specs.push(argv[i]!);
 }
 
@@ -62,11 +63,13 @@ function load(spec: string) {
   };
 }
 
+let model;
+try { model = resolveModel(loadConfig(), name, realLookups()); } catch (e) { console.error((e as Error).message); process.exit(2); }
 const srcs = (specs.length ? specs : DEFAULTS).map(load);
-console.log(`guide: ${provider} · ${srcs.length} changes, in parallel…\n`);
+console.log(`guide: ${name} · ${srcs.length} changes, in parallel…\n`);
 const runs = await pool(srcs.map((src) => async () => {
   const hunks = hunksOf(src.files), mechanical = classify(src.files);
-  return runGuide(provider, src, hunks, mechanical);
+  return runGuide(model, src, hunks, mechanical);
 }), srcs.length);
 
 let total = 0, passed = 0, failedRuns = 0;
