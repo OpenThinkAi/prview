@@ -178,7 +178,7 @@ test("a finding posts only as the comment its block or comment decision wrote; i
   const f = { id: "1", source: "stamp:security", hunk: h1!.id, side: "new" as const, line: 11, severity: "blocking" as const, kind: "bug", claim: "This can overflow when the count is zero.", evidence: "see the loop", status: "upheld" as const };
   let human: Doc["human"] = { comments: [], visited: [h1!.id], verdict: "request_changes" };
   human = decide(human, f, "block", { text: "Guard the zero count here", at: "now" });
-  human = decide(human, { ...f, id: "2", line: 12 }, "ignored", { at: "now" });
+  human = decide(human, { ...f, id: "2", line: 12 }, "dismissed", { at: "now" });
   human = decide(human, { ...f, id: "3", line: 12 }, "dismissed", { reason: "the critic misread the loop", at: "now" });
   const r = review({ findings: [f, { ...f, id: "2", line: 12 }, { ...f, id: "3", line: 12 }], human }, { url: PR, platform: "github" });
   expect(planOf(r, files).posting).toEqual({ verdict: "request_changes", body: "", comments: [{ path: "src/a.rs", side: "new", line: 11, text: "Guard the zero count here" }] });

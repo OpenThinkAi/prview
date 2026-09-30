@@ -23,10 +23,11 @@ What you get is a full-screen review, not a diff dump:
   beneath, and a header saying who raised it (`▲ critic · bug · warn`). A finding with no title of
   its own shows its claim's first sentence.
 - **Deciding on findings, one key each.** Step through them with `]f` and decide each as it opens:
-  `b` block on it, `c` comment, `d` not an issue, `i` ignore, `u` undo. `b` and `c` open the comment
+  `n` not an issue, `b` block on it, `c` comment, `u` undo, `h` hide. `b` and `c` open the comment
   line at the finding's line, prefilled with its title: edit it (`ctrl-u` clears the line), Enter saves
-  it as your own line comment, Esc cancels the decision. `d` takes an optional one-line reason, kept
-  in the document and never posted; `i` records that it is true but not worth raising. After each
+  it as your own line comment, Esc cancels the decision. `n` takes an optional one-line reason, kept
+  in the document and never posted. `h` closes the box and records nothing, like Esc. With a box open
+  only the keys in the footer act (plus `[f`, Esc and paging). After each
   decision the next undecided finding opens, so a whole pass is `]f` and then one key per finding; the
   box says how far along you are (`3/9 decided`), and the `▲` counts on the rail and header are what
   is left to decide. Decisions are saved as you go (`human.decisions` in the document).
@@ -100,7 +101,7 @@ State lives under `~/.cache/prview` (`$PRVIEW_HOME`): a worktree per review and 
 
 Every review is a `prview-review/1` document: the target (repo, base, head, PR), the chapters,
 the findings (each with the `source` that raised it), and your comments, decisions on findings,
-coverage and verdict (an older document's `dismissals` load as "not an issue"). The guide and critic are just the default producer; any reviewer that writes the
+coverage and verdict (an older document's `dismissals`, and a stored `ignored` decision, load as "not an issue"). The guide and critic are just the default producer; any reviewer that writes the
 document can feed prview, and prview never asks which one did.
 
 ```sh

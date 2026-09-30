@@ -23,9 +23,9 @@ export type Comment = { id?: string; hunk: string | null; side: "new" | "old"; l
 /**
  * What the reader decided about one finding. `block` and `comment` made a line comment of the
  * reader's own (`comment` is its id); `dismissed` is "not an issue", with an optional reason that
- * stays in the document and is never posted; `ignored` is true but not worth raising.
+ * stays in the document and is never posted. A stored `ignored` (an older document) reads as `dismissed`.
  */
-export type DecisionKind = "block" | "comment" | "dismissed" | "ignored";
+export type DecisionKind = "block" | "comment" | "dismissed";
 export type Decision = { kind: DecisionKind; reason?: string; comment?: string };
 /** Finding id to decision. */
 export type Decisions = Record<string, Decision>;
@@ -62,7 +62,7 @@ const sha = (v: unknown) => typeof v === "string" && /^([0-9a-f]{40}|[0-9a-f]{64
 const side = (v: unknown): "new" | "old" => v === "old" ? "old" : "new";
 const VERDICTS = new Set<Verdict>(["approve", "request_changes", "comment"]);
 const STATUSES = new Set<Finding["status"]>(["upheld", "withdrawn", "unrefuted"]);
-const KINDS = new Set<DecisionKind>(["block", "comment", "dismissed", "ignored"]);
+const KINDS = new Set<string>(["block", "comment", "dismissed", "ignored"]);
 
 /** A document from a file, stdin or the store. Refuses only what cannot be a review at all: another schema, or no commits to anchor on. */
 export function parseDocument(input: unknown): Doc {
@@ -122,8 +122,8 @@ export function parseDocument(input: unknown): Doc {
   };
   const decisions: Decisions = {};
   for (const [id, v] of Object.entries(isObj(h.decisions) ? h.decisions : {})) {
-    if (!ids.has(id) || !isObj(v) || !KINDS.has(v.kind as DecisionKind)) continue;
-    const kind = v.kind as DecisionKind, reason = str(v.reason, 200);
+    if (!ids.has(id) || !isObj(v) || !KINDS.has(v.kind as string)) continue;
+    const kind: DecisionKind = v.kind === "ignored" ? "dismissed" : v.kind as DecisionKind, reason = v.kind === "dismissed" ? str(v.reason, 200) : "";
     decisions[id] = { kind, ...(reason && kind === "dismissed" ? { reason } : {}), ...(typeof v.comment === "string" && cids.has(v.comment) && (kind === "block" || kind === "comment") ? { comment: v.comment } : {}) };
   }
   const all = withLegacy(decisions, arr(h.dismissals).map(String).filter((d) => ids.has(d)));

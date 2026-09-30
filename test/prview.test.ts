@@ -474,8 +474,8 @@ test("the write-up lists kept findings by title", () => {
   expect(md).not.toContain("Even more prose");
   expect(md).toContain("nit · Short title · not decided");
   // A decision shows beside its finding; "not an issue" drops the finding from the list.
-  const decided = writeup({ ...r.doc, human: { ...r.doc.human, decisions: { "1": { kind: "ignored" }, "2": { kind: "dismissed" } } } }, parseDiff(MECH));
-  expect(decided).toContain("Long prose about the thing · decided: ignored");
+  const decided = writeup({ ...r.doc, human: { ...r.doc.human, decisions: { "1": { kind: "block" }, "2": { kind: "dismissed" } } } }, parseDiff(MECH));
+  expect(decided).toContain("Long prose about the thing · decided: blocking");
   expect(decided).not.toContain("Short title");
 });
 

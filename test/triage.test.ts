@@ -43,8 +43,8 @@ test("decide: block and comment write the reader's comment at the finding's line
   h = decide(h, f1, "dismissed", { reason: " misread ", text: "ignored text", at: "t3" });
   expect(h.comments).toEqual([]); // it would otherwise still post
   expect(h.decisions!["1"]).toEqual({ kind: "dismissed", reason: "misread" });
-  h = decide(h, f2, "ignored", { reason: "not kept for ignore", at: "t" });
-  expect(h.decisions!["2"]).toEqual({ kind: "ignored" });
+  h = decide(h, f2, "dismissed", { at: "t" });
+  expect(h.decisions!["2"]).toEqual({ kind: "dismissed" });
   expect(() => decide(h, f3, "block", { text: "  ", at: "t" })).toThrow();
 });
 
@@ -55,10 +55,10 @@ test("decide: a new decision comment never reuses an id already taken", () => {
 
 test("undo: takes back the decision and the comment it wrote, and nothing else", () => {
   const typed = { hunk: h1!.id, side: "new" as const, line: 11, text: "my own note", at: "" };
-  const h = decide(decide({ comments: [typed], visited: [] }, f1, "block", { text: "blocking words", at: "" }), f2, "ignored", { at: "" });
+  const h = decide(decide({ comments: [typed], visited: [] }, f1, "block", { text: "blocking words", at: "" }), f2, "dismissed", { at: "" });
   const u = undo(h, "1");
   expect(u.comments).toEqual([typed]);
-  expect(u.decisions).toEqual({ "2": { kind: "ignored" } });
+  expect(u.decisions).toEqual({ "2": { kind: "dismissed" } });
   expect(undo(u, "1")).toBe(u); // nothing to undo
 });
 
@@ -66,14 +66,14 @@ test("the pass: progress counts decided findings; the next undecided is at or af
   const all = [f1, f2, f3];
   let h = empty();
   expect(progress(all, h)).toEqual({ decided: 0, total: 3 });
-  h = decide(h, f1, "ignored", { at: "" });
+  h = decide(h, f1, "dismissed", { at: "" });
   expect(progress(all, h)).toEqual({ decided: 1, total: 3 });
   // f2 shares f1's line: it is next, not skipped.
   expect(nextUndecided(items, all, h, { item: 0, line: 2 })?.finding.id).toBe("2");
-  h = decide(h, f2, "ignored", { at: "" });
+  h = decide(h, f2, "dismissed", { at: "" });
   expect(nextUndecided(items, all, h, { item: 0, line: 2 })).toMatchObject({ item: 1, line: 2, finding: { id: "3" } });
   // Started midway: past the last one, it wraps to the first undecided.
-  expect(nextUndecided(items, all, undo(decide(h, f3, "ignored", { at: "" }), "1"), { item: 1, line: 2 })?.finding.id).toBe("1");
+  expect(nextUndecided(items, all, undo(decide(h, f3, "dismissed", { at: "" }), "1"), { item: 1, line: 2 })?.finding.id).toBe("1");
   h = decide(h, f3, "comment", { text: "ok", at: "" });
   expect(nextUndecided(items, all, h, { item: 0, line: 0 })).toBeUndefined();
 });
@@ -86,7 +86,7 @@ test("verdict default: request changes when anything is blocking, else none; the
   expect(defaultVerdict(all, h)).toBe("request_changes");
   const place = (hunk: string, line: number) => `${hunk.split("@")[0]}:${line}`;
   expect(undecidedNote(all, h, place)).toBe("── Not decided yet (1)\n\n▲ src/b.ts:2 · warn · Title 3\n\n");
-  expect(undecidedNote(all, decide(h, f3, "ignored", { at: "" }), place)).toBe("");
+  expect(undecidedNote(all, decide(h, f3, "dismissed", { at: "" }), place)).toBe("");
   expect(undecidedNote([], empty(), place, true)).toContain("still hide their findings"); // blind: no count, only that some are hidden
 });
 
@@ -109,10 +109,19 @@ test("decisions are read defensively: unknown findings, kinds and comment refs d
   expect(parseDocument({ schema: SCHEMA, target: { base: A, head: B } }).human.decisions).toBeUndefined(); // an old document: none
 });
 
+test("a stored ignored decision (an older document) reads as not an issue, with no reason", () => {
+  const d = parseDocument({
+    schema: SCHEMA, target: { base: A, head: B },
+    findings: [{ id: "1", source: "x", hunk: h1!.id, line: 11, claim: "c" }],
+    human: { decisions: { "1": { kind: "ignored", reason: "dropped" } } },
+  });
+  expect(d.human.decisions).toEqual({ "1": { kind: "dismissed" } });
+});
+
 test("fit drops decisions on findings that left; merge keeps the reader's, fills in incoming ones with renamed ids and comments", () => {
   const target = { repo: "o/r", base: A, head: B, title: "t", body: "", label: "l" };
   const mine = fit({ ...blank(target), findings: [f1] }, files);
-  mine.human = decide(mine.human, f1, "ignored", { at: "" });
+  mine.human = decide(mine.human, f1, "dismissed", { at: "" });
   const theirs = fit({ ...blank(target), findings: [F("1", h1!.id, 11, { claim: "other claim" }), { ...f1, id: "x" }, F("gone", "nowhere@1:1", 1)] }, files);
   expect(theirs.findings.map((f) => f.id)).toEqual(["1", "x"]);
   theirs.human = decide(decide(theirs.human, theirs.findings[0]!, "block", { text: "theirs", at: "" }), theirs.findings[1]!, "comment", { text: "on mine", at: "" });
@@ -121,6 +130,6 @@ test("fit drops decisions on findings that left; merge keeps the reader's, fills
   expect(m.findings.map((f) => f.id)).toEqual(["1", "1.2"]);
   const ref = m.human.decisions!["1.2"]!.comment!;
   expect(m.human.comments.find((c) => c.id === ref)?.text).toBe("theirs");
-  expect(m.human.decisions!["1"]).toEqual({ kind: "ignored" });
+  expect(m.human.decisions!["1"]).toEqual({ kind: "dismissed" });
   expect(merge(m, theirs)).toEqual(m);
 });

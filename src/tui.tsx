@@ -7,8 +7,8 @@
 // the app again with the same state. Inside tmux the CLI passes `beside` instead, and the editor opens in
 // a split pane while this screen stays up.
 //
-// Deciding on findings is the first pass: `]f` opens the next one, and one key decides it (b block on
-// it, c comment, d not an issue, i ignore; u undoes). b and c open the ordinary comment line prefilled
+// Deciding on findings is the first pass: `]f` opens the next one, and one key decides it (n not an issue,
+// b block on it, c comment; u undoes, h hides the box without deciding). b and c open the ordinary comment line prefilled
 // with the finding's title, so what posts is what the reader saved. Each decision moves straight to
 // the next undecided finding. The rules live in triage.ts.
 //
@@ -28,7 +28,7 @@ import { clampScroll, clampX, floatHeight, floatRows, layoutOf, pageStep, rowsFo
 import type { Beside } from "./editor.ts";
 import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
 import { describe, planOf } from "./submit.ts";
-import { decide, decisionOf, defaultVerdict, LABEL, linkedComment, nextUndecided, progress, undecidedNote, undo } from "./triage.ts";
+import { decide, decisionOf, FINDING_KEYS, findingFooter, defaultVerdict, LABEL, linkedComment, nextUndecided, progress, undecidedNote, undo } from "./triage.ts";
 import { MIN_COLS, MIN_ROWS, tooSmall, useTerminalSize } from "./resize.ts";
 
 /** `hook`: the human allowed the document's on_submit command for this submit (x in the preview). */
@@ -55,7 +55,7 @@ const SEV = { blocking: "red", warn: "yellow", nit: "blue" } as const;
 type Float = { title: string; lead?: string; body: string; color?: string; tall?: boolean; copy?: string; finding?: string };
 /** `decide`: this comment carries out a block or comment decision on that finding. `reason`: the optional reason for "not an issue". */
 type Mode = { kind: "nav" } | { kind: "comment"; general: boolean; decide?: { id: string; kind: "block" | "comment" } } | { kind: "reason"; id: string } | { kind: "ask" } | { kind: "verdict" } | { kind: "preview"; hook: boolean; coverage: boolean };
-const HELP = "? why this chapter · ]f next finding, then b block on it · c comment · d not an issue · i ignore · u undo · f finding in this hunk · w wrap · a ask · e editor · n comment · N summary · s submit · q quit";
+const HELP = "? why this chapter · ]f next finding, then n not an issue · b block on it · c comment · u undo · h hide · f finding in this hunk · w wrap · a ask · e editor · n comment · N summary · s submit · q quit";
 
 export type AppProps = {
   review: Review; files: FileDiff[]; onDone: (o: Outcome) => void;
@@ -140,8 +140,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const showFinding = (f: Finding) => {
     const dec = decisionOf(h, f.id), p = progress(visible(), h), mine = linkedComment(h, f.id);
     const state = dec
-      ? `Decided: ${LABEL[dec.kind]}${dec.reason ? ` (${dec.reason})` : ""}${mine ? `. Your comment: ${mine.text}` : ""}. u undoes it.`
-      : "b block on it · c comment · d not an issue · i ignore";
+      ? `Decided: ${LABEL[dec.kind]}${dec.reason ? ` (${dec.reason})` : ""}${mine ? `. Your comment: ${mine.text}` : ""}`
+      : "";
     setFloat({ title: `▲ ${f.source} · ${f.kind} · ${f.severity}${f.votes && r.ai?.samples ? ` · ${f.votes}/${r.ai.samples}` : ""} · ${p.decided}/${p.total} decided`, color: dec ? "gray" : SEV[f.severity], lead: titleOf(f), finding: f.id, copy: findingText(f, place(f.hunk, f.line)), body: [claimAddsTo(f) ? f.claim : "", f.evidence, f.refute ? `Second look: ${f.refute}` : "", state].filter(Boolean).join("\n\n") });
   };
   // What the decision keys act on: the finding in the open box, else one on the cursor line (an undecided one first).
@@ -248,10 +248,17 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       const p = pending; setPending(null);
       if (p === "g" && ch === "g") setPos({ ...pos, line: 0 });
       else if ((p === "]" || p === "[") && ch === "f") jumpFinding(p === "]" ? 1 : -1);
-      else if ((p === "]" || p === "[") && ch === "c") goChapter(p === "]" ? 1 : -1);
+      else if ((p === "]" || p === "[") && ch === "c" && !float?.finding) goChapter(p === "]" ? 1 : -1);
       return;
     }
-    if (key.ctrl || key.pageDown || key.pageUp) { scrollFloat(ch, key); return; } // before the letters: ctrl-d is a page, not "dismiss"
+    if (key.ctrl || key.pageDown || key.pageUp) { scrollFloat(ch, key); return; } // before the letters: ctrl-d is a page, not a letter key
+    // A finding box open: only the keys the footer lists act (triage.ts FINDING_KEYS), so the footer is the truth.
+    if (float?.finding) {
+      if (!FINDING_KEYS.some((k) => k.key === ch || (k.key.length === 2 && (ch === "]" || ch === "[")))) return;
+      const f = target();
+      if (ch === "h") { setFloat(null); return; }
+      if (ch === "n") { if (f) { setMode({ kind: "reason", id: f.id }); setInput(decisionOf(h, f.id)?.reason ?? ""); } return; }
+    }
     if (/^[0-9]$/.test(ch) && (count || ch !== "0")) { setCount(count + ch); return; }
     const n = count ? parseInt(count, 10) : undefined;
     setCount("");
@@ -287,15 +294,13 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       if (at >= 0) setPos({ ...pos, line: at });
       showFinding((at >= 0 ? findingsAt(lines[at]!) : findingsHere)[0]!);
     }
-    else if (ch === "b" || ch === "c" || ch === "d" || ch === "i" || ch === "u") {
+    else if (ch === "b" || ch === "c" || ch === "u") {
       const f = target();
       if (!f) { setNote(item && hidden.has(item.id) ? "this chapter's findings are hidden until you have read it" : "no finding here: ]f goes to the next one"); return; }
       if (ch === "u") {
         if (!decisionOf(h, f.id)) { setNote("nothing decided on this finding"); return; }
         Object.assign(h, undo(h, f.id)); redraw(); showFinding(f); return;
       }
-      if (ch === "i") { decided(decide(h, f, "ignored", { at: new Date().toISOString() })); return; }
-      if (ch === "d") { setMode({ kind: "reason", id: f.id }); setInput(decisionOf(h, f.id)?.reason ?? ""); return; }
       // The comment starts as the finding's title (or the comment already written for it) and is saved only on Enter.
       setMode({ kind: "comment", general: false, decide: { id: f.id, kind: ch === "b" ? "block" : "comment" } });
       setInput(linkedComment(h, f.id)?.text ?? titleOf(f));
@@ -356,10 +361,10 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       case "preview": return <Text wrap="truncate" dimColor> Enter {dryRun ? "prints the calls" : "submits"}{planOf(r, files).adapter ? ` · v ${mode.coverage ? "drop" : "add"} coverage line` : ""}{d.on_submit ? ` · x ${mode.hook ? "disallow" : "allow"} the document's command` : ""} · Esc back to the verdict · j/k PgUp/PgDn scroll</Text>;
       case "nav": if (note) return <Text wrap="truncate" color="green"> {note}</Text>;
         return <Text wrap="truncate" dimColor> {float?.finding
-        ? "b block on it  c comment  d not an issue  i ignore  u undo  ]f next  y copy  Esc close"
+        ? findingFooter()
         : L.narrow
-        ? "j/k h/l hunk  ]f find  b/c/d/i/u decide  ? why  y copy  a ask  n note  s send  q quit"
-        : `j/k line  h/l hunk  J/K chapter  ]f finding  b/c/d/i/u decide  ${blind ? "F reveal  " : ""}? why  y copy  f finding  a ask  e edit  n/N note  w wrap  H/L pan  s submit  q quit`}{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
+        ? "j/k h/l hunk  ]f find  b/c/u decide  ? why  y copy  a ask  n note  s send  q quit"
+        : `j/k line  h/l hunk  J/K chapter  ]f finding  b/c/u decide  ${blind ? "F reveal  " : ""}? why  y copy  f finding  a ask  e edit  n/N note  w wrap  H/L pan  s submit  q quit`}{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
       default: {
         const decideKind = mode.kind === "comment" ? mode.decide?.kind : undefined;
         const label = mode.kind === "ask" ? "ask" : decideKind === "block" ? "block on it" : decideKind ? "comment on the finding" : mode.general ? "summary comment" : "comment";

@@ -1,4 +1,4 @@
-// Deciding on findings, one key each: block on it, comment, not an issue, ignore, undo. Pure, like
+// Deciding on findings, one key each: block on it, comment, not an issue, undo. Pure, like
 // nav.ts, so the rules are tested without a screen.
 //
 // A block or comment decision is carried out as an ordinary line comment of the reader's own, at the
@@ -11,7 +11,18 @@ import type { Comment, Decision, DecisionKind, Decisions, Human, Verdict } from 
 import { spotsOf, type At, type NavItem } from "./nav.ts";
 
 /** How a decision reads on the screen and in the write-up. */
-export const LABEL: Record<DecisionKind, string> = { block: "blocking", comment: "comment", dismissed: "not an issue", ignored: "ignored" };
+export const LABEL: Record<DecisionKind, string> = { block: "blocking", comment: "comment", dismissed: "not an issue" };
+
+/**
+ * The keys that act while a finding's box is open, in footer order. The footer is drawn from this table and the
+ * key handler gates on it, so what the footer shows is exactly what works. `]f` is a two-key chord; `[f`, Esc and
+ * paging also act but are not listed, as they are not decisions.
+ */
+export const FINDING_KEYS: { key: string; label: string }[] = [
+  { key: "n", label: "not an issue" }, { key: "b", label: "block" }, { key: "c", label: "comment" }, { key: "u", label: "undo" },
+  { key: "h", label: "hide" }, { key: "]f", label: "next" }, { key: "y", label: "copy" },
+];
+export const findingFooter = (): string => FINDING_KEYS.map((k) => `${k.key} ${k.label}`).join("  ");
 
 /** A document from before decisions only had dismissals: each becomes "not an issue", unless the finding is already decided. */
 export function withLegacy(decisions: Decisions, dismissals: string[]): Decisions {

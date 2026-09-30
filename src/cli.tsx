@@ -31,10 +31,12 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
          F reveal this chapter's findings early (--blind only)
          Deciding on findings (]f opens the next; each decision moves on to the next undecided one, and the
          box shows how many are decided, e.g. 3/9 decided):
+           n not an issue (an optional one-line reason, kept in the document, never posted)
            b block on it: your line comment at the finding's line, prefilled with its title; edit, Enter saves
              (ctrl-u clears the line, Esc cancels); submit then defaults to request changes
-           c comment: the same, not blocking     d not an issue (an optional reason, kept, never posted)
-           i ignore: true but not worth raising  u undo the decision (and the comment it wrote)
+           c comment: the same, not blocking     u undo the decision (and the comment it wrote)
+           h hide the box without deciding (Esc does the same)
+           With a box open only these keys, ]f/[f, y, Esc and paging act; the footer lists them.
          ? why this chapter matters   f next finding in this hunk   a ask about this hunk
          y copy the open box (finding, ? why, ask answer) as clean text; with none open, the line's path:line
            (pbcopy, wl-copy, xclip, else OSC 52; PRVIEW_CLIPBOARD=osc52 forces the terminal route)
