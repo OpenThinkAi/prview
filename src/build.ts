@@ -26,13 +26,18 @@ export { Fail };
 /** One model call: which role, how long, what it cost where the provider reports it. */
 export type Run = { role: "guide" | "critic" | "refute"; /** the configured model's name */ name?: string; /** the concrete id the model reported, or the config's */ model?: string; ms: number; cost?: number };
 
-/** "Prepared by claude-opus-5-5 (guide), claude-sonnet-5-5 (critic, refute)": one short local line, never part of anything posted. */
+/**
+ * "Prepared by claude-opus-5-5 (guide), claude-sonnet-5-5 (critic, refute)": one short local line, never part of anything posted.
+ * A run with neither a model id nor a configured name (a review stored before ids were recorded) makes the whole line absent:
+ * a line naming "unknown" tells the reader nothing.
+ */
 export function preparedBy(runs: Run[] | undefined): string | undefined {
   const by = new Map<string, string[]>();
   for (const role of ["guide", "critic", "refute"] as const) {
     const r = runs?.find((x) => x.role === role);
     if (!r) continue;
-    const id = r.model ?? r.name ?? "unknown";
+    const id = r.model ?? r.name;
+    if (!id) return undefined;
     by.set(id, [...(by.get(id) ?? []), role]);
   }
   return by.size ? `Prepared by ${[...by].map(([id, roles]) => `${id} (${roles.join(", ")})`).join(", ")}` : undefined;

@@ -10,7 +10,7 @@ import type { Review } from "../src/build.ts";
 import type { Doc } from "../src/document.ts";
 import { chapterHidden, earlyTitles, hiddenHunks, revealBody, revealEarly } from "../src/blind.ts";
 import { writeup } from "../src/build.ts";
-import { FINDING_KEYS, findingFooter } from "../src/triage.ts";
+import { FINDING_KEYS, findingFooter, INFO_KEYS, infoFooter, NAV_KEYS, navFooter } from "../src/keys.ts";
 import { parseDocument, SCHEMA } from "../src/document.ts";
 import { parseConfig } from "../src/config.ts";
 import { App, type Outcome } from "../src/tui.tsx";
@@ -66,9 +66,10 @@ function fixture(over: Over = {}): Review {
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 30));
-async function open(over?: Over, props: { blind?: boolean; dryRun?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined } = {}) {
+async function open(over?: Over, props: { ai?: Review["ai"]; blind?: boolean; dryRun?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined } = {}) {
   const outcomes: Outcome[] = [];
   const r = fixture(over);
+  r.ai = props.ai;
   const app = render(<App review={r} files={files} onDone={(o) => outcomes.push(o)} beside={props.beside} blind={props.blind} dryRun={props.dryRun} size={{ cols: props.cols ?? 120, rows: props.rows ?? 40 }} />);
   await settle();
   // One key at a time: a handler closes over the state of its render, so two keys in one chunk would both see the old cursor.
@@ -93,7 +94,7 @@ test("rail: below 100 columns it collapses to chapter numbers and the code keeps
   expect(t.frame()).not.toContain("Core change");
   expect(t.frame()).toContain("Check the answer is derived"); // the chapter's intent is still on the hunk header
   for (const line of t.frame().split("\n")) expect([...line].length).toBeLessThanOrEqual(80);
-  expect(t.frame()).toContain("j/k h/l hunk"); // the short footer, not one that wraps
+  expect(t.frame()).toContain("j/k line  h/l hunk"); // the short footer, not one that wraps
 });
 
 test("cursor row: j and k move it, the line number and the sign stay in the gutter, G and gg jump", async () => {
@@ -221,7 +222,8 @@ test("submit flow: the preview leads with the undecided findings; with one block
   await t.press("s");
   expect(t.frame()).toContain("a approve (Enter)"); // nothing blocking: Enter keeps the verdict chosen before
   await t.press("\x1b");
-  await t.press("b\r"); // block on the second, with its title as the comment
+  await t.press("fb\r"); // reopen the second (the only one in this hunk), and block on it, with its title as the comment
+  await t.press("h"); // the all-decided box is open: only hide acts, then s
   await t.press("s");
   expect(t.frame()).toContain("r request changes (Enter)");
   await t.press("\r");
@@ -411,9 +413,10 @@ test("blind: before visiting, the gutter has no ▲, the rail shows ▲?, f and 
   await t.press("]f");
   expect(t.frame()).not.toContain("answer is hard-coded");
   expect(t.r.pos.item).toBe(0);
-  for (const k of ["b", "c"]) {
-    await t.press("jj" + k); // on the finding's line: still nothing to decide
-    expect(t.frame()).toContain("hidden until you have read it");
+  for (const k of ["b", "c", "u"]) {
+    await t.press("jj" + k); // on the finding's line with no box open: the decision keys do nothing at all
+    expect(t.frame()).not.toContain("›  comment");
+    expect(t.frame()).not.toMatch(/decided|no finding here/);
     await t.press("gg");
   }
   expect(t.frame()).not.toContain("comment on the finding ›");
@@ -549,10 +552,11 @@ test("triage: a whole pass is ]f and one key per finding; the decisions are in t
 test("triage with nothing to act on: off a finding the keys say so; in blind, a revealed chapter's findings are the only ones counted", async () => {
   const t = await open(three);
   await t.press("u");
-  expect(t.frame()).toContain("no finding here: ]f goes to the next one");
   expect(t.r.doc.human.decisions).toBeUndefined();
-  await t.press("jjc\r"); // on a finding's line, with no box open: that finding
-  expect(t.r.doc.human.decisions).toMatchObject({ "1": { kind: "comment" } });
+  await t.press("jjc\r"); // on a finding's line with no box open, b/c/u are not keys: no decision, no comment line
+  expect(t.frame()).not.toContain("comment on the finding ›");
+  expect(t.r.doc.human.decisions).toBeUndefined();
+  expect(t.r.doc.human.comments).toEqual([]);
 
   const b = await open(three, { blind: true });
   await b.press("]f"); // chapter 1 is read on open (one hunk); chapter 2 is not
@@ -632,9 +636,10 @@ test("y: with a finding open copies its source text and the footer says how much
 test("y: a box with no source text says so instead of copying the hints", async () => {
   const t = await copying({ findings: [] });
   await t.press("f");
+  expect(t.frame()).toContain("h hide  ]f finding"); // a hint has no source text, so the footer does not offer y
   await t.press("y");
   expect(t.copied).toEqual([]);
-  expect(t.frame()).toContain("nothing to copy here");
+  expect(t.frame()).not.toContain("copied");
 });
 
 // -- resize ------------------------------------------------------------------------------------------------
@@ -752,4 +757,121 @@ test("no box open: h goes to the previous hunk and n opens a line comment", asyn
   await t.press("d");
   await t.press("i");
   expect(t.r.doc.human.decisions).toBeUndefined();
+});
+
+// ---------------------------------------------------------------- every box and the nav footer: the footer is the truth
+
+const SUMMARY = "Replaces the hard-coded answer with one derived from the input.";
+const withSummary = (plan: Partial<Doc["plan"]> = {}) => ({ plan: { summary: SUMMARY, by: "guide", mechanical: [], chapters: [{ title: "Core change", intent: "Check the answer is derived", why: "It is the heart of it.", hunks: [h1!.id] }, { title: "The ts side", intent: "Check the type", why: "Second.", hunks: [h2!.id] }], ...plan } });
+const models = { guide: "g", critic: "c", refute: "r", ask: "a" };
+
+test("opening summary: a double-ruled box titled as the summary, above the code and not under the cursor's ▲; no key list; footer is the info table; h closes it and h/l then move hunks", async () => {
+  const t = await open(withSummary());
+  const f = t.frame();
+  expect(f).toContain("Summary of this change · not a finding");
+  expect(f).toContain(SUMMARY);
+  expect(f).toContain("╔"); // findings are round boxes (╭), so the two cannot be mistaken
+  expect(f).not.toContain("╭");
+  expect(f.indexOf("Summary of this change")).toBeLessThan(f.indexOf("keep")); // above the first code line, not hugging the ▲ line
+  expect(f).not.toMatch(/not an issue|b block|u undo|Prepared by/); // no key list, no provenance without runs
+  expect(f).toContain(infoFooter(true, false));
+  expect(infoFooter(true, false)).toBe("h hide  y copy  ]f finding");
+  await t.press("h");
+  expect(t.frame()).not.toContain("Summary of this change");
+  expect(t.r.pos.item).toBe(0); // h closed the box, it did not move a hunk
+  await t.press("l");
+  expect(t.r.pos.item).toBe(1);
+  await t.press("h");
+  expect(t.r.pos.item).toBe(0);
+  expect(t.frame()).toContain(navFooter(120, false));
+});
+
+test("opening summary: a finding box keeps its own look, and the summary names who prepared it only when every run has a model id", async () => {
+  const t = await open(withSummary(), { ai: { models, at: "now", errors: [], runs: [{ role: "guide", model: "claude-opus-5-5", ms: 1 }, { role: "critic", model: "claude-opus-5-5", ms: 1 }] } });
+  expect(t.frame()).toContain("Prepared by claude-opus-5-5 (guide, critic)");
+  await t.press("h]f");
+  expect(t.frame()).toContain("╭");
+  expect(t.frame()).not.toContain("╔");
+  const old = await open(withSummary(), { ai: { models, at: "now", errors: [], runs: [{ role: "guide", ms: 1 }, { role: "critic", ms: 1 }] } });
+  expect(old.frame()).toContain(SUMMARY);
+  expect(old.frame()).not.toContain("Prepared by");
+  expect(old.frame()).not.toContain("unknown");
+});
+
+test("info boxes (summary, ? why, F reveal, notices): footer from INFO_KEYS, only those keys act, h hides any of them", async () => {
+  const boxes: [string, (t: Awaited<ReturnType<typeof open>>) => Promise<void>, boolean][] = [
+    ["summary", async () => {}, true],
+    ["? why", async (t) => { await t.press("h?"); }, true],
+    ["F reveal", async (t) => { await t.press("hF"); }, true],
+    ["f notice", async (t) => { await t.press("hf"); }, false],
+  ];
+  for (const [name, into, copyable] of boxes) {
+    const t = await open({ ...withSummary(), findings: name === "f notice" ? [] : undefined }, { blind: name === "F reveal" });
+    await into(t);
+    const footer = infoFooter(copyable, false);
+    expect(t.frame(), name).toContain(footer);
+    expect(footer, name).toBe(copyable ? "h hide  y copy  ]f finding" : "h hide  ]f finding");
+    const before = t.frame();
+    const listed = new Set(["h", "]", "[", ...(copyable ? ["y"] : [])]);
+    for (const ch of "abcdefgijklmnopqrstuvwxzABCDEGHIJKLMNOPQRSTUVWXYZ?".split("")) {
+      if (listed.has(ch)) continue;
+      await t.press(ch);
+      expect(t.frame(), `${name}: ${ch}`).toBe(before);
+    }
+    expect(t.r.pos.item, name).toBe(0);
+    expect(t.r.doc.human.comments, name).toEqual([]);
+    await t.press("h");
+    expect(t.frame(), name).not.toContain(footer);
+  }
+  // ]f acts from an info box: it opens a finding with the finding footer.
+  const t = await open(withSummary());
+  await t.press("]f");
+  expect(t.frame()).toContain(findingFooter());
+  // ]c is not listed, so it does nothing while a box is open, and works once it is closed.
+  await t.press("h?]c");
+  expect(t.r.pos.item).toBe(0);
+  await t.press("h]c");
+  expect(t.r.pos.item).toBe(1);
+}, 30000);
+
+test("info box that scrolls lists paging in the footer", async () => {
+  const long = Array.from({ length: 60 }, (_, i) => `line ${i}`).join("\n");
+  const t = await open(withSummary({ summary: long }));
+  expect(t.frame()).toContain("h hide  y copy  ]f finding  PgUp/PgDn page");
+});
+
+test("nav: the footer comes from NAV_KEYS, every listed key acts, b/c/u are not in it and do nothing; F only with --blind", async () => {
+  const wide = await open(undefined, { cols: 140, blind: false });
+  expect(wide.frame()).toContain(navFooter(140, false));
+  expect(navFooter(140, false)).toBe("j/k line  h/l hunk  J/K chapter  ]f/f find  ? why  y copy  a ask  e edit  n/N note  w wrap  H/L pan  s submit  q quit");
+  expect(navFooter(140, false)).not.toMatch(/decide|F reveal/);
+  expect(navFooter(140, true)).toContain("F reveal");
+  expect(NAV_KEYS.some((k) => /[bcu]/.test(k.key.replace("]f", "")) && k.key !== "q")).toBe(false);
+  // Every listed key does something, from a state where it can.
+  const prelude: Record<string, string> = { H: "L", k: "j", h: "l", K: "J" };
+  const keys = NAV_KEYS.filter((k) => !k.blind).flatMap((k) => k.key.split("/"));
+  for (const ch of keys) {
+    const t = await open(undefined, { cols: 140, beside: () => undefined });
+    await t.press(ch === "K" ? "J" : prelude[ch] ?? "");
+    const before = `${t.frame()}|${t.r.pos.item}:${t.r.pos.line}|${t.outcomes.length}`;
+    await t.press(ch);
+    const after = `${t.frame()}|${t.r.pos.item}:${t.r.pos.line}|${t.outcomes.length}`;
+    if (ch === "e") continue; // beside pane stub: nothing to see on screen; covered by the editor test
+    expect(after, `key ${ch}`).not.toBe(before);
+  }
+  // Letters the table does not list do nothing without a box.
+  const t = await open(undefined, { cols: 140 });
+  const before = t.frame();
+  for (const ch of "bcdgimoprtuvxzACDEGIMOPQRSTUVWXYZ".split("")) {
+    if (ch === "g" || ch === "G") continue;
+    await t.press(ch);
+    expect(t.frame(), `key ${ch}`).toBe(before);
+  }
+  expect(t.r.doc.human.decisions).toBeUndefined();
+  await t.press("F");
+  expect(t.frame()).toBe(before); // not blind: F is not in the footer and does nothing
+  const b = await open(undefined, { cols: 200, blind: true });
+  expect(b.frame()).toContain(navFooter(200, true));
+  await b.press("F");
+  expect(b.frame()).toContain("what the model found");
 });
