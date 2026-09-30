@@ -44,12 +44,33 @@ wrote a document; the only trace of a producer is the `source` on each finding.
   last chapter. A review that already has a producer's chapters keeps them; yours replace only
   the file-by-file fallback. `plan.mechanical` is ignored: prview classifies mechanical hunks
   (lock files, whitespace, pure moves) itself, by rule.
-- **`on_submit`**: `{ "run": ["argv", "..."] }`, a command you want run once the human submits.
-  Reserved: a document can come from anywhere, so prview does not keep a command it names until
-  submission can show it to the human and ask before running it. Today it is dropped on import.
+- **`on_submit`**: `{ "run": ["argv", "..."] }` (or one string, `"cat {file} > /tmp/x"`), a command
+  you want run once the human submits, e.g. to take a copy of the finished review. See below.
 - **`human`**: the reader's comments, dismissals, coverage and verdict. prview writes this;
   a producer normally leaves it out. `prview export <name>` prints a whole document, `human`
   included, so a review moves between clones with `export` and `import`.
+
+## Submission and `on_submit`
+
+Submitting is the same whoever produced the document: prview (1) writes the finished document to
+`$PRVIEW_HOME/submitted/<review>.json` (and the write-up next to it as `.md`), (2) posts it through
+the adapter for `target.platform` if it has one (`github`, with `gh`; no platform, or one without an
+adapter, and the file is the review), then (3) runs your `on_submit` command, if the human allows it.
+A failed post or command never loses the file. Each submit is recorded in the document's
+`submissions`, with the command's exit code and output.
+
+A document can come from anywhere, so `on_submit` is only ever a request, and consent is per submit:
+
+- The submit preview shows the command exactly as it will run: the argv with `{file}` filled in,
+  where stdout goes, the directory (the worktree at the head), and the timeout (60 s).
+- It runs only if the human presses `x` in that preview to allow it, then Enter. Enter alone posts
+  and skips it. Nothing is remembered: the next submit asks again.
+- It is an argv run without a shell. A string is split on whitespace with `'...'` and `"..."`
+  quoting; `$VAR`, `;`, `|`, backticks and globs are passed through as plain text. The only thing
+  prview puts into it is the written document's path, for `{file}`. One trailing `>` and a path
+  (or `>path`) sends stdout to that file, relative to the worktree; prview writes it, not a shell.
+- Posting to the pull request carries only the human's verdict and comments, never anything a
+  producer wrote.
 
 ## What prview does with it
 

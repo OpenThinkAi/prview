@@ -94,10 +94,43 @@
       }
     },
     "on_submit": {
-      "description": "Reserved. A command the producer wants run after the review is submitted; prview drops it on import until submission can show it and ask the human first.",
+      "description": "A command the producer wants run after the review is submitted. Never run silently: the submit preview shows the exact command and it runs only if the human allows it in that submit. An argv run without a shell; `{file}` is replaced by the path of the written document; a trailing `>` and path sends stdout to that file.",
       "type": "object",
       "required": ["run"],
-      "properties": { "run": { "type": "array", "minItems": 1, "items": { "type": "string" } } }
+      "properties": {
+        "run": {
+          "oneOf": [
+            { "type": "array", "minItems": 1, "maxItems": 64, "items": { "type": "string", "maxLength": 500 } },
+            { "type": "string", "minLength": 1, "maxLength": 2000, "description": "split into an argv on whitespace, with '...' and \"...\" quoting; never given to a shell" }
+          ]
+        }
+      }
+    },
+    "submissions": {
+      "description": "Written by prview: what each submit did. A producer leaves it out.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["at", "file"],
+        "properties": {
+          "at": { "type": "string" },
+          "verdict": { "enum": ["approve", "request_changes", "comment"] },
+          "file": { "type": "string", "description": "where the finished document was written" },
+          "posted": { "type": "object", "properties": { "platform": { "type": "string" }, "ok": { "type": "boolean" }, "url": { "type": "string" }, "error": { "type": "string" } } },
+          "hook": {
+            "type": "object",
+            "properties": {
+              "argv": { "type": "array", "items": { "type": "string" } },
+              "cwd": { "type": "string" },
+              "ran": { "type": "boolean", "description": "false when the human did not allow it" },
+              "exit": { "type": ["integer", "null"] },
+              "output": { "type": "string", "description": "stderr, and stdout unless it went to a file; the last 4000 characters" },
+              "error": { "type": "string" },
+              "timed_out": { "type": "boolean" }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {

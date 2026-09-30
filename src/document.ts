@@ -21,11 +21,18 @@ export type Comment = { hunk: string | null; side: "new" | "old"; line: number |
 /** `revealed` is optional so a document from before the blind pass loads unchanged: chapters (by first hunk) whose findings were shown before being read. */
 export type Human = { comments: Comment[]; dismissals: string[]; visited: string[]; revealed?: string[]; verdict?: Verdict };
 /**
- * Reserved: a producer's command to run after submit. A document can come from anyone, so a command
- * it names is never kept silently; it is dropped on read until submission can show it and ask first.
+ * A producer's command to run after submit, as an argv (a string form is split here, without a
+ * shell). A document can come from anyone, so this is only ever a request: submit shows the exact
+ * command and runs it only when the human allows it, that time (see src/submit.ts).
  */
 export type OnSubmit = { run: string[] };
-export type Doc = { schema: typeof SCHEMA; target: Target; plan: Plan; findings: Finding[]; human: Human; on_submit?: OnSubmit };
+/** What one submit did: the file written, where it was posted, and what the hook did if it ran. */
+export type Submission = {
+  at: string; verdict?: Verdict; file: string;
+  posted?: { platform: string; ok: boolean; url?: string; error?: string };
+  hook?: { argv: string[]; cwd: string; ran: boolean; exit?: number | null; output?: string; error?: string; timed_out?: boolean };
+};
+export type Doc = { schema: typeof SCHEMA; target: Target; plan: Plan; findings: Finding[]; human: Human; on_submit?: OnSubmit; submissions?: Submission[] };
 
 export const blank = (target: Target): Doc => ({
   schema: SCHEMA, target, plan: { summary: "", chapters: [], mechanical: [], by: "files" }, findings: [], human: { comments: [], dismissals: [], visited: [] },
@@ -97,8 +104,74 @@ export function parseDocument(input: unknown): Doc {
   if (revealed.length) human.revealed = [...new Set(revealed)];
   if (VERDICTS.has(h.verdict as Verdict)) human.verdict = h.verdict as Verdict;
 
-  // `on_submit` is deliberately not read (see OnSubmit).
-  return { schema: SCHEMA, target, plan, findings, human };
+  const doc: Doc = { schema: SCHEMA, target, plan, findings, human };
+  const onSubmit = isObj(j.on_submit) ? argvOf(j.on_submit.run) : null;
+  if (onSubmit) doc.on_submit = { run: onSubmit };
+  const submissions = arr(j.submissions).filter(isObj).flatMap(submissionOf).slice(-50);
+  if (submissions.length) doc.submissions = submissions;
+  return doc;
+}
+
+// ---------------------------------------------------------------- on_submit and submissions
+
+/**
+ * A command as an argv, never a shell line: a list of strings is taken as it is, a string is split
+ * on whitespace with '...' and "..." quoting (and \ escaping the next character). Anything that
+ * cannot be split cleanly, or is too big to show a human in one look, is no command at all.
+ */
+export function argvOf(v: unknown): string[] | null {
+  let argv: string[];
+  if (Array.isArray(v)) {
+    if (!v.every((a) => typeof a === "string")) return null;
+    argv = v as string[];
+  } else if (typeof v === "string") {
+    const split = splitArgs(v);
+    if (!split) return null;
+    argv = split;
+  } else return null;
+  if (!argv.length || !argv[0] || argv.length > 64 || argv.some((a) => a.length > 500 || a.includes("\0"))) return null;
+  return argv;
+}
+
+/** Whitespace-separated words with quotes and backslashes the way a reader expects; null for an unclosed quote. */
+export function splitArgs(s: string): string[] | null {
+  if (s.length > 2000) return null;
+  const out: string[] = [];
+  let cur = "", word = false, quote: "'" | '"' | null = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!;
+    if (quote === "'") { if (c === "'") quote = null; else cur += c; continue; }
+    if (c === "\\" && i + 1 < s.length) { cur += s[++i]; word = true; continue; }
+    if (quote === '"') { if (c === '"') quote = null; else cur += c; continue; }
+    if (c === "'" || c === '"') { quote = c; word = true; continue; }
+    if (/\s/.test(c)) { if (word) out.push(cur); cur = ""; word = false; continue; }
+    cur += c; word = true;
+  }
+  if (quote) return null;
+  if (word) out.push(cur);
+  return out;
+}
+
+function submissionOf(s: Obj): Submission[] {
+  const file = str(s.file, 1000), at = str(s.at, 40);
+  if (!file || !at) return [];
+  const out: Submission = { at, file };
+  if (VERDICTS.has(s.verdict as Verdict)) out.verdict = s.verdict as Verdict;
+  if (isObj(s.posted) && str(s.posted.platform, 40)) {
+    const p = s.posted;
+    out.posted = { platform: str(p.platform, 40), ok: p.ok === true, ...(str(p.url, 500) ? { url: str(p.url, 500) } : {}), ...(str(p.error, 1000) ? { error: str(p.error, 1000) } : {}) };
+  }
+  if (isObj(s.hook)) {
+    const k = s.hook, argv = argvOf(k.argv);
+    if (argv) out.hook = {
+      argv, cwd: str(k.cwd, 1000), ran: k.ran === true,
+      ...(Number.isInteger(k.exit) || k.exit === null ? { exit: k.exit as number | null } : {}),
+      ...(typeof k.output === "string" ? { output: clip(k.output, 4000) } : {}),
+      ...(str(k.error, 1000) ? { error: str(k.error, 1000) } : {}),
+      ...(k.timed_out === true ? { timed_out: true } : {}),
+    };
+  }
+  return [out];
 }
 
 // ---------------------------------------------------------------- holding it to the diff
@@ -167,5 +240,7 @@ export function merge(into: Doc, incoming: Doc): Doc {
   const verdict = into.human.verdict ?? incoming.human.verdict;
   if (verdict) human.verdict = verdict;
   const plan = into.plan.by === "files" && incoming.plan.by !== "files" && incoming.plan.chapters.length ? incoming.plan : into.plan;
-  return { ...into, plan, findings, human };
+  // The newest producer's hook replaces an older one; either way submit shows it and asks before running it.
+  const onSubmit = incoming.on_submit ?? into.on_submit;
+  return { ...into, plan, findings, human, ...(onSubmit ? { on_submit: onSubmit } : {}) };
 }
