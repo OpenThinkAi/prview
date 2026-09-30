@@ -1,0 +1,11 @@
+{
+  "name": "prview",
+  "version": "0.0.1",
+  "description": "Review a pull request in the terminal, prepared by a model, judged by you",
+  "private": true,
+  "type": "module",
+  "bin": { "prview": "./src/cli.tsx" },
+  "scripts": { "test": "bun test", "typecheck": "tsc --noEmit" },
+  "dependencies": { "ink": "^7.0.1", "react": "^19.2.5" },
+  "devDependencies": { "@types/bun": "latest", "@types/react": "^19", "typescript": "^5" }
+}
