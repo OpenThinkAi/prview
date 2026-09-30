@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { earlyTitles } from "./blind.ts";
 import { clean, visible } from "./sanitize.ts";
-import { IN_HOUSE, LABEL, suggestVerdict } from "./triage.ts";
+import { actionOf, actionText, DEFAULTS, IN_HOUSE, suggestVerdict, type Defaults } from "./triage.ts";
 import { parseDiff, type FileDiff } from "./diff.ts";
 import { blank, Fail, fit, merge, parseDocument, SCHEMA, suggestions, type Comment, type Doc, type Suggested, type Target } from "./document.ts";
 import {
@@ -187,7 +187,7 @@ export async function guideAndCritic(src: Target, files: FileDiff[], worktree: s
   let findings: Finding[] = [];
   reviews.forEach((r, i) => { if (r instanceof Error) errors.push(`critic (${plan.chapters[i]!.title}): ${r.message}`); else findings.push(...r); });
 
-  const contested = findings.filter((f) => f.severity !== "nit");
+  const contested = findings.filter((f) => f.severity !== "low");
   if (contested.length) say(`${tag("refute")}: checking ${contested.length} finding${contested.length === 1 ? "" : "s"}…`);
   const at = new Map(hunks.map((h) => [h.id, h]));
   const verdicts = await pool(contested.map((f) => async () => {
@@ -201,7 +201,7 @@ export async function guideAndCritic(src: Target, files: FileDiff[], worktree: s
   verdicts.forEach((v, i) => { if (v instanceof Error) errors.push(`refute: ${v.message}`); else settled.set(contested[i]!.id, v); });
   findings = findings.map((f) => settled.get(f.id) ?? f);
   const kept = findings.filter((f) => f.status !== "withdrawn").length;
-  say(`findings: ${kept} kept, ${findings.length - kept} withdrawn`);
+  say(`findings: ${kept} kept, ${findings.length - kept} dropped by the second look (shown as ignored)`);
   return { doc: { ...blank(src), plan, findings }, errors, runs };
 }
 
@@ -411,7 +411,7 @@ export function importDocument(text: string, explicitRepo?: string, mine = false
 
 /**
  * The document as a producer or another clone would read it: nothing about this machine. `redact` is the copy a
- * producer's `on_submit` hook gets: the reasons the reader gave for "not an issue" are dropped, since they were never meant to be posted.
+ * producer's `on_submit` hook gets: the reader's private ignore notes are dropped, since they were never meant to leave.
  */
 export function exportDocument(r: Review, opts: { redact?: boolean } = {}): string {
   let d = r.doc;
@@ -426,8 +426,8 @@ export function exportDocument(r: Review, opts: { redact?: boolean } = {}): stri
 
 export const VERDICT = { approve: "Approve", request_changes: "Request changes", comment: "Comment" } as const;
 
-/** The compiled review as markdown: verdict, summary, comments with file and line, coverage, findings kept. */
-export function writeup(d: Doc, files: FileDiff[]): string {
+/** The compiled review as markdown: verdict, summary, comments with file and line, coverage, and the findings not ignored with their action. */
+export function writeup(d: Doc, files: FileDiff[], defaults: Defaults = DEFAULTS): string {
   const hunks = hunksOf(files);
   const { target: t, human: h } = d;
   const total = hunks.filter((x) => x.hunk).length, seen = h.visited.length;
@@ -443,11 +443,12 @@ export function writeup(d: Doc, files: FileDiff[]): string {
   for (const c of placed) out.push(`**${place(c)}**`, c.text, ``);
   const early = earlyTitles([...d.plan.chapters.map((c) => ({ title: c.title, ids: c.hunks })), { title: "Mechanical", ids: d.plan.mechanical.map((m) => m.id) }], h);
   if (early.length) out.push(`Findings seen before reading: ${early.join(", ")}`, ``);
-  // "Not an issue" drops a finding from the write-up; every other one is listed with what was decided about it.
-  const kept = d.findings.filter((f) => f.status !== "withdrawn" && h.decisions?.[f.id]?.kind !== "dismissed");
+  // An ignored finding (by the reader, or by default after the refute step dropped it) is left out; every other one is
+  // listed with its action, marked when it is still the default.
+  const kept = d.findings.map((f) => ({ f, a: actionOf(h, f, defaults) })).filter(({ a }) => a.kind !== "ignore");
   if (kept.length) {
     out.push(`## Findings you kept`, ``);
-    for (const f of kept) { const k = h.decisions?.[f.id]?.kind; out.push(`- ${visible(f.hunk.split("@")[0]!)} ${f.side} ${f.line} · ${f.severity} · ${titleOf(f)} · ${k ? `decided: ${LABEL[k]}` : "not decided"}`); }
+    for (const { f, a } of kept) out.push(`- ${visible(f.hunk.split("@")[0]!)} ${f.side} ${f.line} · ${f.severity} · ${titleOf(f)} · ${actionText(a)}`);
   }
   return out.join("\n") + "\n";
 }

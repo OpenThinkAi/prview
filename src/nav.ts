@@ -1,7 +1,7 @@
 // Moving around the review: pure, so the keys can be tested without a screen.
 
 import type { Hunk } from "./diff.ts";
-import type { Finding } from "./guide.ts";
+import { RANK, type Finding } from "./guide.ts";
 
 export type NavItem = { id: string; path: string; hunk: Hunk; chapter: number };
 export type At = { item: number; line: number };
@@ -42,11 +42,8 @@ export function nextFinding(items: NavItem[], findings: Finding[], from: At, dir
   return dir > 0 ? spots.find(after) : [...spots].reverse().find(before);
 }
 
-/** Most serious first: what "by severity" walks through. */
-const RANK = { blocking: 0, warn: 1, nit: 2 } as const;
-
 /**
- * `g h` / `g H`: every blocking finding in reading order, then the warnings, then the nits, wrapping round. From the
+ * `g h` / `g H` (most serious first, guide.ts's RANK): every high finding in reading order, then the medium ones, then the low ones, wrapping round. From the
  * open finding (`current`) it steps along that order; with none open it starts at the most serious (or, backwards, the least).
  */
 export function nextBySeverity(items: NavItem[], findings: Finding[], current: string | undefined, dir: 1 | -1): (At & { finding: Finding }) | undefined {

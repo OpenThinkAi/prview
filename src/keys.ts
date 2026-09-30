@@ -87,11 +87,11 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "review.quit", states: OUTSIDE, key: "q", label: "quit", description: "Leave prview; the review so far is kept." },
 
   // ---- inside a finding
-  { id: "finding.close", states: FINDING, key: "x", label: "close", description: "Close the finding without deciding anything." },
+  { id: "finding.close", states: FINDING, key: "x", label: "close", description: "Close the finding; its action stays as it is." },
   { id: "finding.back", states: FINDING, key: "left", secondary: "h", label: "back", description: "Close the finding and go back to its line in the code." },
-  { id: "finding.block", states: FINDING, key: "b", label: "block", description: "Block on the finding with a comment that requests changes, prefilled with its text or your comment." },
-  { id: "finding.comment", states: FINDING, key: "c", label: "comment", description: "Answer the finding with a comment that does not block, prefilled with its text or your comment." },
-  { id: "finding.ignore", states: FINDING, key: "i", label: "ignore", description: "Ignore the finding, with an optional private note that is never posted." },
+  { id: "finding.block", states: FINDING, key: "b", label: "block", description: "Set the finding's action to block: a comment that requests changes, prefilled with its text or your comment." },
+  { id: "finding.comment", states: FINDING, key: "c", label: "comment", description: "Set the finding's action to comment: a comment that does not block, prefilled with its text or your comment." },
+  { id: "finding.ignore", states: FINDING, key: "i", label: "ignore", description: "Set the finding's action to ignore, with an optional private note that is never posted." },
   { id: "finding.copy", states: FINDING, key: "y", label: "copy", description: "Copy the finding's text to the clipboard." },
   { id: "finding.page_down", states: FINDING, key: "pgdn", secondary: "ctrl-d", label: "page", description: "Page the finding's text down." },
   { id: "finding.page_up", states: FINDING, key: "pgup", secondary: "ctrl-u", label: "page", description: "Page the finding's text up." },
@@ -125,7 +125,7 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   // ---- g: go to
   { id: "go.next_finding", states: READING, prefix: "g", key: "f", label: "next finding", description: "Go to the next finding anywhere in the review and open it, wrapping round at the end." },
   { id: "go.prev_finding", states: READING, prefix: "g", key: "F", label: "previous finding", description: "Go to the previous finding anywhere in the review and open it, wrapping round at the start." },
-  { id: "go.next_severity", states: READING, prefix: "g", key: "h", label: "next by severity", description: "Go to the next finding by severity: every blocking one in order, then the warnings, then the nits." },
+  { id: "go.next_severity", states: READING, prefix: "g", key: "h", label: "next by severity", description: "Go to the next finding by severity: every high one in order, then the medium ones, then the low ones." },
   { id: "go.prev_severity", states: READING, prefix: "g", key: "H", label: "previous by severity", description: "Go to the previous finding by severity, the reverse of next by severity." },
   { id: "go.top", states: READING, prefix: "g", key: "g", label: "top of file", description: "Go to the first line of this file's first block." },
   { id: "go.end", states: READING, prefix: "g", key: "e", label: "end of file", description: "Go to the last line of this file's last block." },
@@ -138,11 +138,11 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "prompt.word", states: ["prompt"], key: "ctrl-w", label: "delete word", description: "Delete the last word.", fixed: true },
   { id: "prompt.cancel", states: ["prompt"], key: "esc", label: "cancel", description: "Cancel; nothing is recorded.", fixed: true },
 
-  // ---- submit: the verdict, then the preview. Enter takes the default: request changes when anything is blocking.
+  // ---- submit: the verdict, then the preview. Enter takes the default: request changes when you blocked on a finding.
   { id: "submit.approve", states: ["submit"], step: "verdict", key: "a", label: "approve", description: "Approve the change.", fixed: true },
   { id: "submit.request_changes", states: ["submit"], step: "verdict", key: "r", label: "request changes", description: "Request changes.", fixed: true },
   { id: "submit.comment", states: ["submit"], step: "verdict", key: "c", label: "comment", description: "Leave a comment verdict, neither approving nor blocking.", fixed: true },
-  { id: "submit.default", states: ["submit"], step: "verdict", key: "enter", label: "default verdict", description: "Take the default verdict: request changes when anything is blocking, else the one already chosen.", fixed: true },
+  { id: "submit.default", states: ["submit"], step: "verdict", key: "enter", label: "default verdict", description: "Take the default verdict: request changes when you blocked on a finding, else the one already chosen.", fixed: true },
   { id: "submit.cancel", states: ["submit"], step: "verdict", key: "esc", label: "cancel", description: "Go back to the review without a verdict.", fixed: true },
   { id: "submit.send", states: ["submit"], step: "preview", key: "enter", label: "submit", description: "Submit: write the document and post it (a dry run only prints the calls).", fixed: true },
   { id: "submit.hook", states: ["submit"], step: "preview", needs: "hook", key: "x", label: "allow command", description: "Allow or disallow the document's on_submit command for this submit.", fixed: true },
@@ -237,7 +237,7 @@ const inState = (ks: KeyState) => (a: Action): boolean => {
 function worded(ks: KeyState, a: Action): Action {
   if (ks.state === "prompt") {
     if (a.id === "prompt.send") return { ...a, label: ks.kind === "ask" ? "ask" : ks.kind === "docs" ? "search" : ks.kind === "reason" ? "ignore" : ks.decide ? "save" : "send" };
-    if (a.id === "prompt.cancel" && ks.decide) return { ...a, label: "cancel decision" };
+    if (a.id === "prompt.cancel" && ks.decide) return { ...a, label: "cancel" };
   }
   if (ks.state === "content" && ks.results && (a.id === "content.down" || a.id === "content.up")) return { ...a, label: "select" };
   if (ks.state === "content" && ks.results && a.id === "content.back") return { ...a, label: "close" };

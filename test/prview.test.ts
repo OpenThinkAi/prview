@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDiff } from "../src/diff.ts";
-import { applyReask, applyRefute, applyTitleReask, claimAddsTo, classify, deriveTitle, readCritic, titleOf, titleReaskPrompt, filePlan, fitLine, hunksOf, MECHANICAL_INTENT, mergeFindings, oneLine, parseCritic, parseGuide, readGuide, reaskPrompt, rubric, sameClaim, twoSentences, worstFirst, type Finding } from "../src/guide.ts";
+import { applyReask, applyRefute, applyTitleReask, claimAddsTo, classify, deriveTitle, readCritic, titleOf, titleReaskPrompt, filePlan, fitLine, hunksOf, MECHANICAL_INTENT, mergeFindings, oneLine, parseCritic, parseGuide, readGuide, reaskPrompt, rubric, sameClaim, severityOf, twoSentences, worstFirst, type Finding } from "../src/guide.ts";
 import { blank, fit, merge, parseDocument, SCHEMA, type Doc } from "../src/document.ts";
 import { gotoLine, nextFinding } from "../src/nav.ts";
 
@@ -116,9 +116,9 @@ test("findings are anchored to a real line of their hunk, or to the hunk's start
     { hunk: "src/w.rs@1:1", side: "new", line: 1, severity: "nit", claim: "not in this chapter" },
     { hunk: "src/real.rs@1:1", side: "new", line: 2, claim: "" },
   ]), chapter, hunks, 100);
-  expect(fs.map((f) => [f.id, f.source, f.side, f.line, f.severity, f.status])).toEqual([["100", "critic", "new", 1, "blocking", "unrefuted"], ["101", "critic", "old", 1, "warn", "unrefuted"]]);
+  expect(fs.map((f) => [f.id, f.source, f.side, f.line, f.severity, f.status])).toEqual([["100", "critic", "new", 1, "high", "unrefuted"], ["101", "critic", "old", 1, "medium", "unrefuted"]]); // the old word blocking reads as high
   expect(applyRefute(fs[0]!, '{"verdict":"withdraw","reason":"handled above","lines":["n1"]}', new Set(["n1"]))).toMatchObject({ status: "withdrawn", refute: "handled above (cites n1)" });
-  expect(applyRefute(fs[0]!, '{"verdict":"downgrade","reason":"real but minor","lines":["n1"]}', new Set(["n1"]))).toMatchObject({ status: "upheld", severity: "warn" });
+  expect(applyRefute(fs[0]!, '{"verdict":"downgrade","reason":"real but minor","lines":["n1"]}', new Set(["n1"]))).toMatchObject({ status: "upheld", severity: "medium" });
   expect(applyRefute(fs[0]!, "uphold it").status).toBe("upheld");
 });
 
@@ -214,7 +214,7 @@ test("123G finds the hunk holding that file line, or the nearest one; ]f walks f
   expect(gotoLine(items, 1, 11)).toEqual({ item: 0, line: 2 });
   expect(gotoLine(items, 0, 30)).toEqual({ item: 1, line: 0 }); // the closest hunk of the file (the deletion at 41), at its near edge
   expect(gotoLine(items, 2, 99)).toEqual({ item: 2, line: 1 });
-  const f = (id: string, hunk: string, line: number) => ({ id, source: "critic", hunk, side: "new" as const, line, severity: "warn" as const, kind: "bug", claim: "", evidence: "", status: "upheld" as const });
+  const f = (id: string, hunk: string, line: number) => ({ id, source: "critic", hunk, side: "new" as const, line, severity: "medium" as const, kind: "bug", claim: "", evidence: "", status: "upheld" as const });
   const fs = [f("1", "src/a.rs@10:10", 12), f("2", "src/new.rs@0:1", 2), f("3", "src/a.rs@10:10", 10)];
   expect(nextFinding(items, fs, { item: 0, line: -1 }, 1)?.finding.id).toBe("3");
   expect(nextFinding(items, fs, { item: 0, line: 0 }, 1)?.finding.id).toBe("1");
@@ -243,11 +243,22 @@ test("a document is parsed defensively: another schema or no commits refused, ba
   expect(() => parseDocument({ schema: "prview-review/2" })).toThrow("(it says prview-review/2)");
   expect(() => parseDocument({ schema: SCHEMA, target: { base: A, head: "main" } })).toThrow("commit ids");
   const d = parseDocument(JSON.stringify(foreign({ human: { dismissals: [1, "nope"], verdict: "ship it" }, on_submit: { run: ["notify"] } })));
-  expect(d.findings.map((f) => [f.id, f.source, f.severity, f.kind])).toEqual([["1", "mylinter", "blocking", "bug"], ["1.2", "mylinter", "warn", "finding"]]);
+  expect(d.findings.map((f) => [f.id, f.source, f.severity, f.kind])).toEqual([["1", "mylinter", "high", "bug"], ["1.2", "mylinter", "medium", "finding"]]); // blocking reads as high
   expect(d.plan.by).toBe("files");
-  expect(d.human).toEqual({ comments: [], visited: [], decisions: { "1": { kind: "dismissed" } } }); // a legacy dismissal is "not an issue"
+  expect(d.human).toEqual({ comments: [], visited: [], decisions: { "1": { kind: "ignore" } } }); // a legacy dismissal is ignore
   expect(d.on_submit).toEqual({ run: ["notify"] }); // kept, but only ever run when the human allows it at submit
   expect(d.target.label).toBe("aaaaaaaa..bbbbbbbb");
+});
+
+test("severity is high, medium or low: the old words blocking, warn and nit read as those; anything else is medium; writes use the new words", () => {
+  const d = parseDocument(foreign({ findings: ["blocking", "warn", "nit", "high", "medium", "low", "loud", undefined].map((severity, i) =>
+    ({ id: String(i), source: "mylinter", hunk: "src/real.rs@1:1", line: 1, severity, claim: `claim ${i}` })) }));
+  expect(d.findings.map((f) => f.severity)).toEqual(["high", "medium", "low", "high", "medium", "low", "medium", "medium"]);
+  // The document prview writes carries only the new words: an old one read and written back is upgraded.
+  expect(JSON.stringify(d)).not.toMatch(/"(blocking|warn|nit)"/);
+  expect(parseDocument(JSON.stringify(d)).findings.map((f) => f.severity)).toEqual(d.findings.map((f) => f.severity));
+  expect(severityOf("blocking")).toBe("high");
+  expect(severityOf(3)).toBe("medium");
 });
 
 test("a document is held to its diff: mechanical by rule, chapters checked, findings anchored; fitting twice changes nothing", () => {
@@ -265,14 +276,14 @@ test("a document is held to its diff: mechanical by rule, chapters checked, find
   expect(f.plan.mechanical.map((m) => m.id)).toEqual(classify(files).map((m) => m.id));
   expect(f.findings.map((x) => [x.id, x.line])).toEqual([["x", 1]]);
   expect(f.human).toMatchObject({ visited: ["src/real.rs@1:1"] });
-  expect(f.human.decisions).toBeUndefined(); // the dismissed finding is gone, and its decision with it
+  expect(f.human.decisions).toBeUndefined(); // the ignored finding is gone, and its action with it
   expect(fit(f, files)).toEqual(f);
 });
 
 test("import merges: a finding seen before is kept once, a taken id is renamed, the reader's layer is a union; another head is refused", () => {
   const files = parseDiff(MECH);
   const mine = fit({ ...blank({ repo: "o/r", base: A, head: B, title: "t", body: "", label: "l" }), findings: [
-    { id: "1", source: "critic", hunk: "src/real.rs@1:1", side: "new", line: 1, severity: "warn", kind: "bug", claim: "n is wrong", evidence: "", status: "upheld" },
+    { id: "1", source: "critic", hunk: "src/real.rs@1:1", side: "new", line: 1, severity: "medium", kind: "bug", claim: "n is wrong", evidence: "", status: "upheld" },
   ] }, files);
   mine.human.comments.push({ hunk: null, side: "new", line: null, text: "mine", at: "t" });
   const theirs = fit(parseDocument(foreign({
@@ -281,7 +292,7 @@ test("import merges: a finding seen before is kept once, a taken id is renamed, 
   })), files);
   const m = merge(mine, theirs);
   expect(m.findings.map((f) => [f.id, f.source, f.claim])).toEqual([["1", "critic", "n is wrong"], ["1.2", "mylinter", "n is wrong"], ["1.2.2", "mylinter", "same id twice"]]);
-  expect(m.human.decisions).toEqual({ "1.2": { kind: "dismissed" } });
+  expect(m.human.decisions).toEqual({ "1.2": { kind: "ignore" } });
   expect(m.human.comments.map((c) => c.text)).toEqual(["mine", "theirs"]);
   expect(m.human.verdict).toBe("comment");
   expect(m.plan.by).toBe("mylinter"); // the by-file fallback gives way to a producer's chapters
@@ -293,8 +304,8 @@ test("round trip: export, import --mine into a fresh clone with its own store, t
   const repo = join(tmp, "repo"), clone = join(tmp, "clone");
   expect(Bun.spawnSync(["git", "clone", "-q", "--no-local", repo, clone]).exitCode).toBe(0);
   const r = load((await build(repo, "main..feature", { ai: null })).slug);
-  r.doc.findings.push({ id: "h1", source: "mylinter", hunk: "keep.txt@1:1", side: "new", line: 2, severity: "nit", kind: "style", claim: "shouting", evidence: "", status: "unrefuted" });
-  r.doc.human.decisions = { h1: { kind: "dismissed" } };
+  r.doc.findings.push({ id: "h1", source: "mylinter", hunk: "keep.txt@1:1", side: "new", line: 2, severity: "low", kind: "style", claim: "shouting", evidence: "", status: "unrefuted" });
+  r.doc.human.decisions = { h1: { kind: "ignore" } };
   r.doc.human.verdict = "request_changes";
   r.doc.plan = { ...r.doc.plan, summary: "Makes two loud.", by: "mylinter", chapters: [{ title: "Loud", intent: "Two is loud", why: "", hunks: ["keep.txt@1:1"] }] };
   save(r);
@@ -328,7 +339,7 @@ test("import without --mine: their comments become findings to triage, their ver
   const mine = load((await build(repo, "main..feature", { ai: null })).slug);
   const theirs = JSON.parse(exportDocument(mine)) as Doc;
   theirs.target = { ...theirs.target, url: "https://github.com/o/r/pull/8", platform: "github" };
-  theirs.findings = [{ id: "1", source: "mylinter", hunk: "keep.txt@1:1", side: "new", line: 2, severity: "warn", kind: "bug", claim: "two is loud", evidence: "", status: "unrefuted" }];
+  theirs.findings = [{ id: "1", source: "mylinter", hunk: "keep.txt@1:1", side: "new", line: 2, severity: "medium", kind: "bug", claim: "two is loud", evidence: "", status: "unrefuted" }];
   theirs.human = {
     comments: [
       { id: "c1", hunk: "keep.txt@1:1", side: "new", line: 2, text: "THEIRS: rename this before merging.", at: "then" },
@@ -398,18 +409,18 @@ test("a commit message's terminal escapes do not reach the review's title or bod
   expect(rev.doc.target.body).not.toContain("\x1b");
 });
 
-const F = (o: Partial<Finding>): Finding => ({ id: "0", source: "critic", hunk: "a@1:1", side: "new", line: 10, severity: "warn", kind: "bug", claim: "the loop never ends", evidence: "", status: "unrefuted", ...o });
+const F = (o: Partial<Finding>): Finding => ({ id: "0", source: "critic", hunk: "a@1:1", side: "new", line: 10, severity: "medium", kind: "bug", claim: "the loop never ends", evidence: "", status: "unrefuted", ...o });
 
 test("sampled critic runs merge: the same finding in different words counts once, with a vote per run", () => {
   expect(sameClaim("The loop never ends.", "the loop never ends")).toBe(true);
   expect(sameClaim("the loop never ends when n is zero", "the loop never ends")).toBe(true);
   expect(sameClaim("the loop never ends", "token is written to the log")).toBe(false);
   const merged = mergeFindings([
-    [F({ claim: "The loop never ends" }), F({ line: 40, claim: "token is written to the log", severity: "nit" })],
+    [F({ claim: "The loop never ends" }), F({ line: 40, claim: "token is written to the log", severity: "low" })],
     [F({ line: 11, claim: "the loop never ends when n is 0" })],
-    [F({ claim: "the loop never ends", severity: "blocking" }), F({ claim: "the loop never ends", line: 10 })], // two matches in one run: one vote
+    [F({ claim: "the loop never ends", severity: "high" }), F({ claim: "the loop never ends", line: 10 })], // two matches in one run: one vote
   ], 300);
-  expect(merged.map((f) => [f.id, f.claim.slice(0, 8), f.votes, f.severity])).toEqual([["300", "The loop", 3, "warn"], ["301", "token is", 1, "nit"]]);
+  expect(merged.map((f) => [f.id, f.claim.slice(0, 8), f.votes, f.severity])).toEqual([["300", "The loop", 3, "medium"], ["301", "token is", 1, "low"]]);
 });
 
 test("merging keeps distinct findings apart: another hunk, side, or a line far away is not a duplicate", () => {
@@ -421,10 +432,10 @@ test("merging keeps distinct findings apart: another hunk, side, or a line far a
 
 test("severity is the one most runs gave, ties to the worse; the gutter orders by severity then votes", () => {
   const sev = (...s: Finding["severity"][]) => mergeFindings(s.map((severity) => [F({ severity })]), 0)[0]!.severity;
-  expect(sev("nit", "nit", "blocking")).toBe("nit");
-  expect(sev("warn", "blocking")).toBe("blocking");
-  const list = [F({ severity: "nit", votes: 3 }), F({ severity: "warn", votes: 1 }), F({ severity: "warn", votes: 2 }), F({ severity: "blocking", votes: 1 })];
-  expect(list.sort(worstFirst).map((f) => [f.severity, f.votes])).toEqual([["blocking", 1], ["warn", 2], ["warn", 1], ["nit", 3]]);
+  expect(sev("low", "low", "high")).toBe("low");
+  expect(sev("medium", "high")).toBe("high");
+  const list = [F({ severity: "low", votes: 3 }), F({ severity: "medium", votes: 1 }), F({ severity: "medium", votes: 2 }), F({ severity: "high", votes: 1 })];
+  expect(list.sort(worstFirst).map((f) => [f.severity, f.votes])).toEqual([["high", 1], ["medium", 2], ["medium", 1], ["low", 3]]);
 });
 
 test("votes survive the document: read when a whole number, ignored otherwise", () => {
@@ -544,19 +555,22 @@ test("titleOf: the finding's own title, else the claim's first sentence cut to 1
   expect(d.findings.map(titleOf)[0]).toBe("The retry loop never backs off, so a failing upstream is hit…");
 });
 
-test("the write-up lists kept findings by title", () => {
+test("the write-up lists the findings not ignored by title, with their action", () => {
   const r = { doc: { ...blank({ title: "T", base: A, head: B, label: "l" } as never), findings: [
-    { id: "1", source: "stamp:x", hunk: "src/real.rs@1:1", side: "new" as const, line: 1, severity: "warn" as const, kind: "bug", claim: "Long prose about the thing. Even more prose.", evidence: "", status: "upheld" as const },
-    { id: "2", source: "critic", hunk: "src/real.rs@1:1", side: "new" as const, line: 2, severity: "nit" as const, kind: "bug", title: "Short title", claim: "Long prose again.", evidence: "", status: "upheld" as const },
+    { id: "1", source: "stamp:x", hunk: "src/real.rs@1:1", side: "new" as const, line: 1, severity: "high" as const, kind: "bug", claim: "Long prose about the thing. Even more prose.", evidence: "", status: "upheld" as const },
+    { id: "2", source: "critic", hunk: "src/real.rs@1:1", side: "new" as const, line: 2, severity: "low" as const, kind: "bug", title: "Short title", claim: "Long prose again.", evidence: "", status: "upheld" as const },
   ] } };
   const md = writeup(r.doc, parseDiff(MECH));
-  expect(md).toContain("warn · Long prose about the thing");
+  expect(md).toContain("high · Long prose about the thing · block (default)");
   expect(md).not.toContain("Even more prose");
-  expect(md).toContain("nit · Short title · not decided");
-  // A decision shows beside its finding; "not an issue" drops the finding from the list.
-  const decided = writeup({ ...r.doc, human: { ...r.doc.human, decisions: { "1": { kind: "block" }, "2": { kind: "dismissed" } } } }, parseDiff(MECH));
-  expect(decided).toContain("Long prose about the thing · decided: blocking");
+  expect(md).toContain("low · Short title · comment (default)");
+  // An action the reader picked shows beside its finding; ignore drops the finding from the list.
+  const decided = writeup({ ...r.doc, human: { ...r.doc.human, decisions: { "1": { kind: "comment" }, "2": { kind: "ignore" } } } }, parseDiff(MECH));
+  expect(decided).toContain("Long prose about the thing · comment\n");
   expect(decided).not.toContain("Short title");
+  // The defaults come from the config; one the refute step dropped is ignored by default and left out.
+  expect(writeup(r.doc, parseDiff(MECH), { high: "ignore", medium: "comment", low: "block" })).toContain("Short title · block (default)");
+  expect(writeup({ ...r.doc, findings: r.doc.findings.map((f) => ({ ...f, status: "withdrawn" as const })) }, parseDiff(MECH))).not.toContain("## Findings");
 });
 
 // ---------------------------------------------------------------- which model answered (no network: fetch is stubbed)

@@ -91,7 +91,7 @@ why = "Goes to the previous finding anywhere in the review, wrapping round at th
 [[recipe]]
 q = ["how do I see the worst findings first", "go to the most serious problem", "step through findings by severity"]
 actions = ["go.next_severity", "go.prev_severity"]
-why = "Walks every blocking finding in reading order, then the warnings, then the nits."
+why = "Walks every high finding in reading order, then the medium ones, then the low ones."
 
 [[recipe]]
 q = ["how do I go to the top of the file", "jump to the start of this file", "go to the end of the file", "jump to the bottom of this file"]
@@ -159,17 +159,32 @@ q = ["how do I accept the model's answer about a finding", "update the finding f
 actions = ["ai.accept", "ai.discard"]
 why = "After asking about a finding, accept the answer to revise the finding from it, or discard it to leave the finding alone."
 
-# ---- deciding on a finding
+# ---- the action on a finding: block, comment or ignore
 
 [[recipe]]
 q = ["how do I say this finding is wrong", "ignore a finding that is not a real problem", "mark a finding as a false alarm", "reject the model's finding"]
 actions = ["finding.ignore"]
-why = "Ignores the finding with an optional private note; nothing is posted for it."
+why = "Sets the finding's action to ignore, with an optional private note that is never posted; nothing is posted for it."
 
 [[recipe]]
 q = ["how do I block the pull request on a finding", "request changes over this problem", "say this must be fixed before merge"]
 actions = ["finding.block"]
-why = "Turns the finding into a comment that requests changes, prefilled with its text; the verdict follows at submit."
+why = "Sets the finding's action to block: a comment that requests changes, prefilled with its text; the verdict follows at submit."
+
+[[recipe]]
+q = ["how do I change my mind about a finding", "undo what I did to a finding", "change the action on a finding", "edit the comment I wrote on a finding"]
+actions = ["finding.block", "finding.comment", "finding.ignore"]
+why = "Choose block, comment or ignore again: it replaces the action, and block or comment opens the comment you wrote to edit. There is no separate undo."
+
+[[recipe]]
+q = ["why does this finding already say block", "what does default mean on a finding", "change the default action for high findings", "which findings start as ignored"]
+actions = ["finding.block", "finding.comment", "finding.ignore", "review.settings"]
+why = "Every finding starts on its severity's default action (high blocks, medium and low comment; [defaults] in the config changes it), marked default until you pick one."
+
+[[recipe]]
+q = ["where did the withdrawn findings go", "show the findings the second look dropped", "see findings the refute step rejected"]
+actions = ["go.next_finding", "code.open_finding"]
+why = "Findings the second look dropped are shown like any other, ignored by default, with its reason in their detail; block or comment one to keep it."
 
 [[recipe]]
 q = ["how do I post a finding as a comment", "reply to a finding without blocking", "leave a comment on the pull request about this finding", "respond to a finding with a remark that does not hold up the merge"]
@@ -177,9 +192,9 @@ actions = ["go.next_finding", "finding.comment", "review.submit"]
 why = "Open the finding, choose comment and word it yourself; choosing it again edits what you wrote. It posts under your name when you submit."
 
 [[recipe]]
-q = ["how do I close a finding without deciding", "put a finding away for later", "close the popup", "go back to the code from a finding"]
+q = ["how do I close a finding", "put a finding away for later", "close the popup", "go back to the code from a finding"]
 actions = ["finding.close", "finding.back"]
-why = "Closes the finding and records nothing; Esc does the same."
+why = "Closes the finding; its action stays as it is. Esc does the same."
 
 [[recipe]]
 q = ["how do I copy a finding", "put a finding on the clipboard", "copy the text of a problem to paste elsewhere"]
