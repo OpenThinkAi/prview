@@ -35,8 +35,9 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
            b block on it: your line comment at the finding's line, prefilled with its title; edit, Enter saves
              (ctrl-u clears the line, Esc cancels); submit then defaults to request changes
            c comment: the same, not blocking     u undo the decision (and the comment it wrote)
-           h hide the box without deciding (Esc does the same)
-           With a box open only these keys, ]f/[f, y, Esc and paging act; the footer lists them.
+           h hide any box (finding, summary, ? why, answer) without deciding (Esc does the same)
+           With a box open only its footer keys, [f, Esc and paging act: a finding lists n b c u h ]f y,
+           every other box h y ]f. With none open b/c/u do nothing.
          ? why this chapter matters   f next finding in this hunk   a ask about this hunk
          y copy the open box (finding, ? why, ask answer) as clean text; with none open, the line's path:line
            (pbcopy, wl-copy, xclip, else OSC 52; PRVIEW_CLIPBOARD=osc52 forces the terminal route)

@@ -28,7 +28,8 @@ import { clampScroll, clampX, floatHeight, floatRows, layoutOf, pageStep, rowsFo
 import type { Beside } from "./editor.ts";
 import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
 import { describe, planOf } from "./submit.ts";
-import { decide, decisionOf, FINDING_KEYS, findingFooter, defaultVerdict, LABEL, linkedComment, nextUndecided, progress, undecidedNote, undo } from "./triage.ts";
+import { decide, decisionOf, defaultVerdict, LABEL, linkedComment, nextUndecided, progress, undecidedNote, undo } from "./triage.ts";
+import { accepts, FINDING_KEYS, findingFooter, infoFooter, infoRows, navFooter } from "./keys.ts";
 import { MIN_COLS, MIN_ROWS, tooSmall, useTerminalSize } from "./resize.ts";
 
 /** `hook`: the human allowed the document's on_submit command for this submit (x in the preview). */
@@ -50,12 +51,12 @@ const PAN = 8;
 const SEV = { blocking: "red", warn: "yellow", nit: "blue" } as const;
 /**
  * `lead` is bold above the body: a finding's title. `copy` is the float's source text for `y`: what it means, not the wrapped
- * and boxed lines drawn from `lead` and `body`. `finding` is the id of the finding shown, which the decision keys act on.
+ * and boxed lines drawn from `lead` and `body`. `finding` is the id of the finding shown, which the decision keys act on. `summary` is the review's opening overview: it is
+ * drawn at the top of the hunk, in its own border, never under a cursor line where a finding sits.
  */
-type Float = { title: string; lead?: string; body: string; color?: string; tall?: boolean; copy?: string; finding?: string };
+type Float = { title: string; lead?: string; body: string; color?: string; tall?: boolean; copy?: string; finding?: string; summary?: boolean };
 /** `decide`: this comment carries out a block or comment decision on that finding. `reason`: the optional reason for "not an issue". */
 type Mode = { kind: "nav" } | { kind: "comment"; general: boolean; decide?: { id: string; kind: "block" | "comment" } } | { kind: "reason"; id: string } | { kind: "ask" } | { kind: "verdict" } | { kind: "preview"; hook: boolean; coverage: boolean };
-const HELP = "? why this chapter · ]f next finding, then n not an issue · b block on it · c comment · u undo · h hide · f finding in this hunk · w wrap · a ask · e editor · n comment · N summary · s submit · q quit";
 
 export type AppProps = {
   review: Review; files: FileDiff[]; onDone: (o: Outcome) => void;
@@ -82,7 +83,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const redraw = () => { save(r); bump((n) => n + 1); };
   const [pos, setPosRaw] = useState<Pos>(() => ({ item: Math.min(r.pos.item, Math.max(0, items.length - 1)), line: r.pos.line }));
   const setPos = (p: Pos) => { r.pos = p; setPosRaw(p); };
-  const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary ? { title: "What this change is", copy: d.plan.summary, body: `${d.plan.summary}\n\n${[preparedBy(review.ai?.runs), HELP].filter(Boolean).join("\n\n")}` } : null);
+  const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary ? { title: "Summary of this change · not a finding", summary: true, color: "magenta", copy: d.plan.summary, body: [d.plan.summary, preparedBy(review.ai?.runs)].filter(Boolean).join("\n\n") } : null);
   const [scroll, setScroll] = useState(0);
   // What `y` just did, shown in the footer until the next key.
   const [note, setNote] = useState<string | null>(null);
@@ -144,13 +145,11 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       : "";
     setFloat({ title: `▲ ${f.source} · ${f.kind} · ${f.severity}${f.votes && r.ai?.samples ? ` · ${f.votes}/${r.ai.samples}` : ""} · ${p.decided}/${p.total} decided`, color: dec ? "gray" : SEV[f.severity], lead: titleOf(f), finding: f.id, copy: findingText(f, place(f.hunk, f.line)), body: [claimAddsTo(f) ? f.claim : "", f.evidence, f.refute ? `Second look: ${f.refute}` : "", state].filter(Boolean).join("\n\n") });
   };
-  // What the decision keys act on: the finding in the open box, else one on the cursor line (an undecided one first).
-  // Both only ever hold findings that are shown, so a blind chapter's findings cannot be decided before they are revealed.
+  // What the decision keys act on: the finding in the open box, and only while it is open. Only shown findings can be in a box,
+  // so a blind chapter's findings cannot be decided before they are revealed.
   const target = (): Finding | undefined => {
     const f = float?.finding ? d.findings.find((x) => x.id === float.finding) : undefined;
-    if (f && live(f) && unhidden(f)) return f;
-    const here = lines[line] ? findingsAt(lines[line]!) : [];
-    return here.find((x) => !decisionOf(h, x.id)) ?? here[0];
+    return f && live(f) && unhidden(f) ? f : undefined;
   };
   // After a decision: straight on to the next undecided finding, so a whole pass is ]f and then one key per finding.
   const decided = (next: Human) => {
@@ -158,11 +157,11 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     const hit = nextUndecided(items, visible(), h, { item: pos.item, line });
     if (hit) { setPos({ item: hit.item, line: hit.line }); if (hit.item !== pos.item) setPanX(0); showFinding(hit.finding); return; }
     const p = progress(visible(), h);
-    setFloat({ title: `Findings · ${p.decided}/${p.total} decided`, color: "green", body: `Every finding${hidden.size ? " you can see" : ""} is decided.${hidden.size ? " Chapters you have not read yet keep theirs hidden; F reveals one." : ""} s submits; ]f and [f step back through them, u undoes one.` });
+    setFloat({ title: `Findings · ${p.decided}/${p.total} decided`, color: "green", body: `Every finding${hidden.size ? " you can see" : ""} is decided.${hidden.size ? " Chapters you have not read yet keep theirs hidden; F reveals one." : ""} h closes this, then s submits; ]f and [f step back through them, u undoes one.` });
   };
   const jumpFinding = (dir: 1 | -1) => {
     const hit = nextFinding(items, d.findings.filter((f) => live(f) && unhidden(f)), { item: pos.item, line }, dir);
-    if (!hit) { setFloat({ title: "Findings", body: (dir > 0 ? "No more findings after this point." : "No findings before this point.") + (hidden.size ? " Chapters you have not read yet keep theirs hidden; F reveals one." : "") }); return; }
+    if (!hit) { setFloat({ title: "Findings", body: (dir > 0 ? "No more findings after this point." : "No findings before this point.") + (hidden.size ? " Chapters you have not read yet keep theirs hidden; close this with h, then F reveals one." : "") }); return; }
     setPos({ item: hit.item, line: hit.line });
     showFinding(hit.finding);
   };
@@ -248,16 +247,15 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       const p = pending; setPending(null);
       if (p === "g" && ch === "g") setPos({ ...pos, line: 0 });
       else if ((p === "]" || p === "[") && ch === "f") jumpFinding(p === "]" ? 1 : -1);
-      else if ((p === "]" || p === "[") && ch === "c" && !float?.finding) goChapter(p === "]" ? 1 : -1);
+      else if ((p === "]" || p === "[") && ch === "c" && !float) goChapter(p === "]" ? 1 : -1);
       return;
     }
     if (key.ctrl || key.pageDown || key.pageUp) { scrollFloat(ch, key); return; } // before the letters: ctrl-d is a page, not a letter key
-    // A finding box open: only the keys the footer lists act (triage.ts FINDING_KEYS), so the footer is the truth.
-    if (float?.finding) {
-      if (!FINDING_KEYS.some((k) => k.key === ch || (k.key.length === 2 && (ch === "]" || ch === "[")))) return;
-      const f = target();
+    // A box open: only the keys its footer lists act (keys.ts), so the footer is the truth. Hide closes any box and records nothing.
+    if (float) {
+      if (!accepts(float.finding ? FINDING_KEYS : infoRows(!!float.copy), ch)) return;
       if (ch === "h") { setFloat(null); return; }
-      if (ch === "n") { if (f) { setMode({ kind: "reason", id: f.id }); setInput(decisionOf(h, f.id)?.reason ?? ""); } return; }
+      if (ch === "n") { const f = target(); if (f) { setMode({ kind: "reason", id: f.id }); setInput(decisionOf(h, f.id)?.reason ?? ""); } return; }
     }
     if (/^[0-9]$/.test(ch) && (count || ch !== "0")) { setCount(count + ch); return; }
     const n = count ? parseInt(count, 10) : undefined;
@@ -285,18 +283,18 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       const text = float ? float.copy : item && at !== null ? `${item.path}:${at}` : undefined;
       setNote(text ? confirmation(copier(text)) : "nothing to copy here");
     }
-    else if (ch === "F") reveal();
+    else if (ch === "F") { if (blind) reveal(); }
     else if (ch === "f") { // the next finding in this hunk, from the cursor, wrapping
-      if (item && hidden.has(item.id)) { setFloat({ title: "Findings", body: "Hidden until you have been through this chapter. F reveals them now (and the review notes you did)." }); return; }
+      if (item && hidden.has(item.id)) { setFloat({ title: "Findings", body: "Hidden until you have been through this chapter. Close this with h, then F reveals them now (and the review notes you did)." }); return; }
       if (!findingsHere.length) { setFloat({ title: "Findings", body: "None in this hunk. ]f jumps to the next one anywhere." }); return; }
       let at = lines.findIndex((l, i) => i > line && findingsAt(l).length);
       if (at < 0) at = lines.findIndex((l) => findingsAt(l).length);
       if (at >= 0) setPos({ ...pos, line: at });
       showFinding((at >= 0 ? findingsAt(lines[at]!) : findingsHere)[0]!);
     }
-    else if (ch === "b" || ch === "c" || ch === "u") {
+    else if (float?.finding && (ch === "b" || ch === "c" || ch === "u")) {
       const f = target();
-      if (!f) { setNote(item && hidden.has(item.id) ? "this chapter's findings are hidden until you have read it" : "no finding here: ]f goes to the next one"); return; }
+      if (!f) return;
       if (ch === "u") {
         if (!decisionOf(h, f.id)) { setNote("nothing decided on this finding"); return; }
         Object.assign(h, undo(h, f.id)); redraw(); showFinding(f); return;
@@ -328,7 +326,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const liveFindings = d.findings.filter(open).length;
   const anyHidden = d.findings.some((f) => live(f) && !unhidden(f));
 
-  // The float sits right under the cursor line, so the window keeps that many rows free below it.
+  // A finding's float sits right under the cursor line (the summary at the top of the hunk), so the window keeps that many rows free.
   const leadLines = float?.lead ? wrapText(float.lead, floatInner) : [];
   const floatLines = float ? [...leadLines, ...(leadLines.length ? [""] : []), ...wrapText(float.body, floatInner)] : [];
   const floatH = float ? floatHeight(floatLines.length, rows, !!float.tall) : 0;
@@ -351,6 +349,14 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     return [cut ? [...vis, { text: "…", kind: "comment" }] : vis];
   };
 
+  // A finding's box is rounded and coloured by severity; the opening summary is double-ruled in magenta, so they cannot be mistaken for each other.
+  const floatBox = (left: number) => float ? (
+    <Box flexDirection="column" marginLeft={left} width={floatW} height={floatH} overflow="hidden" borderStyle={float.summary ? "double" : "round"} borderColor={float.color ?? "gray"} paddingX={1}>
+      <Text bold color={float.color} wrap="truncate">{float.title}{busy ? <Text dimColor> · {busy}</Text> : null}{floatLines.length > floatRows(floatH) ? <Text dimColor> · {sc + 1}-{Math.min(floatLines.length, sc + floatRows(floatH))}/{floatLines.length} PgUp/PgDn</Text> : null}</Text>
+      {shownFloat.map((t, j) => <Text key={j} bold={sc + j < leadLines.length} wrap="truncate">{t}</Text>)}
+    </Box>
+  ) : null;
+
   const footer = () => {
     switch (mode.kind) {
       case "verdict": {
@@ -360,11 +366,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       case "reason": return <Text><Text color="cyan" bold> not an issue, why? › </Text>{input}<Text inverse> </Text><Text dimColor>  (optional, never posted; Enter to decide, Esc to cancel)</Text></Text>;
       case "preview": return <Text wrap="truncate" dimColor> Enter {dryRun ? "prints the calls" : "submits"}{planOf(r, files).adapter ? ` · v ${mode.coverage ? "drop" : "add"} coverage line` : ""}{d.on_submit ? ` · x ${mode.hook ? "disallow" : "allow"} the document's command` : ""} · Esc back to the verdict · j/k PgUp/PgDn scroll</Text>;
       case "nav": if (note) return <Text wrap="truncate" color="green"> {note}</Text>;
-        return <Text wrap="truncate" dimColor> {float?.finding
-        ? findingFooter()
-        : L.narrow
-        ? "j/k h/l hunk  ]f find  b/c/u decide  ? why  y copy  a ask  n note  s send  q quit"
-        : `j/k line  h/l hunk  J/K chapter  ]f finding  b/c/u decide  ${blind ? "F reveal  " : ""}? why  y copy  f finding  a ask  e edit  n/N note  w wrap  H/L pan  s submit  q quit`}{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
+        return <Text wrap="truncate" dimColor> {busy ? `${busy} keys wait until it answers` : float ? (float.finding ? findingFooter() : infoFooter(!!float.copy, floatLines.length > floatRows(floatH))) : navFooter(cols, blind)}{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
       default: {
         const decideKind = mode.kind === "comment" ? mode.decide?.kind : undefined;
         const label = mode.kind === "ask" ? "ask" : decideKind === "block" ? "block on it" : decideKind ? "comment on the finding" : mode.general ? "summary comment" : "comment";
@@ -415,6 +417,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
                   ? <Text color="magenta">  ▸ {MECHANICAL_INTENT} · {item.mechanical}</Text>
                   : chapter?.intent ? <Text color="cyan">  ▸ {chapter.intent}</Text> : <Text dimColor>  {chapterTitle}</Text>}
               </Text>
+              {float?.summary ? floatBox(0) : null}
               {shown.map((l, k) => {
                 const i = start + k;
                 const cur = i === line;
@@ -440,12 +443,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
                       );
                     })}
                     {ns.map((n, j) => <Text key={j} color="cyan" wrap="truncate">{" ".repeat(gutterW + 3)}» {fit(n.text)}</Text>)}
-                    {cur && float ? (
-                      <Box flexDirection="column" marginLeft={gutterW + 2} width={floatW} height={floatH} overflow="hidden" borderStyle="round" borderColor={float.color ?? "gray"} paddingX={1}>
-                        <Text bold color={float.color} wrap="truncate">{float.title}{busy ? <Text dimColor> · {busy}</Text> : null}{floatLines.length > floatRows(floatH) ? <Text dimColor> · {sc + 1}-{Math.min(floatLines.length, sc + floatRows(floatH))}/{floatLines.length} PgUp/PgDn</Text> : null}</Text>
-                        {shownFloat.map((t, j) => <Text key={j} bold={sc + j < leadLines.length} wrap="truncate">{t}</Text>)}
-                      </Box>
-                    ) : null}
+                    {cur && float && !float.summary ? floatBox(gutterW + 2) : null}
                   </Box>
                 );
               })}

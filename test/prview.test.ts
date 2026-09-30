@@ -525,4 +525,6 @@ test("preparedBy groups roles by model id, falls back to the configured name, an
     { role: "critic", model: "claude-sonnet-5-5", ms: 1 }, { role: "refute", model: "claude-sonnet-5-5", ms: 1 },
   ])).toBe("Prepared by claude-opus-5-5 (guide), claude-sonnet-5-5 (critic, refute)");
   expect(preparedBy([{ role: "guide", name: "claude", ms: 1 }])).toBe("Prepared by claude (guide)");
+  // A review stored before ids were recorded names nothing: no line, never "unknown".
+  expect(preparedBy([{ role: "guide", ms: 1 }, { role: "critic", model: "claude-sonnet-5-5", ms: 1 }])).toBeUndefined();
 });
