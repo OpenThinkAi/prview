@@ -19,7 +19,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput } from "ink";
 import { where, type DiffLine, type FileDiff } from "./diff.ts";
 import { claimAddsTo, hunksOf, MECHANICAL_INTENT, titleOf, worstFirst, type Finding, type HunkAt } from "./guide.ts";
-import { ask, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
+import { ask, preparedBy, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
 import type { Doc, Human, Verdict } from "./document.ts";
 import { chapterHidden, hiddenHunks, revealBody, revealEarly } from "./blind.ts";
 import { gotoLine, nextFinding, type NavItem } from "./nav.ts";
@@ -82,7 +82,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const redraw = () => { save(r); bump((n) => n + 1); };
   const [pos, setPosRaw] = useState<Pos>(() => ({ item: Math.min(r.pos.item, Math.max(0, items.length - 1)), line: r.pos.line }));
   const setPos = (p: Pos) => { r.pos = p; setPosRaw(p); };
-  const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary ? { title: "What this change is", copy: d.plan.summary, body: `${d.plan.summary}\n\n${HELP}` } : null);
+  const [float, setFloatRaw] = useState<Float | null>(() => d.plan.summary ? { title: "What this change is", copy: d.plan.summary, body: `${d.plan.summary}\n\n${[preparedBy(review.ai?.runs), HELP].filter(Boolean).join("\n\n")}` } : null);
   const [scroll, setScroll] = useState(0);
   // What `y` just did, shown in the footer until the next key.
   const [note, setNote] = useState<string | null>(null);

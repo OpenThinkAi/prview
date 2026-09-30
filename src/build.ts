@@ -20,11 +20,23 @@ import {
   mergeFindings, readCritic, readGuide, applyTitleReask, TITLE_REASK_SYSTEM, titleReaskPrompt, titleOf, REASK_SYSTEM, reaskPrompt, REFUTE_SYSTEM, refutePrompt, type Chapter, type Finding, type HunkAt, type Mechanical, type Plan,
 } from "./guide.ts";
 import { DEFAULT_MODEL, loadConfig, realLookups, resolveModel, resolveRoles, type Resolved, type Role } from "./config.ts";
-import { complete, pool, type Usage } from "./llm.ts";
+import { complete, modelLabel, pool, type Usage } from "./llm.ts";
 
 export { Fail };
 /** One model call: which role, how long, what it cost where the provider reports it. */
-export type Run = { role: "guide" | "critic" | "refute"; ms: number; cost?: number };
+export type Run = { role: "guide" | "critic" | "refute"; /** the configured model's name */ name?: string; /** the concrete id the model reported, or the config's */ model?: string; ms: number; cost?: number };
+
+/** "Prepared by claude-opus-5-5 (guide), claude-sonnet-5-5 (critic, refute)": one short local line, never part of anything posted. */
+export function preparedBy(runs: Run[] | undefined): string | undefined {
+  const by = new Map<string, string[]>();
+  for (const role of ["guide", "critic", "refute"] as const) {
+    const r = runs?.find((x) => x.role === role);
+    if (!r) continue;
+    const id = r.model ?? r.name ?? "unknown";
+    by.set(id, [...(by.get(id) ?? []), role]);
+  }
+  return by.size ? `Prepared by ${[...by].map(([id, roles]) => `${id} (${roles.join(", ")})`).join(", ")}` : undefined;
+}
 /** `models` names what each role used, so `ask` in a reopened review talks to the same model. */
 export type Ai = { models: Record<Role, string>; at: string; errors: string[]; samples?: number; runs?: Run[] };
 export type Pos = { item: number; line: number };
@@ -126,18 +138,25 @@ export async function runCritic(model: Resolved, prompt: string, chapter: Chapte
 /** The default producer: the guide orders the hunks, the critic raises findings, refute re-checks them. */
 async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, models: Record<Role, Resolved>, samples: number, say: Progress): Promise<{ doc: Doc; errors: string[]; runs: Run[] }> {
   const errors: string[] = [], runs: Run[] = [];
-  const timed = (role: Run["role"]) => (u: Usage) => { runs.push({ role, ...u }); };
+  // The id each role shows: the config's own until a reply says better, `default` if neither is known yet.
+  // Keyed by model name, so a role sharing a model another role has already heard from starts with the real id.
+  const seen: Record<string, string> = {};
+  const tag = (role: Run["role"]) => `${role} [${modelLabel(models[role].def.name, seen[models[role].def.name] ?? models[role].def.model)}]`;
+  const timed = (role: Run["role"]) => (u: Usage) => {
+    if (u.model) seen[models[role].def.name] = u.model;
+    runs.push({ role, name: models[role].def.name, ...u, model: u.model ?? models[role].def.model });
+  };
   const mechanical = classify(files);
   const hunks = hunksOf(files);
   let plan: Plan;
-  say(`guide: reading ${hunks.length - mechanical.length} hunks (${mechanical.length} mechanical)…`);
-  try { const g = await runGuide(models.guide, src, hunks, mechanical, say, timed("guide")); plan = g.plan; errors.push(...g.errors); }
+  say(`${tag("guide")}: reading ${hunks.length - mechanical.length} hunks (${mechanical.length} mechanical)…`);
+  try { const g = await runGuide(models.guide, src, hunks, mechanical, (m) => say(m.replace(/^guide:/, `${tag("guide")}:`)), timed("guide")); plan = g.plan; errors.push(...g.errors); }
   catch (e) { errors.push(`guide: ${(e as Error).message}`); plan = filePlan(files, mechanical); }
-  say(`guide: ${plan.chapters.length} chapters${plan.by === "files" ? " (by file: the guide failed)" : ""}`);
+  say(`${tag("guide")}: ${plan.chapters.length} chapters${plan.by === "files" ? " (by file: the guide failed)" : ""}`);
 
   // One critic run is a coin flip on what it notices, so each chapter is read `samples` times and the
   // runs are merged; a run that fails costs a vote, not the chapter.
-  say(`critic: ${plan.chapters.length} chapters x ${samples} run${samples === 1 ? "" : "s"}…`);
+  say(`${tag("critic")}: ${plan.chapters.length} chapters x ${samples} run${samples === 1 ? "" : "s"}…`);
   const reviews = await pool(plan.chapters.map((c, i) => async () => {
     const prompt = criticPrompt(src, c, hunks);
     const each = await Promise.all(Array.from({ length: samples }, () =>
@@ -146,14 +165,14 @@ async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, 
     for (const r of each) if (r instanceof Error) errors.push(`critic (${c.title}): ${r.message}`);
     if (!ok.length) throw new Error("every run failed");
     const fs = mergeFindings(ok, i * 100);
-    say(`critic: ${i + 1}. ${c.title} → ${fs.length} finding${fs.length === 1 ? "" : "s"}`);
+    say(`${tag("critic")}: ${i + 1}. ${c.title} → ${fs.length} finding${fs.length === 1 ? "" : "s"}`);
     return fs;
   }));
   let findings: Finding[] = [];
   reviews.forEach((r, i) => { if (r instanceof Error) errors.push(`critic (${plan.chapters[i]!.title}): ${r.message}`); else findings.push(...r); });
 
   const contested = findings.filter((f) => f.severity !== "nit");
-  if (contested.length) say(`refute: checking ${contested.length} finding${contested.length === 1 ? "" : "s"}…`);
+  if (contested.length) say(`${tag("refute")}: checking ${contested.length} finding${contested.length === 1 ? "" : "s"}…`);
   const at = new Map(hunks.map((h) => [h.id, h]));
   const verdicts = await pool(contested.map((f) => async () => {
     const h = at.get(f.hunk)!;
@@ -367,7 +386,7 @@ export const exportDocument = (r: Review) => JSON.stringify(r.doc, null, 2) + "\
 export const VERDICT = { approve: "Approve", request_changes: "Request changes", comment: "Comment" } as const;
 
 /** The compiled review as markdown: verdict, summary, comments with file and line, coverage, findings kept. */
-export function writeup(d: Doc, files: FileDiff[]): string {
+export function writeup(d: Doc, files: FileDiff[], by?: string): string {
   const hunks = hunksOf(files);
   const { target: t, human: h } = d;
   const total = hunks.filter((x) => x.hunk).length, seen = h.visited.length;
@@ -377,6 +396,7 @@ export function writeup(d: Doc, files: FileDiff[]): string {
     return `${x?.file.path ?? c.hunk}${c.line !== null ? `:${c.line}` : ""}`;
   };
   const out = [`# ${t.title}`, ``, `${h.verdict ? `**${VERDICT[h.verdict]}** · ` : ""}${t.url ?? t.label} · read ${seen} of ${total} hunks`, ``];
+  if (by) out.push(`${by}`, ``);
   const general = h.comments.filter((c) => !c.hunk), placed = h.comments.filter((c) => c.hunk);
   for (const c of general) out.push(c.text, ``);
   if (placed.length) out.push(`## Comments`, ``);

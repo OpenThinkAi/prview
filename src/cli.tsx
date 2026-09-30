@@ -3,7 +3,7 @@
 
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { all, build, checkHead, exportDocument, Fail, filesOf, importDocument, load, remove, reopen, repoFor, writeup, type BuildOpts, type Review } from "./build.ts";
+import { all, build, preparedBy, checkHead, exportDocument, Fail, filesOf, importDocument, load, remove, reopen, repoFor, writeup, type BuildOpts, type Review } from "./build.ts";
 import { ConfigError, configPath, loadConfig, realLookups, resolveModel, ROLES } from "./config.ts";
 import { probe } from "./llm.ts";
 import { besideIn, editor, editorArgs } from "./editor.ts";
@@ -128,7 +128,7 @@ async function main(args: string[]): Promise<void> {
     case "-h": case "--help": case "help": console.log(USAGE); return;
     case "models": return models();
     case "list": console.log(all().map(({ slug, doc: { target: t, human: h } }) => `${slug}\t${t.label}\t${h.visited.length} read · ${h.comments.length} notes\t${t.title}`).join("\n")); return;
-    case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r.doc, filesOf(r))); return; }
+    case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r.doc, filesOf(r), preparedBy(r.ai?.runs))); return; }
     case "export": { if (!a1) throw new Fail("usage: prview export <name>"); process.stdout.write(exportDocument(load(a1))); return; }
     case "import": { const r = importDocument(await doc(), opts.repo); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
     case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); return review(importDocument(await doc(), opts.repo), blind(), opts.dryRun); }
