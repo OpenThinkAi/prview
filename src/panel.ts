@@ -2,16 +2,33 @@
 // terminal and a short one are tested without drawing anything. The entries come from the action tables in keys.ts
 // (through `rowsOf`, which reads the installed keymap), never from a list of their own.
 
-import { groups, rowsOf, type KeyState } from "./keys.ts";
+import type { Pending } from "./chord.ts";
+import { groups, keysOf, PREFIXES, prefixesOf, prefixRows, rowsOf, showKey, type Action, type KeyState } from "./keys.ts";
 
 export type Entry = { keys: string; label: string };
 
-/** What a state lists, in table order; rows with the same label share an entry (j/k line). */
-export const entriesOf = (s: KeyState): Entry[] => groups(rowsOf(s)).map((g) => ({ keys: g.map((r) => r.key).join("/"), label: g[0]!.label }));
+/** A group's keys: the primaries, then the secondaries: `↓/↑ j/k`. */
+const keysText = (g: Action[]): string => {
+  const prim = g.map((r) => (r.key ? showKey(r.key) : "")).filter(Boolean), sec = g.map((r) => (r.secondary ? showKey(r.secondary) : "")).filter(Boolean);
+  return [prim.join("/"), sec.join("/")].filter(Boolean).join(" ");
+};
 
-const TITLES: Record<string, string> = { finding: "finding", info: "box", results: "ask the docs", verdict: "verdict", preview: "submit" };
-export const panelTitle = (s: KeyState): string =>
-  s.box === null ? "keys" : s.box === "prompt" ? (s.kind === "reason" ? "not an issue" : s.kind === "docs" ? "ask the docs" : s.kind) : TITLES[s.box]!;
+/**
+ * What a state lists, in table order; rows with the same label share an entry (↓/↑ j/k line), then one entry per prefix
+ * (`g go to…`). While a prefix is pending, its second keys instead; while a number is typed after g, how to finish it.
+ */
+export function entriesOf(s: KeyState, pending: Pending | null = null): Entry[] {
+  if (pending?.digits !== undefined) return [{ keys: "0-9", label: pending.chapter ? "chapter number" : "line number" }, { keys: "Enter", label: "go" }, { keys: "Esc", label: "cancel" }];
+  if (pending) return groups(prefixRows(s, pending.prefix)).map((g) => ({ keys: g.map((r) => (r.id === "go.line" ? "0-9" : keysOf(r).map(showKey).join(" "))).join("/"), label: g[0]!.label }));
+  return [...groups(rowsOf(s)).map((g) => ({ keys: keysText(g), label: g[0]!.label })), ...prefixesOf(s).map((p) => ({ keys: p, label: `${PREFIXES[p]}…` }))];
+}
+
+const TITLES: Record<string, string> = { toc: "contents", code: "keys", finding: "finding", content: "content", settings: "settings" };
+export const panelTitle = (s: KeyState, pending: Pending | null = null): string =>
+  pending ? `${pending.prefix} ${PREFIXES[pending.prefix]}`
+  : s.state === "prompt" ? (s.kind === "reason" ? "ignore" : s.kind === "docs" ? "search the docs" : s.kind)
+  : s.state === "submit" ? (s.step === "verdict" ? "verdict" : "submit")
+  : s.state === "content" && s.results ? "search the docs" : TITLES[s.state]!;
 
 /**
  * A bordered grid (`boxed`) of `lines`, or, when even the widest grid the width allows is too tall, one dim line cut

@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { effectiveKeys, KeysError, type Keymap } from "./keys.ts";
+import { effectiveKeys, KeysError, type Binding, type Keymap } from "./keys.ts";
 
 export const ROLES = ["guide", "critic", "refute", "ask"] as const;
 export type Role = (typeof ROLES)[number];
@@ -32,8 +32,8 @@ export const configPath = (env: Record<string, string | undefined> = process.env
 type Table = Record<string, unknown>;
 
 /**
- * Tables, `[[array-of-tables]]` and `key = value` lines with strings, integers, booleans and one-line arrays of strings:
- * all the config and the docs recipes need. Anything else is an error with a line number.
+ * Tables, `[[array-of-tables]]` and `key = value` lines with strings, integers, booleans, one-line arrays of strings
+ * and one-line inline tables of strings (`{ primary = "k", secondary = "j" }`): all the config and the docs recipes need. Anything else is an error with a line number.
  */
 export function parseToml(text: string): Table {
   const root: Table = {};
@@ -100,8 +100,21 @@ function unescape(s: string, bad: (w: string) => Error): string {
   try { return JSON.parse(`"${s}"`); } catch { throw bad("bad escape in string"); }
 }
 
-function parseValue(v: string, bad: (w: string) => Error): string | number | boolean | string[] {
+function parseValue(v: string, bad: (w: string) => Error): string | number | boolean | string[] | Record<string, string> {
   let m: RegExpMatchArray | null;
+  if (v.startsWith("{")) {
+    if (!v.endsWith("}")) throw bad("inline tables must open and close on one line");
+    const out: Record<string, string> = {};
+    let rest = v.slice(1, -1).trim();
+    while (rest) {
+      const x = rest.match(/^([A-Za-z0-9_-]+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*(?:,\s*|$)/);
+      if (!x) throw bad("inline tables hold key = \"string\" pairs only");
+      if (x[1]! in out) throw bad(`duplicate key ${x[1]}`);
+      out[x[1]!] = x[2] !== undefined ? unescape(x[2], bad) : x[3]!;
+      rest = rest.slice(x[0].length);
+    }
+    return out;
+  }
   if (v.startsWith("[")) {
     if (!v.endsWith("]")) throw bad("arrays must open and close on one line");
     const items: string[] = [];
@@ -162,10 +175,15 @@ export function parseConfig(text: string, path: string | null = null): Config {
     roles[role] = n;
   }
   if (t.blind !== undefined && typeof t.blind !== "boolean") throw new ConfigError("blind must be true or false");
-  const overrides: Record<string, string> = {};
+  // [keys]: "<action>" = "k" sets the primary; { primary = "k", secondary = "j" } either or both; secondary = "" removes it.
+  const overrides: Record<string, Binding> = {};
+  const shape = (id: string) => new ConfigError(`[keys]: ${id} must be a key ("k") or { primary = "k", secondary = "j" }`);
   for (const [id, v] of Object.entries(table("keys"))) {
-    if (typeof v !== "string") throw new ConfigError(`[keys]: ${id} must be a string: the key, or "" to unbind`);
-    overrides[id] = v;
+    if (typeof v === "string") { overrides[id] = { primary: v }; continue; }
+    if (typeof v !== "object" || v === null || Array.isArray(v)) throw shape(id);
+    const t = v as Record<string, unknown>;
+    if (Object.keys(t).some((k) => k !== "primary" && k !== "secondary") || Object.values(t).some((x) => typeof x !== "string")) throw shape(id);
+    overrides[id] = t as Binding;
   }
   let keymap: Keymap;
   try { keymap = effectiveKeys(overrides); } catch (e) { throw e instanceof KeysError ? new ConfigError(e.message) : e; }

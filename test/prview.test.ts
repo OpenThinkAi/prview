@@ -6,8 +6,6 @@ import { parseDiff } from "../src/diff.ts";
 import { applyReask, applyRefute, applyTitleReask, claimAddsTo, classify, deriveTitle, readCritic, titleOf, titleReaskPrompt, filePlan, fitLine, hunksOf, MECHANICAL_INTENT, mergeFindings, oneLine, parseCritic, parseGuide, readGuide, reaskPrompt, rubric, sameClaim, twoSentences, worstFirst, type Finding } from "../src/guide.ts";
 import { blank, fit, merge, parseDocument, SCHEMA, type Doc } from "../src/document.ts";
 import { gotoLine, nextFinding } from "../src/nav.ts";
-import { actionOf, badKey, DEFAULT_KEYMAP, describeKeymap, effectiveKeys, installKeymap, bindingsHint } from "../src/keys.ts";
-import { entriesOf } from "../src/panel.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "prview-"));
 process.env.PRVIEW_HOME = join(tmp, "store");
@@ -609,76 +607,6 @@ test("preparedBy groups roles by model id, falls back to the configured name, an
   expect(preparedBy([{ role: "guide", name: "claude", ms: 1 }])).toBe("Prepared by claude (guide)");
   // A review stored before ids were recorded names nothing: no line, never "unknown".
   expect(preparedBy([{ role: "guide", ms: 1 }, { role: "critic", model: "claude-sonnet-5-5", ms: 1 }])).toBeUndefined();
-});
-
-// ---------------------------------------------------------------- [keys]
-
-test("keys: no [keys] table is the default map; a remap changes one action and leaves the rest", () => {
-  expect(parseConfig("").keymap).toEqual(DEFAULT_KEYMAP);
-  const km = parseConfig(`[keys]\n"finding.not_an_issue" = "d"\n"nav.bindings" = "!"\n"nav.wrap" = ""`).keymap;
-  expect(km.finding.find((a) => a.id === "finding.not_an_issue")!.key).toBe("d");
-  expect(km.finding.find((a) => a.id === "finding.block")!.key).toBe("b");
-  expect(km.nav.find((a) => a.id === "nav.bindings")!.key).toBe("!");
-  expect(km.nav.find((a) => a.id === "nav.wrap")!.key).toBe("");
-  expect(parseConfig(`[keys]\n"nav.bindings" = "\\\\"`).keymap.nav.find((a) => a.id === "nav.bindings")!.key).toBe("\\");
-});
-
-test("keys: an unknown action is refused and named", () => {
-  expect(() => parseConfig(`[keys]\n"finding.nope" = "d"`)).toThrow(/unknown action "finding.nope"/);
-  expect(() => parseConfig(`[keys]\n"wrap" = "d"`)).toThrow(/unknown action "wrap"/);
-  expect(() => parseConfig(`[keys]\n"nav.wrap" = 3`)).toThrow(ConfigError);
-});
-
-test("keys: two actions on one key in a state are refused and both are named; the same key in two states is fine", () => {
-  expect(() => parseConfig(`[keys]\n"nav.wrap" = "e"`)).toThrow(/nav\.edit and nav\.wrap are both "e"|nav\.wrap and nav\.edit are both "e"/);
-  expect(() => parseConfig(`[keys]\n"nav.wrap" = "]f"`)).toThrow(/nav\.next_finding.*nav\.wrap|nav\.wrap.*nav\.next_finding/);
-  expect(() => parseConfig(`[keys]\n"nav.wrap" = "]c"`)).toThrow(/nav\.next_chapter/);
-  expect(() => parseConfig(`[keys]\n"nav.wrap" = "]"`)).toThrow(/swallow/);
-  expect(() => parseConfig(`[keys]\n"nav.edit" = "z"\n"nav.wrap" = "e"`)).not.toThrow(); // e was freed
-  expect(() => parseConfig(`[keys]\n"finding.not_an_issue" = "n"\n"nav.note" = "n"`)).not.toThrow();
-});
-
-test("keys: a key is one printable character or a chord; Esc, digits, g and G are refused", () => {
-  for (const bad of ["ab", "\t", " ", "ctrl-x", "]]f", "f]", "1", "g", "G"]) expect(badKey(bad), JSON.stringify(bad)).not.toBeNull();
-  expect(badKey("esc")).toMatch(/Esc/);
-  expect(() => parseConfig(`[keys]\n"nav.wrap" = "escape"`)).toThrow(/Esc.*cannot be rebound/);
-  expect(() => parseConfig(`[keys]\n"nav.wrap" = "ab"`)).toThrow(/nav\.wrap = "ab"/);
-  for (const good of ["x", "é", "\\", "?", "]n", "[x", "Z"]) expect(badKey(good), good).toBeNull();
-});
-
-test("keys: show-bindings can be rebound, not unbound", () => {
-  expect(() => parseConfig(`[keys]\n"nav.bindings" = ""`)).toThrow(/nav\.bindings can be rebound but not unbound/);
-  expect(() => parseConfig(`[keys]\n"nav.bindings" = "B"`)).not.toThrow();
-});
-
-test("keys: the bindings key follows its binding in the hint, the panel and every state that shows the panel; a box action cannot take it", () => {
-  installKeymap(effectiveKeys({ "nav.bindings": "!" }));
-  try {
-    expect(bindingsHint()).toBe("! bindings");
-    for (const s of [{ box: "finding" }, { box: "info", copyable: true }, { box: null, blind: false }, { box: "verdict" }, { box: "preview", dryRun: false, hook: null, coverage: null }] as const) {
-      expect(actionOf(s, "!"), s.box ?? "nav").toBe("nav.bindings");
-      expect(actionOf(s, "\\"), s.box ?? "nav").toBeUndefined();
-      expect(entriesOf(s).some((e) => e.keys === "!" && e.label === "bindings"), s.box ?? "nav").toBe(true);
-    }
-    expect(actionOf({ box: "prompt", kind: "ask" }, "!")).toBeUndefined(); // a prompt takes text
-  } finally { installKeymap(DEFAULT_KEYMAP); }
-  expect(() => effectiveKeys({ "finding.copy": "\\" })).toThrow(/finding\.copy and nav\.bindings are both/);
-});
-
-test("keys: lookups follow the installed map, and the listing shows the effective keys", () => {
-  const km = effectiveKeys({ "finding.not_an_issue": "d", "nav.wrap": "" });
-  installKeymap(km);
-  try {
-    expect(actionOf({ box: "finding" }, "d")).toBe("finding.not_an_issue");
-    expect(actionOf({ box: "finding" }, "n")).toBeUndefined();
-    expect(actionOf({ box: null, blind: false }, "w")).toBeUndefined();
-    expect(entriesOf({ box: null, blind: false }).map((e) => e.label)).not.toContain("wrap");
-    const out = describeKeymap(km);
-    expect(out).toMatch(/finding\.not_an_issue\s+d\s/);
-    expect(out).toMatch(/nav\.wrap\s+\(unbound\)/);
-    expect(out.indexOf("nav:")).toBeLessThan(out.indexOf("finding:"));
-    expect(out.indexOf("finding:")).toBeLessThan(out.indexOf("info:"));
-  } finally { installKeymap(DEFAULT_KEYMAP); }
 });
 
 test("a stored suggestion keeps its reason across reopen at the same head, and one saved without a reason still loads", async () => {

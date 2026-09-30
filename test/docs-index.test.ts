@@ -56,7 +56,7 @@ test("rebuilding reproduces the committed vectors", () => {
 test("search returns action ids with descending scores, deduped by recipe and by action", () => {
   const hits = search("how do I submit a review", 8);
   expect(hits.length).toBe(8);
-  expect(hits[0]!.action).toBe("nav.submit");
+  expect(hits[0]!.action).toBe("review.submit");
   const known = new Set(ALL_ACTIONS.map((a) => a.id));
   expect(hits.every((h) => known.has(h.action) && typeof h.score === "number")).toBe(true);
   expect(new Set(hits.map((h) => h.action)).size).toBe(hits.length);
@@ -70,7 +70,7 @@ test("search returns action ids with descending scores, deduped by recipe and by
 
 test("a recipe that names several actions returns them all, in its order", () => {
   const hits = search("how do I open the file in my editor", 3).map((h) => h.action);
-  expect(hits.slice(0, 2)).toEqual(["nav.line_down", "nav.edit"]);
+  expect(hits.slice(0, 2)).toEqual(["code.down", "view.editor"]);
 });
 
 test("a verbatim word breaks a tie in cosine, and a stopword does not", () => {

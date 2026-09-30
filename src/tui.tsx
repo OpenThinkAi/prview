@@ -2,15 +2,16 @@
 // for whatever wants explaining: why a chapter matters, a finding, the answer to a question, the
 // review before you submit it.
 //
-// The app owns the terminal; an editor is something it launches. `e` hands back an `edit` outcome
+// The app owns the terminal; an editor is something it launches. `v e` hands back an `edit` outcome
 // with the file and line under the cursor, the CLI runs the editor in the head worktree, then renders
 // the app again with the same state. Inside tmux the CLI passes `beside` instead, and the editor opens in
 // a split pane while this screen stays up.
 //
-// Deciding on findings is the first pass: `]f` opens the next one, and one key decides it (n not an issue,
-// b block on it, c comment; u undoes, h hides the box without deciding). b and c open the ordinary comment line prefilled
-// with the finding's title, so what posts is what the reader saved. Each decision moves straight to
-// the next undecided finding. The rules live in triage.ts.
+// Keys are key map v2 (keys.ts): arrows move, and the prefixes a/f/v/g hold the rest. Deciding on findings is the
+// first pass: `g f` opens the next one, and one key decides it (b block on it, c comment, i ignore; x closes the box
+// without deciding, and deciding again changes the decision). b and c open the ordinary comment line prefilled with the
+// finding's title, so what posts is what the reader saved. Each decision moves straight to the next undecided finding.
+// The rules live in triage.ts.
 //
 // Everything shown comes from the review document (`review.doc`), whoever produced it; the rest of
 // the review is only where the cursor was and where the worktree is.
@@ -21,15 +22,16 @@ import { where, type DiffLine, type FileDiff } from "./diff.ts";
 import { claimAddsTo, hunksOf, MECHANICAL_INTENT, titleOf, worstFirst, type Finding, type HunkAt } from "./guide.ts";
 import { ask, preparedBy, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
 import type { Doc, Human, Verdict } from "./document.ts";
-import { chapterHidden, hiddenHunks, revealBody, revealEarly } from "./blind.ts";
-import { gotoLine, nextFinding, type NavItem } from "./nav.ts";
+import { chapterHidden, hiddenHunks } from "./blind.ts";
+import { chapterStart, fileEdge, gotoLine, nextBySeverity, nextFindingWrapping, type NavItem } from "./nav.ts";
 import { highlightLines, langOf, lengthOf, sliceSpans, styleOf, type Span } from "./highlight.ts";
-import { clampScroll, clampX, floatHeight, floatRows, layoutOf, pageStep, rowsFor, windowOf, wrapText } from "./layout.ts";
+import { clampScroll, floatHeight, floatRows, layoutOf, pageStep, rowsFor, windowOf, wrapText } from "./layout.ts";
 import type { Beside } from "./editor.ts";
 import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
 import { describe, planOf } from "./submit.ts";
-import { decide, decisionOf, defaultVerdict, LABEL, linkedComment, nextUndecided, progress, suggestionHint, undecidedNote, undo } from "./triage.ts";
-import { actionOf, BINDINGS_ACTION, bindingsHint, type KeyState, keyOf, startsChord } from "./keys.ts";
+import { decide, decisionOf, defaultVerdict, LABEL, linkedComment, nextUndecided, progress, suggestionHint, undecidedNote } from "./triage.ts";
+import { type KeyState, keyOf, rowById } from "./keys.ts";
+import { pendingText, step, tokenOf, type InkKey, type Pending } from "./chord.ts";
 import { answersBody, answersFor, answerText, type Answer } from "./ask-docs.ts";
 import { entriesOf, panelOf, panelTitle } from "./panel.ts";
 import { visible as printable } from "./sanitize.ts";
@@ -49,8 +51,6 @@ function itemsOf(d: Doc, files: FileDiff[]): Item[] {
   return out;
 }
 
-/** Columns a press of H or L moves the code sideways. */
-const PAN = 8;
 const SEV = { blocking: "red", warn: "yellow", nit: "blue" } as const;
 /**
  * `lead` is bold above the body: a finding's title. `copy` is the float's source text for `y`: what it means, not the wrapped
@@ -62,7 +62,7 @@ type Float = { title: string; lead?: string; body: string; color?: string; tall?
  * `decide`: this comment carries out a block or comment decision on that finding. `reason`: the optional reason for "not an issue".
  * `docs`: the question typed for the offline docs search (`ask` is the one for the model); `results`: its answers, `sel` the selected one.
  */
-type Mode = { kind: "nav" } | { kind: "comment"; general: boolean; decide?: { id: string; kind: "block" | "comment" } } | { kind: "reason"; id: string } | { kind: "ask" } | { kind: "docs" } | { kind: "results"; query: string; answers: Answer[]; sel: number } | { kind: "verdict" } | { kind: "preview"; hook: boolean; coverage: boolean };
+type Mode = { kind: "nav" } | { kind: "comment"; decide?: { id: string; kind: "block" | "comment" } } | { kind: "reason"; id: string } | { kind: "ask" } | { kind: "docs" } | { kind: "results"; query: string; answers: Answer[]; sel: number } | { kind: "verdict" } | { kind: "preview"; hook: boolean; coverage: boolean };
 
 export type AppProps = {
   review: Review; files: FileDiff[]; onDone: (o: Outcome) => void;
@@ -70,7 +70,7 @@ export type AppProps = {
   beside?: Beside;
   /** Override the terminal size (tests, mostly: there is no real terminal to measure). */
   size?: { cols: number; rows: number };
-  /** Blind first pass: a chapter's findings stay hidden until every hunk in it has been visited (or `F`). */
+  /** Blind first pass: a chapter's findings stay hidden until every hunk in it has been visited. */
   blind?: boolean;
   /** `--dry-run`: the preview says that submit will only print the API calls. */
   dryRun?: boolean;
@@ -78,14 +78,14 @@ export type AppProps = {
   copier?: Copier;
 };
 
-/** The opening box: the summary, the suggested verdicts and who prepared it. `S` reopens exactly this; null when a review has neither. */
+/** The opening box: the summary, the suggested verdicts and who prepared it. `a i` reopens exactly this; null when a review has neither. */
 export function summaryFloat(review: Review): Float | null {
   const d = review.doc;
   // An imported review's verdict is only ever information here: submit never starts from it.
   const verdicts = (review.suggested ?? []).map((v) => `${v.by === "imported" ? "An imported review" : `${v.by}'s review`} suggested ${VERDICT[v.verdict]}${v.reason ? `: ${v.reason.replace(/[.\s]+$/, "")}` : ""}.`);
   const suggested = verdicts.length ? [...verdicts, "That is information only: you pick your own verdict at submit."].join("\n") : "";
   if (!d.plan.summary && !suggested) return null;
-  const hint = `${keyOf(BINDINGS_ACTION)} shows the keys for where you are; ${keyOf("info.hide")} closes this; ${keyOf("nav.summary")} brings it back.`;
+  const hint = `Esc closes this; ${keyOf("ai.info")} brings it back. The key panel lists the keys for where you are.`;
   return { title: "Summary of this change · not a finding", summary: true, color: "magenta", copy: d.plan.summary || suggested, body: [d.plan.summary, suggested, preparedBy(review.ai?.runs), hint].filter(Boolean).join("\n\n") };
 }
 
@@ -103,36 +103,28 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const opening = () => summaryFloat(review);
   const [float, setFloatRaw] = useState<Float | null>(() => opening());
   const [scroll, setScroll] = useState(0);
-  // What `y` just did, shown in the footer until the next key.
+  // Tab moves focus into the box (the content area, until the new layout gives it a place of its own) and back.
+  const [focus, setFocus] = useState<"code" | "content">("code");
+  // What `y` just did, or why a key did nothing, shown in the footer until the next key.
   const [note, setNote] = useState<string | null>(null);
-  const setFloat = (f: Float | null) => { setScroll(0); setFloatRaw(f); };
+  const setFloat = (f: Float | null) => { setScroll(0); setFloatRaw(f); if (!f || f.finding) setFocus("code"); };
   const [mode, setMode] = useState<Mode>({ kind: "nav" });
   const [input, setInput] = useState("");
-  // Keys can arrive several to a chunk (a fast "781G"), all handled by one closure: the prefix state lives in refs.
-  const countRef = useRef(""), pendingRef = useRef<string | null>(null);
+  // Keys can arrive several to a chunk (a fast "g12"), all handled by one closure: the pending prefix lives in a ref.
+  const pendingRef = useRef<Pending | null>(null);
   const [, tick] = useState(0);
-  const setCount = (c: string) => { countRef.current = c; tick((n) => n + 1); };
-  const setPending = (p: string | null) => { pendingRef.current = p; tick((n) => n + 1); };
+  const setPending = (p: Pending | null) => { if (p !== pendingRef.current) { pendingRef.current = p; tick((n) => n + 1); } };
   const [busy, setBusy] = useState<string | null>(null);
-  // Long lines either scroll sideways (H/L) or wrap onto more rows (w).
+  // Long lines are cut with an ellipsis, or wrap onto more rows (v w).
   const [wrap, setWrap] = useState(false);
-  const [panX, setPanX] = useState(0);
-  // Withdrawn findings (the second look knocked them down) are out of the way unless asked for: W shows them dimmed, to be read, never decided.
-  const [showWithdrawn, setShowWithdrawn] = useState(false);
 
-  // The key panel: a state with keys of its own (a box, a prompt, the verdict and preview steps) opens it by itself and
-  // closing the state closes it; with nothing open it is only there when `\` asks. A press of `\` (or Esc, with nothing
-  // open) is remembered against the state it was made in, and forgotten when the state changes.
-  const keyState: KeyState = mode.kind === "verdict" ? { box: "verdict" }
-    : mode.kind === "preview" ? (() => { const p = planOf(r, files, { coverage: mode.coverage }); return { box: "preview" as const, dryRun, hook: p.hook ? mode.hook : null, coverage: p.adapter ? mode.coverage : null }; })()
-    : mode.kind === "results" ? { box: "results" }
-    : mode.kind !== "nav" ? { box: "prompt", kind: mode.kind, decide: mode.kind === "comment" && !!mode.decide }
-    : float ? (float.finding ? { box: "finding" } : { box: "info", copyable: !!float.copy }) : { box: null, blind };
-  const stateId = keyState.box ?? "nav";
-  const [pin, setPin] = useState<{ key: string; open: boolean } | null>(null);
-  useEffect(() => setPin(null), [stateId]);
-  const panelOpen = pin && pin.key === stateId ? pin.open : keyState.box !== null;
-  const toggleBindings = () => setPin({ key: stateId, open: !panelOpen });
+  // Where a key is pressed: the submit steps, a prompt, the docs results, an open finding, the content area (Tab), or the code.
+  const keyState: KeyState = mode.kind === "verdict" ? { state: "submit", step: "verdict" }
+    : mode.kind === "preview" ? (() => { const p = planOf(r, files, { coverage: mode.coverage }); return { state: "submit" as const, step: "preview" as const, dryRun, hook: p.hook ? mode.hook : null, coverage: p.adapter ? mode.coverage : null }; })()
+    : mode.kind === "results" ? { state: "content", results: true }
+    : mode.kind !== "nav" ? { state: "prompt", kind: mode.kind, decide: mode.kind === "comment" && !!mode.decide }
+    : float?.finding ? { state: "finding" }
+    : focus === "content" && float ? { state: "content" } : { state: "code" };
 
   const item = items[pos.item];
   const hunk = item?.hunk ?? null;
@@ -152,23 +144,31 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const unhidden = (f: Finding) => !hidden.has(f.hunk);
   // Open: shown and not decided yet. The ▲ counts on the rail and header are what is left to decide.
   const open = (f: Finding) => live(f) && unhidden(f) && !decisionOf(h, f.id);
+  // What the gutter marks and the go-to keys step through: the live findings the reader may see.
   const visible = () => d.findings.filter((f) => live(f) && unhidden(f));
-  // What the gutter marks and f / ]f step through: the live findings, plus the withdrawn ones while W shows them.
-  const listed = (f: Finding) => (live(f) || showWithdrawn) && unhidden(f);
   const withdrawnCount = d.findings.filter((f) => !live(f) && unhidden(f)).length;
-  const findingsHere = item ? d.findings.filter((f) => f.hunk === item.id && listed(f)) : [];
+  const findingsHere = item ? visible().filter((f) => f.hunk === item.id) : [];
   const findingsAt = (l: DiffLine) => findingsHere.filter((f) => f.side === "new" ? l.n !== null && f.line === l.n : l.o !== null && f.line === l.o);
   const notesAt = (l: DiffLine) => h.comments.filter((n) => n.hunk === item?.id && n.line !== null && (n.side === "new" ? n.line === l.n : n.line === l.o));
 
   // Seeing a hunk is reading it.
   useEffect(() => { if (item && !h.visited.includes(item.id)) { h.visited.push(item.id); redraw(); } }, [item?.id]);
 
-  const goItem = (i: number) => { const n = Math.max(0, Math.min(items.length - 1, i)); if (n !== pos.item) { setPos({ item: n, line: 0 }); setFloat(null); setPanX(0); } };
+  // A move to another block closes whatever box was open; a move within the block keeps it.
+  const goTo = (at: Pos) => { if (at.item !== pos.item) setFloat(null); setPos(at); };
   const goChapter = (dir: 1 | -1) => {
     if (!item) return;
     const target = item.chapter + dir;
     const i = dir > 0 ? items.findIndex((x) => x.chapter >= target) : items.findIndex((x) => x.chapter === Math.max(0, target));
-    if (i >= 0) goItem(i);
+    if (i >= 0 && i !== pos.item) goTo({ item: i, line: 0 });
+  };
+  // ↓ and ↑ run on from the end of a block into the next one in reading order, and back.
+  const lineBy = (dir: 1 | -1) => {
+    const next = line + dir;
+    if (next >= 0 && next < lines.length) { setPos({ ...pos, line: next }); return; }
+    const i = pos.item + dir;
+    if (i < 0 || i >= items.length) return;
+    goTo({ item: i, line: dir > 0 ? 0 : Math.max(0, items[i]!.hunk.lines.length - 1) });
   };
   const anchor = (): { side: "new" | "old"; line: number | null } => {
     const l = lines[line];
@@ -176,11 +176,6 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     return l.n !== null ? { side: "new", line: l.n } : { side: "old", line: l.o };
   };
   const showFinding = (f: Finding) => {
-    // A withdrawn finding is shown to be read, in a plain notice: it takes no decision, so the decision keys are not offered.
-    if (!live(f)) {
-      setFloat({ title: `▽ withdrawn · ${f.source} · ${f.kind} · ${f.severity}`, color: "gray", lead: titleOf(f), copy: findingText(f, place(f.hunk, f.line)), body: [claimAddsTo(f) ? f.claim : "", f.evidence, `Withdrawn by the second look: ${f.refute || "no reason given"}`].filter(Boolean).join("\n\n") });
-      return;
-    }
     const dec = decisionOf(h, f.id), p = progress(visible(), h), mine = linkedComment(h, f.id);
     const state = dec
       ? `Decided: ${LABEL[dec.kind]}${dec.reason ? ` (${dec.reason})` : ""}${mine ? `. Your comment: ${mine.text}` : ""}`
@@ -193,30 +188,21 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     const f = float?.finding ? d.findings.find((x) => x.id === float.finding) : undefined;
     return f && live(f) && unhidden(f) ? f : undefined;
   };
-  // After a decision: straight on to the next undecided finding, so a whole pass is ]f and then one key per finding.
+  const hiddenNote = () => hidden.size ? " Chapters you have not read yet keep theirs hidden until you have been through them." : "";
+  // After a decision: straight on to the next undecided finding, so a whole pass is one key per finding.
   const decided = (next: Human) => {
     Object.assign(h, next); redraw();
     const hit = nextUndecided(items, visible(), h, { item: pos.item, line });
-    if (hit) { setPos({ item: hit.item, line: hit.line }); if (hit.item !== pos.item) setPanX(0); showFinding(hit.finding); return; }
+    if (hit) { setPos({ item: hit.item, line: hit.line }); showFinding(hit.finding); return; }
     const p = progress(visible(), h);
-    setFloat({ title: `Findings · ${p.decided}/${p.total} decided`, color: "green", body: `Every finding${hidden.size ? " you can see" : ""} is decided.${hidden.size ? ` Chapters you have not read yet keep theirs hidden; ${keyOf("nav.reveal")} reveals one.` : ""} ${keyOf("finding.hide")} closes this, then ${keyOf("nav.submit")} submits; ${keyOf("finding.next")} and ${keyOf("finding.prev")} step back through them, ${keyOf("finding.undo")} undoes one.` });
+    setFloat({ title: `Findings · ${p.decided}/${p.total} decided`, color: "green", body: `Every finding${hidden.size ? " you can see" : ""} is decided.${hiddenNote()} Esc closes this, then ${keyOf("review.submit")} submits; ${keyOf("go.next_finding")} and ${keyOf("go.prev_finding")} step back through them, and deciding one again changes it.` });
   };
-  const jumpFinding = (dir: 1 | -1) => {
-    const hit = nextFinding(items, d.findings.filter(listed), { item: pos.item, line }, dir);
-    if (!hit) { setFloat({ title: "Findings", body: (dir > 0 ? "No more findings after this point." : "No findings before this point.") + (hidden.size ? ` Chapters you have not read yet keep theirs hidden; close this with ${keyOf("info.hide")}, then ${keyOf("nav.reveal")} reveals one.` : "") }); return; }
+  const land = (hit: (Pos & { finding: Finding }) | undefined) => {
+    if (!hit) { setFloat({ title: "Findings", body: `There are no findings to go to.${hiddenNote()}` }); return; }
     setPos({ item: hit.item, line: hit.line });
     showFinding(hit.finding);
   };
   const place = (id: string, l: number | null) => `${printable(items.find((x) => x.id === id)?.path ?? id)}${l !== null ? `:${l}` : ""}`;
-  const reveal = () => {
-    if (!item) return;
-    const ids = chapters[item.chapter] ?? [];
-    const early = revealEarly(blind, ids, h);
-    if (early) { h.revealed = early; redraw(); } // recorded: a finding seen before the reading is part of how the review went
-    const mine = new Set(ids);
-    const body = revealBody(d.findings.filter((f) => live(f) && mine.has(f.hunk)), h.comments.filter((c) => c.hunk !== null && mine.has(c.hunk)), place);
-    setFloat({ title: `${item.chapter + 1} · ${chapterTitle} · what the model found`, tall: true, color: "yellow", body, copy: body });
-  };
   // The preview ends with what Enter will do: where the file goes, where it posts, and the document's
   // command, if it has one, which runs only after its own keypress (x) in this preview.
   // Undecided findings lead the preview, so a pass left unfinished is seen before anything posts.
@@ -228,167 +214,143 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   // Anything blocking makes request changes the verdict Enter picks; without one, Enter keeps the verdict already chosen, if any.
   const verdictDefault = (): Verdict | undefined => defaultVerdict(visible(), h) ?? h.verdict;
 
-  // Fast typing or a paste can deliver several plain characters in one chunk ("781G"): take them one at a time.
-  useInput((input, key) => { if (input.length > 1 && !key.ctrl && !key.meta) for (const c of input) handle(c, key); else handle(input, key); });
-  const scrollFloat = (ch: string, key: Parameters<Parameters<typeof useInput>[0]>[1]): boolean => {
-    const by = key.pageDown || key.ctrl && ch === "d" ? pageStep(floatH) : key.pageUp || key.ctrl && ch === "u" ? -pageStep(floatH)
-      : mode.kind === "preview" && (ch === "j" || key.downArrow) ? 1 : mode.kind === "preview" && (ch === "k" || key.upArrow) ? -1 : 0;
-    if (!by) return false;
-    setScroll((s) => clampScroll(s + by, floatLines.length, floatH));
-    return true;
-  };
-  const handle = (ch: string, key: Parameters<Parameters<typeof useInput>[0]>[1]) => {
+  // Fast typing or a paste can deliver several plain characters in one chunk ("g12"): take them one at a time. An escape
+  // sequence Ink did not read as a key (it hands those over with the ESC stripped) stays whole, for tokenOf to read.
+  useInput((input, key) => {
+    if (input.length > 1 && !key.ctrl && !key.meta && !/^[[O][0-9;]*[A-Za-z~]$/.test(input)) for (const c of input) handle(c, {});
+    else handle(input, key);
+  });
+  const scrollBy = (by: number) => setScroll((s) => clampScroll(s + by, floatLines.length, floatH));
+
+  /**
+   * Every key goes through the tables: tokenOf reads the key, `step` (chord.ts) resolves it in the current state, with any
+   * pending prefix, to an action id, and `act` does it. The only key outside the tables is Esc, which backs out; in a
+   * prompt, anything that is not one of its keys is text.
+   */
+  const handle = (ch: string, key: InkKey) => {
     if (busy) return;
-    if (mode.kind === "verdict") {
-      if (key.escape) { setMode({ kind: "nav" }); return; }
-      const id = actionOf(keyState, key.return ? "Enter" : ch);
-      if (id === BINDINGS_ACTION) { toggleBindings(); return; }
-      const v: Verdict | undefined = id === "verdict.approve" ? "approve" : id === "verdict.request_changes" ? "request_changes" : id === "verdict.comment" ? "comment" : id === "verdict.default" ? verdictDefault() : undefined;
-      if (v) { h.verdict = v; save(r); preview(false, false); }
-      return;
-    }
-    if (mode.kind === "preview") {
-      if (key.escape) { setMode({ kind: "verdict" }); setFloat(null); return; }
-      const id = actionOf(keyState, key.return ? "Enter" : ch);
-      if (id === "preview.submit") { onDone({ kind: "submit", hook: mode.hook, coverage: mode.coverage }); exit(); return; }
-      if (id === "preview.hook") { const at = scroll; preview(!mode.hook, mode.coverage); setScroll(at); return; }
-      if (id === "preview.coverage") { const at = scroll; preview(mode.hook, !mode.coverage); setScroll(at); return; }
-      if (id === BINDINGS_ACTION) { toggleBindings(); return; }
-      scrollFloat(ch, key);
-      return;
-    }
-    if (mode.kind === "results") {
-      setNote(null);
-      if (key.escape) { setMode({ kind: "nav" }); setFloat(null); return; }
-      const id = actionOf(keyState, ch) ?? (key.downArrow ? "results.down" : key.upArrow ? "results.up" : undefined);
-      if (id === BINDINGS_ACTION) toggleBindings();
-      else if (id === "results.down" || id === "results.up") { const at = Math.max(0, Math.min(mode.answers.length - 1, mode.sel + (id === "results.down" ? 1 : -1))); showResults(mode.query, mode.answers, at); }
-      else if (id === "results.copy") { const a = mode.answers[mode.sel]; setNote(a ? confirmation(copier(answerText(a))) : "nothing to copy here"); }
-      return;
-    }
-    if (mode.kind !== "nav") {
-      if (key.escape) { setMode({ kind: "nav" }); setInput(""); return; }
-      if (key.return) {
-        const text = input.trim();
-        if (mode.kind === "docs") {
-          setInput("");
-          if (!text) { setMode({ kind: "nav" }); return; }
-          try { showResults(text, answersFor(text), 0); } catch (e) { setMode({ kind: "nav" }); setFloat({ title: "ask the docs failed", body: String((e as Error).message), color: "red" }); }
-          return;
-        }
-        setMode({ kind: "nav" }); setInput("");
-        const f = mode.kind === "reason" ? d.findings.find((x) => x.id === mode.id) : mode.kind === "comment" && mode.decide ? d.findings.find((x) => x.id === mode.decide!.id) : undefined;
-        const at = new Date().toISOString();
-        if (mode.kind === "reason") { if (f) decided(decide(h, f, "dismissed", { reason: text, at })); return; }
-        // An emptied comment decides nothing: the finding stays as it was.
-        if (mode.kind === "comment" && mode.decide) { if (f && text) decided(decide(h, f, mode.decide.kind, { text, at })); return; }
-        if (mode.kind === "comment" && text) {
-          h.comments.push({ hunk: mode.general ? null : item?.id ?? null, ...(mode.general ? { side: "new", line: null } : anchor()), text, at: new Date().toISOString() });
-          redraw();
-        }
-        if (mode.kind === "ask" && item) {
-          setBusy("asking…"); setFloat({ title: text || "Explain this hunk", body: "…" });
-          ask(r, files, item.id, text).then((a) => setFloat({ title: text || "This hunk", body: a, copy: askText(text || "Explain this hunk", a) }), (e) => setFloat({ title: "ask failed", body: String((e as Error).message), color: "red" })).finally(() => setBusy(null));
-        }
-        return;
-      }
-      if (key.backspace || key.delete) setInput((s) => s.slice(0, -1));
-      // A prefilled title is often rewritten whole: ctrl-u clears the line, ctrl-w the last word, as in a shell.
-      else if (key.ctrl && ch === "u") setInput("");
-      else if (key.ctrl && ch === "w") setInput((s) => s.replace(/\S+\s*$/, ""));
-      else if (ch && !key.ctrl && !key.meta) setInput((s) => s + ch);
-      return;
-    }
-
-    // ---- nav, and the boxes over it: a key resolves to an action id through keys.ts (state + key → action) and the
-    // handler dispatches on the id, so the footer and the handler read one table. The documented exceptions stay raw
-    // here: Esc, paging, a count, gg/G and the arrow keys.
-    const count = countRef.current, pending = pendingRef.current;
+    const tok = tokenOf(ch, key);
+    if (!tok) return;
     setNote(null);
-    const state = keyState;
-    if (key.escape) { setFloat(null); setCount(""); setPending(null); setPin(null); return; }
-    if (pending) {
-      const p = pending; setPending(null);
-      if (p === "g") { if (ch === "g") setPos({ ...pos, line: 0 }); return; }
-      const id = actionOf(state, p + ch);
-      if (id) act(id);
-      return;
+    const res = step(keyState, pendingRef.current, tok);
+    setPending(res.pending);
+    if (res.out.kind === "act") { act(res.out.id, res.out.n); return; }
+    if (res.out.kind === "escape") { backOut(); return; }
+    if (keyState.state === "prompt" && res.out.kind === "none") {
+      if (tok === "backspace") setInput((s) => s.slice(0, -1));
+      else if (tok === "space") setInput((s) => s + " ");
+      else if ([...tok].length === 1) setInput((s) => s + tok);
     }
-    if (key.ctrl || key.pageDown || key.pageUp) { scrollFloat(ch, key); return; } // before the letters: ctrl-d is a page, not a letter key
-    // A box open: only the keys its footer lists act, so the footer is the truth. Hide closes any box and records nothing.
-    if (float && !actionOf(state, ch) && !startsChord(state, ch)) return;
-    if (/^[0-9]$/.test(ch) && (count || ch !== "0")) { setCount(count + ch); return; }
-    const n = count ? parseInt(count, 10) : undefined;
-    setCount("");
-    const toLine = () => { const at = gotoLine(items, pos.item, n!); if (at) { setPos(at); setFloat(null); } };
-    if (ch === "g") { if (n !== undefined) toLine(); else setPending("g"); return; }
-    if (ch === "G") { if (n !== undefined) toLine(); else setPos({ ...pos, line: Math.max(0, lines.length - 1) }); return; }
-    if (startsChord(state, ch)) { setPending(ch); return; }
-    const id = actionOf(state, ch) ?? (key.downArrow ? "nav.line_down" : key.upArrow ? "nav.line_up" : key.rightArrow ? "nav.next_hunk" : key.leftArrow ? "nav.prev_hunk" : undefined);
-    if (id) act(id, n); else scrollFloat(ch, key);
+  };
+  // Esc with nothing pending: out of the docs results, out of the content area, or the open box closes.
+  const backOut = () => {
+    if (mode.kind === "results") { setMode({ kind: "nav" }); setFloat(null); return; }
+    if (keyState.state === "content") { setFocus("code"); return; }
+    setFloat(null);
   };
 
-  // The answers to a docs question, as a box over the diff; the same box is redrawn as the selection moves.
+  // The answers to a docs question, as a box over the diff with focus in it; the same box is redrawn as the selection moves.
   const showResults = (query: string, answers: Answer[], sel: number) => {
     setMode({ kind: "results", query, answers, sel });
-    setFloat({ title: `Ask the docs · ${query}`, color: "cyan", tall: true, body: answersBody(answers, sel) });
+    setFloat({ title: `Search the docs · ${query}`, color: "cyan", tall: true, body: answersBody(answers, sel) });
+  };
+  // A key whose behaviour comes with a later change says so, and does nothing else.
+  const coming = (id: string) => { const a = rowById(id); setNote(`${keyOf(id)} ${a?.label ?? id}: not built yet, coming with ${a?.coming ?? "a later change"}`); };
+  const copy = () => {
+    if (mode.kind === "results") { const a = mode.answers[mode.sel]; setNote(a ? confirmation(copier(answerText(a))) : "nothing to copy here"); return; }
+    // An open box copies its own text; with none open, the cursor line's reference, which is what you paste into a note.
+    const l = lines[line], at = l ? l.n ?? l.o : null;
+    const text = float ? float.copy : item && at !== null ? `${item.path}:${at}` : undefined;
+    setNote(text ? confirmation(copier(text)) : "nothing to copy here");
+  };
+  // Enter in a prompt: what the typed line does depends on the prompt.
+  const send = () => {
+    if (mode.kind === "nav" || mode.kind === "results" || mode.kind === "verdict" || mode.kind === "preview") return;
+    const text = input.trim();
+    if (mode.kind === "docs") {
+      setInput("");
+      if (!text) { setMode({ kind: "nav" }); return; }
+      try { showResults(text, answersFor(text), 0); } catch (e) { setMode({ kind: "nav" }); setFloat({ title: "search the docs failed", body: String((e as Error).message), color: "red" }); }
+      return;
+    }
+    setMode({ kind: "nav" }); setInput("");
+    const f = mode.kind === "reason" ? d.findings.find((x) => x.id === mode.id) : mode.kind === "comment" && mode.decide ? d.findings.find((x) => x.id === mode.decide!.id) : undefined;
+    const at = new Date().toISOString();
+    if (mode.kind === "reason") { if (f) decided(decide(h, f, "dismissed", { reason: text, at })); return; }
+    // An emptied comment decides nothing: the finding stays as it was.
+    if (mode.kind === "comment" && mode.decide) { if (f && text) decided(decide(h, f, mode.decide.kind, { text, at })); return; }
+    if (mode.kind === "comment" && text) {
+      h.comments.push({ hunk: item?.id ?? null, ...anchor(), text, at });
+      redraw();
+    }
+    if (mode.kind === "ask" && item) {
+      setBusy("asking…"); setFloat({ title: text || "Explain this block", body: "…" });
+      ask(r, files, item.id, text).then((a) => setFloat({ title: text || "This block", body: a, copy: askText(text || "Explain this block", a) }), (e) => setFloat({ title: "ask failed", body: String((e as Error).message), color: "red" })).finally(() => setBusy(null));
+    }
   };
 
   // What each action does. Every id in the key tables has a case here (a test holds the two together).
   const act = (id: string, n?: number) => {
     switch (id) {
-      case "nav.quit": onDone({ kind: "quit" }); exit(); return;
-      case "nav.submit": setMode({ kind: "verdict" }); setFloat(null); return;
-      case "nav.line_down": setPos({ ...pos, line: Math.min(lines.length - 1, line + (n ?? 1)) }); return;
-      case "nav.line_up": setPos({ ...pos, line: Math.max(0, line - (n ?? 1)) }); return;
-      case "nav.next_hunk": goItem(pos.item + (n ?? 1)); return;
-      case "nav.prev_hunk": goItem(pos.item - (n ?? 1)); return;
-      case "nav.next_chapter": goChapter(1); return;
-      case "nav.prev_chapter": goChapter(-1); return;
-      case "nav.next_finding": case "finding.next": case "info.next_finding": jumpFinding(1); return;
-      case "nav.prev_finding": case "finding.prev": case "info.prev_finding": jumpFinding(-1); return;
-      case "finding.hide": case "info.hide": setFloat(null); return;
-      case "nav.bindings": toggleBindings(); return;
-      case "nav.summary": setFloat(opening() ?? { title: "Summary", body: `There is no summary for this review. ${keyOf("info.hide")} closes this.` }); return;
-      case "nav.why": {
+      // ---- anywhere outside a finding
+      case "review.quit": onDone({ kind: "quit" }); exit(); return;
+      case "review.submit": setMode({ kind: "verdict" }); setFloat(null); return;
+      case "review.copy": case "finding.copy": case "content.copy": copy(); return;
+      case "review.search_docs": setMode({ kind: "docs" }); setInput(""); return;
+
+      // ---- the code
+      case "code.down": lineBy(1); return;
+      case "code.up": lineBy(-1); return;
+      case "code.next_chapter": goChapter(1); return;
+      case "code.prev_chapter": goChapter(-1); return;
+      case "code.open_finding": {
+        if (item && hidden.has(item.id)) { setFloat({ title: "Findings", body: "Hidden until you have been through this chapter." }); return; }
+        const l = lines[line], here = l ? [...findingsAt(l)].sort(worstFirst) : [];
+        if (!here.length) { setNote(`no finding on this line; ${keyOf("go.next_finding")} goes to the next one`); return; }
+        showFinding(here[0]!);
+        return;
+      }
+      case "code.to_toc": {
+        // The table of contents shows the chapter's intent and why; until it is drawn, they open here.
         if (!item) return;
         const body = item.mechanical ? `${MECHANICAL_INTENT}\n\nMechanical: ${item.mechanical}. Classified by rule, not by a model.` : `${chapter?.intent ? chapter.intent + "\n\n" : ""}${chapter?.why || "The guide gave no reason for this chapter."}`;
         setFloat({ title: `${item.chapter + 1} · ${chapterTitle}`, body, copy: item.mechanical ? body : whyText(chapterTitle, chapter?.intent, chapter?.why || "The guide gave no reason for this chapter.") });
         return;
       }
-      case "nav.copy": case "finding.copy": case "info.copy": {
-        // An open box copies its own text; with none open, the cursor line's reference, which is what you paste into a note.
-        const l = lines[line], at = l ? l.n ?? l.o : null;
-        const text = float ? float.copy : item && at !== null ? `${item.path}:${at}` : undefined;
-        setNote(text ? confirmation(copier(text)) : "nothing to copy here");
+      case "code.focus_content": case "toc.focus_content":
+        if (float && !float.finding) setFocus("content"); else setNote("the content area is empty");
+        return;
+      case "code.new_finding": setMode({ kind: "comment" }); return;
+
+      // ---- the content area
+      case "content.back": if (mode.kind === "results") backOut(); else setFocus("code"); return;
+      case "content.down": case "content.up": {
+        const dir = id === "content.down" ? 1 : -1;
+        if (mode.kind === "results") showResults(mode.query, mode.answers, Math.max(0, Math.min(mode.answers.length - 1, mode.sel + dir)));
+        else scrollBy(dir);
         return;
       }
-      case "nav.reveal": reveal(); return; // listed only with --blind
-      case "nav.finding_here": { // the next finding in this hunk, from the cursor, wrapping
-        if (item && hidden.has(item.id)) { setFloat({ title: "Findings", body: `Hidden until you have been through this chapter. Close this with ${keyOf("info.hide")}, then ${keyOf("nav.reveal")} reveals them now (and the review notes you did).` }); return; }
-        if (!findingsHere.length) { setFloat({ title: "Findings", body: `None in this hunk. ${keyOf("nav.next_finding")} jumps to the next one anywhere.` }); return; }
-        let at = lines.findIndex((l, i) => i > line && findingsAt(l).length);
-        if (at < 0) at = lines.findIndex((l) => findingsAt(l).length);
-        if (at >= 0) setPos({ ...pos, line: at });
-        showFinding((at >= 0 ? findingsAt(lines[at]!) : findingsHere)[0]!);
-        return;
-      }
-      case "finding.not_an_issue": { const f = target(); if (f) { setMode({ kind: "reason", id: f.id }); setInput(decisionOf(h, f.id)?.reason ?? ""); } return; }
-      case "finding.undo": {
-        const f = target();
-        if (!f) return;
-        if (!decisionOf(h, f.id)) { setNote("nothing decided on this finding"); return; }
-        Object.assign(h, undo(h, f.id)); redraw(); showFinding(f); return;
-      }
+      case "content.page_down": case "finding.page_down": case "submit.page_down": scrollBy(pageStep(floatH)); return;
+      case "content.page_up": case "finding.page_up": case "submit.page_up": scrollBy(-pageStep(floatH)); return;
+
+      // ---- inside a finding
+      case "finding.close": case "finding.back": setFloat(null); return;
+      case "finding.ignore": { const f = target(); if (f) { setMode({ kind: "reason", id: f.id }); setInput(decisionOf(h, f.id)?.reason ?? ""); } return; }
       case "finding.block": case "finding.comment": {
         const f = target();
         if (!f) return;
         // The comment starts as the finding's title (or the comment already written for it) and is saved only on Enter.
-        setMode({ kind: "comment", general: false, decide: { id: f.id, kind: id === "finding.block" ? "block" : "comment" } });
+        setMode({ kind: "comment", decide: { id: f.id, kind: id === "finding.block" ? "block" : "comment" } });
         setInput(linkedComment(h, f.id)?.text ?? titleOf(f));
         return;
       }
-      case "nav.edit": {
+
+      // ---- a: AI
+      case "ai.info": setFloat(opening() ?? { title: "Summary", body: "There is no summary for this review." }); return;
+      case "ai.ask": setMode({ kind: "ask" }); setInput(""); return;
+
+      // ---- v: view
+      case "view.editor": {
         if (!item) return;
         const l = lines[line];
         const at = l?.n ?? lines.slice(line).find((x) => x.n !== null)?.n ?? hunk?.newStart ?? 1;
@@ -396,16 +358,42 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
         onDone({ kind: "edit", path: item.path, line: at }); exit();
         return;
       }
-      case "nav.note": setMode({ kind: "comment", general: false }); return;
-      case "nav.general_note": setMode({ kind: "comment", general: true }); return;
-      case "nav.ask": setMode({ kind: "ask" }); return;
-      case "nav.ask_docs": setMode({ kind: "docs" }); setInput(""); return;
-      case "nav.wrap": setWrap(!wrap); setPanX(0); return;
-      case "nav.withdrawn":
-        setShowWithdrawn(!showWithdrawn);
-        setNote(showWithdrawn ? "withdrawn findings hidden" : withdrawnCount ? `showing ${withdrawnCount} withdrawn finding${withdrawnCount === 1 ? "" : "s"}, dimmed ▽` : "no findings were withdrawn");
+      case "view.wrap": setWrap(!wrap); return;
+
+      // ---- g: go to
+      case "go.next_finding": case "go.prev_finding": land(nextFindingWrapping(items, visible(), { item: pos.item, line }, id === "go.next_finding" ? 1 : -1)); return;
+      case "go.next_severity": case "go.prev_severity": land(nextBySeverity(items, visible(), target()?.id, id === "go.next_severity" ? 1 : -1)); return;
+      case "go.top": case "go.end": { const at = fileEdge(items, pos.item, id === "go.top" ? "top" : "end"); if (at) goTo(at); return; }
+      case "go.line": { const at = n !== undefined ? gotoLine(items, pos.item, n) : undefined; if (at) { setFloat(null); setPos(at); } return; }
+      case "go.chapter": { const at = n !== undefined ? chapterStart(items, n) : undefined; if (at) goTo(at); else setNote(`there is no chapter ${n}`); return; }
+
+      // ---- a line being typed
+      case "prompt.send": send(); return;
+      case "prompt.clear": setInput(""); return;
+      case "prompt.word": setInput((s) => s.replace(/\S+\s*$/, "")); return;
+      case "prompt.cancel": setMode({ kind: "nav" }); setInput(""); return;
+
+      // ---- submit: the verdict, then the preview
+      case "submit.approve": case "submit.request_changes": case "submit.comment": case "submit.default": {
+        const v: Verdict | undefined = id === "submit.approve" ? "approve" : id === "submit.request_changes" ? "request_changes" : id === "submit.comment" ? "comment" : verdictDefault();
+        if (v) { h.verdict = v; save(r); preview(false, false); }
         return;
-      case "nav.pan_left": case "nav.pan_right": if (!wrap) setPanX(clampX(panX + (id === "nav.pan_right" ? PAN : -PAN), longest, codeCols)); return;
+      }
+      case "submit.cancel": setMode({ kind: "nav" }); return;
+      case "submit.send": if (mode.kind === "preview") { onDone({ kind: "submit", hook: mode.hook, coverage: mode.coverage }); exit(); } return;
+      case "submit.hook": case "submit.coverage":
+        if (mode.kind === "preview") { const at = scroll; preview(id === "submit.hook" ? !mode.hook : mode.hook, id === "submit.coverage" ? !mode.coverage : mode.coverage); setScroll(at); }
+        return;
+      case "submit.down": scrollBy(1); return;
+      case "submit.up": scrollBy(-1); return;
+      case "submit.back": setMode({ kind: "verdict" }); setFloat(null); return;
+
+      // ---- keys whose behaviour comes with a later change: each says so
+      case "toc.down": case "toc.up": case "toc.next_chapter": case "toc.prev_chapter": case "toc.expand": case "toc.collapse":
+      case "review.settings": case "ai.draft": case "ai.accept": case "ai.discard": case "filter.high": case "filter.medium": case "filter.all":
+      case "view.zen": case "view.fullscreen":
+      case "settings.down": case "settings.up": case "settings.edit": case "settings.clear": case "settings.leave":
+        coming(id); return;
     }
   };
 
@@ -423,32 +411,32 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const leadLines = float?.lead ? wrapText(float.lead, floatInner) : [];
   const floatLines = float ? [...leadLines, ...(leadLines.length ? [""] : []), ...wrapText(float.body, floatInner)] : [];
   // The panel takes its rows out of the screen before the box and the code divide what is left, so it covers neither.
-  const keyPanel = panelOpen ? panelOf(panelTitle(keyState), entriesOf(keyState), cols, rows) : null;
-  const avail = rows - (keyPanel?.height ?? 0);
+  // It is always there: the keys for where you are, or a pending prefix's second keys.
+  const pending = pendingRef.current;
+  const keyPanel = panelOf(panelTitle(keyState, pending), entriesOf(keyState, pending), cols, rows);
+  const avail = rows - keyPanel.height;
   const floatH = float ? floatHeight(floatLines.length, avail, !!float.tall) : 0;
   const sc = float ? clampScroll(scroll, floatLines.length, floatH) : 0;
   const shownFloat = floatLines.slice(sc, sc + floatRows(floatH));
   const bodyRows = avail - 5; // header, hunk header, intent, footer, spare
-  const longest = Math.max(0, ...spans.map(lengthOf));
-  const x = wrap ? 0 : clampX(panX, longest, codeCols);
   const heights = lines.map((l, i) => (wrap ? rowsFor(lengthOf(spans[i] ?? []), codeCols) : 1) + notesAt(l).length);
   const { start, end } = windowOf(heights, line, Math.max(3, bodyRows - floatH));
   const shown = lines.slice(start, end);
   const fit = (t: string) => t.length > codeW ? t.slice(0, codeW - 1) + "…" : t;
 
-  /** The code of line `i` as rows of spans: one row scrolled by `x`, or every row it wraps to. */
+  /** The code of line `i` as rows of spans: one row cut with an ellipsis, or every row it wraps to. */
   const rowsOf = (i: number): Span[][] => {
     const sp = spans[i] ?? [], len = lengthOf(sp);
     if (wrap) return Array.from({ length: rowsFor(len, codeCols) }, (_, k) => sliceSpans(sp, k * codeCols, (k + 1) * codeCols));
-    const cut = len > x + codeCols;
-    const vis = sliceSpans(sp, x, x + codeCols - (cut ? 1 : 0));
+    const cut = len > codeCols;
+    const vis = sliceSpans(sp, 0, codeCols - (cut ? 1 : 0));
     return [cut ? [...vis, { text: "…", kind: "comment" }] : vis];
   };
 
   // A finding's box is rounded and coloured by severity; the opening summary is double-ruled in magenta, so they cannot be mistaken for each other.
   const floatBox = (left: number) => float ? (
     <Box flexDirection="column" marginLeft={left} width={floatW} height={floatH} overflow="hidden" borderStyle={float.summary ? "double" : "round"} borderColor={float.color ?? "gray"} paddingX={1}>
-      <Text bold color={float.color} wrap="truncate">{float.title}{busy ? <Text dimColor> · {busy}</Text> : null}{floatLines.length > floatRows(floatH) ? <Text dimColor> · {sc + 1}-{Math.min(floatLines.length, sc + floatRows(floatH))}/{floatLines.length} PgUp/PgDn</Text> : null}</Text>
+      <Text bold color={float.color} wrap="truncate">{float.title}{busy ? <Text dimColor> · {busy}</Text> : null}{floatLines.length > floatRows(floatH) ? <Text dimColor> · {sc + 1}-{Math.min(floatLines.length, sc + floatRows(floatH))}/{floatLines.length} {float.finding ? "PgUp/PgDn" : `${keyOf("code.focus_content")} to scroll`}</Text> : null}{keyState.state === "content" ? <Text color="cyan"> · focused</Text> : null}</Text>
       {shownFloat.map((t, j) => <Text key={j} bold={sc + j < leadLines.length} wrap="truncate">{t}</Text>)}
     </Box>
   ) : null;
@@ -459,14 +447,14 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
         const dv = verdictDefault(), hint = suggestionHint(review.suggested ?? [], (v) => VERDICT[v]);
         return <Text><Text color="green" bold> verdict › </Text>{dv ? <Text dimColor>Enter takes {VERDICT[dv]}</Text> : null}{hint ? <Text dimColor wrap="truncate">{dv ? " · " : ""}{hint}</Text> : null}</Text>;
       }
-      case "reason": return <Text><Text color="cyan" bold> not an issue, why? › </Text>{input}<Text inverse> </Text><Text dimColor>  (optional, never posted)</Text></Text>;
+      case "reason": return <Text><Text color="cyan" bold> ignore · private note › </Text>{input}<Text inverse> </Text><Text dimColor>  (optional, never posted)</Text></Text>;
       case "preview": return <Text dimColor> </Text>;
       case "results": return note ? <Text wrap="truncate" color="green"> {note}</Text> : <Text dimColor> </Text>;
       case "nav": if (note) return <Text wrap="truncate" color="green"> {note}</Text>;
-        return <Text wrap="truncate" dimColor> {busy ? `${busy} keys wait until it answers` : ""}{countRef.current || pendingRef.current ? <Text color="cyan">   {countRef.current}{pendingRef.current}</Text> : null}</Text>;
+        return <Text wrap="truncate" dimColor> {busy ? `${busy} keys wait until it answers` : ""}{pending ? <Text color="cyan">   {pendingText(pending)}</Text> : null}</Text>;
       default: {
         const decideKind = mode.kind === "comment" ? mode.decide?.kind : undefined;
-        const label = mode.kind === "docs" ? "ask the docs" : mode.kind === "ask" ? "ask" : decideKind === "block" ? "block on it" : decideKind ? "comment on the finding" : mode.general ? "summary comment" : "comment";
+        const label = mode.kind === "docs" ? "search the docs" : mode.kind === "ask" ? "ask" : decideKind === "block" ? "block on it" : decideKind ? "comment on the finding" : "new finding";
         return <Text><Text color="cyan" bold> {label} › </Text>{input}<Text inverse> </Text></Text>;
       }
     }
@@ -507,7 +495,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
             <>
               <Text wrap="truncate">
                 <Text bold>{printable(item.path)}</Text>
-                <Text dimColor>{hunk.context.trim() ? ` · ${printable(hunk.context.trim())}` : ""} · {where(hunk)} · {pos.item + 1}/{items.length}{wrap ? " · wrapped" : x ? ` · →${x}` : ""}</Text>
+                <Text dimColor>{hunk.context.trim() ? ` · ${printable(hunk.context.trim())}` : ""} · {where(hunk)} · {pos.item + 1}/{items.length}{wrap ? " · wrapped" : ""}</Text>
               </Text>
               <Text wrap="truncate">
                 {item.mechanical
@@ -549,11 +537,10 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
           ) : <Text dimColor>Nothing to read: the diff is empty.</Text>}
         </Box>
       </Box>
-      {keyPanel ? keyPanel.boxed
-        ? <Box flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1} width={keyPanel.width} height={keyPanel.height}><Text bold>{keyPanel.title}</Text>{keyPanel.lines.map((t, i) => <Text key={i} wrap="truncate">{t}</Text>)}</Box>
-        : <Text wrap="truncate" dimColor> {keyPanel.lines[0]}</Text> : null}
-      {/* The footer's one permanent hint. In a prompt `\` is text, so it is not offered there. */}
-      <Box justifyContent="space-between"><Box flexShrink={1}>{footer()}</Box>{keyState.box === "prompt" ? null : <Text dimColor>{bindingsHint()} </Text>}</Box>
+      {keyPanel.boxed
+        ? <Box flexDirection="column" borderStyle="single" borderColor={pending ? "cyan" : "gray"} paddingX={1} width={keyPanel.width} height={keyPanel.height}><Text bold>{keyPanel.title}</Text>{keyPanel.lines.map((t, i) => <Text key={i} wrap="truncate">{t}</Text>)}</Box>
+        : <Text wrap="truncate" dimColor> {keyPanel.lines[0]}</Text>}
+      <Box><Box flexShrink={1}>{footer()}</Box></Box>
     </Box>
   );
 }

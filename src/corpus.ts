@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseToml } from "./config.ts";
-import { ALL_ACTIONS, FINDING_KEYS, INFO_KEYS, NAV_KEYS } from "./keys.ts";
+import { ALL_ACTIONS, PREFIXES, type State } from "./keys.ts";
 
 export const RECIPES_PATH = join(import.meta.dir, "..", "docs", "recipes.toml");
 
@@ -16,13 +16,15 @@ export type Doc =
   | { kind: "action"; id: string; state: string; label: string; text: string; actions: string[] }
   | { kind: "recipe"; id: string; text: string; why: string; actions: string[] };
 
-const STATES: [Set<string>, string][] = [
-  [new Set(NAV_KEYS.map((a) => a.id)), "in the diff with no box open"],
-  [new Set(FINDING_KEYS.map((a) => a.id)), "in a finding's box"],
-  [new Set(INFO_KEYS.map((a) => a.id)), "in a notice or summary box"],
-];
-/** The screen state an action is pressed in, in words: its id's prefix says which table it is from. */
-export const stateOf = (id: string): string => STATES.find(([ids]) => ids.has(id))?.[1] ?? "";
+const PLACES: Partial<Record<State, string>> = { toc: "the table of contents", code: "the code", finding: "an open finding", content: "the content area" };
+/** Where an action is pressed, in words, from its row: the states it acts in and the prefix before it. */
+export const stateOf = (id: string): string => {
+  const a = ALL_ACTIONS.find((x) => x.id === id);
+  if (!a) return "";
+  const places = a.states.map((s) => PLACES[s]).filter(Boolean);
+  const inWhat = `in ${places.length > 1 ? `${places.slice(0, -1).join(", ")} or ${places.at(-1)}` : places[0]}`;
+  return a.prefix ? `after the ${PREFIXES[a.prefix]} prefix, ${inWhat}` : inWhat;
+};
 
 export function parseRecipes(text: string): Recipe[] {
   const list = parseToml(text).recipe;
