@@ -128,7 +128,7 @@ async function main(args: string[]): Promise<void> {
     case "-h": case "--help": case "help": console.log(USAGE); return;
     case "models": return models();
     case "list": console.log(all().map(({ slug, doc: { target: t, human: h } }) => `${slug}\t${t.label}\t${h.visited.length} read · ${h.comments.length} notes\t${t.title}`).join("\n")); return;
-    case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r.doc, filesOf(r), preparedBy(r.ai?.runs))); return; }
+    case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r.doc, filesOf(r))); const by = preparedBy(r.ai?.runs); if (by) process.stderr.write(`${by}\n`); return; }
     case "export": { if (!a1) throw new Fail("usage: prview export <name>"); process.stdout.write(exportDocument(load(a1))); return; }
     case "import": { const r = importDocument(await doc(), opts.repo); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
     case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); return review(importDocument(await doc(), opts.repo), blind(), opts.dryRun); }

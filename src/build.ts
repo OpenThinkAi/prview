@@ -386,7 +386,7 @@ export const exportDocument = (r: Review) => JSON.stringify(r.doc, null, 2) + "\
 export const VERDICT = { approve: "Approve", request_changes: "Request changes", comment: "Comment" } as const;
 
 /** The compiled review as markdown: verdict, summary, comments with file and line, coverage, findings kept. */
-export function writeup(d: Doc, files: FileDiff[], by?: string): string {
+export function writeup(d: Doc, files: FileDiff[]): string {
   const hunks = hunksOf(files);
   const { target: t, human: h } = d;
   const total = hunks.filter((x) => x.hunk).length, seen = h.visited.length;
@@ -396,7 +396,6 @@ export function writeup(d: Doc, files: FileDiff[], by?: string): string {
     return `${x?.file.path ?? c.hunk}${c.line !== null ? `:${c.line}` : ""}`;
   };
   const out = [`# ${t.title}`, ``, `${h.verdict ? `**${VERDICT[h.verdict]}** · ` : ""}${t.url ?? t.label} · read ${seen} of ${total} hunks`, ``];
-  if (by) out.push(`${by}`, ``);
   const general = h.comments.filter((c) => !c.hunk), placed = h.comments.filter((c) => c.hunk);
   for (const c of general) out.push(c.text, ``);
   if (placed.length) out.push(`## Comments`, ``);
