@@ -1,12 +1,40 @@
 {
-  "name": "prview",
+  "name": "@openthink/prview",
   "version": "0.0.1",
   "description": "Review a pull request in the terminal, prepared by a model, judged by you",
   "license": "MIT",
-  "private": true,
+  "homepage": "https://openthink.dev/prview/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OpenThinkAi/prview.git"
+  },
+  "keywords": [
+    "cli",
+    "tui",
+    "pull-request",
+    "code-review",
+    "ai",
+    "bun"
+  ],
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "bin",
+    "src",
+    "models",
+    "schema",
+    "docs/recipes.toml",
+    "docs/index.json",
+    "LICENSE",
+    "README.md"
+  ],
   "type": "module",
   "bin": {
-    "prview": "./src/cli.tsx"
+    "prview": "bin/prview.js"
   },
   "scripts": {
     "test": "bun test",
