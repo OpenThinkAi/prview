@@ -137,7 +137,6 @@ async function main(args: string[]): Promise<void> {
   opts.say = (s) => process.stderr.write(`prview: ${s}\n`);
   const [cmd, a1] = rest;
   // The flag wins over the config either way; the config is only read when a screen is about to open.
-  const blind = () => opts.blind ?? start().blind;
   const doc = async () => { if (!a1) throw new Fail(`usage: prview ${cmd} <file | ->`); return a1 === "-" ? Bun.stdin.text() : Bun.file(resolve(a1)).text().catch(() => { throw new Fail(`cannot read ${a1}`); }); };
   switch (cmd) {
     case "-h": case "--help": case "help": console.log(USAGE); return;
@@ -147,14 +146,14 @@ async function main(args: string[]): Promise<void> {
     case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r.doc, filesOf(r))); const by = preparedBy(r.ai?.runs); if (by) process.stderr.write(`${by}\n`); return; }
     case "export": { if (!a1) throw new Fail("usage: prview export <name>"); process.stdout.write(exportDocument(load(a1))); return; }
     case "import": { const r = importDocument(await doc(), opts.repo); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
-    case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); start(); return review(importDocument(await doc(), opts.repo), blind(), opts.dryRun); }
+    case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); const cfg = start(); return review(importDocument(await doc(), opts.repo), opts.blind ?? cfg.blind, opts.dryRun); }
     case "done": { if (!a1) throw new Fail("usage: prview done <name>"); console.log(remove(a1)); return; }
-    case "open": { if (!a1) throw new Fail("usage: prview open <name> (prview list)"); start(); return review(await reopen(a1, opts), blind(), opts.dryRun); }
+    case "open": { if (!a1) throw new Fail("usage: prview open <name> (prview list)"); const cfg = start(); return review(await reopen(a1, opts), opts.blind ?? cfg.blind, opts.dryRun); }
     case "prepare": { const r = await build(repoFor(a1, opts.repo), a1, opts); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
   }
-  start();
+  const cfg = start();
   if (!process.stdout.isTTY) throw new Fail("prview needs a terminal");
-  return review(await build(repoFor(cmd, opts.repo), cmd, opts), blind(), opts.dryRun);
+  return review(await build(repoFor(cmd, opts.repo), cmd, opts), opts.blind ?? cfg.blind, opts.dryRun);
 }
 
 main(process.argv.slice(2)).then(() => process.exit(Number(process.exitCode ?? 0)), (e) => {

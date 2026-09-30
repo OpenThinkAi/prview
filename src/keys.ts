@@ -67,9 +67,9 @@ export const infoFooter = (copyable: boolean, scrolls: boolean): string => line(
  */
 export const NAV_KEYS: NavAction[] = [
   { id: "nav.line_down", key: "j", label: "line", short: 2, description: "Move the cursor down a line (a count moves that many)." },
-  { id: "nav.line_up", key: "k", label: "line", description: "Move the cursor up a line (a count moves that many)." },
+  { id: "nav.line_up", key: "k", label: "line", short: 2, description: "Move the cursor up a line (a count moves that many)." },
   { id: "nav.prev_hunk", key: "h", label: "hunk", short: 2, description: "Go to the previous hunk in reading order." },
-  { id: "nav.next_hunk", key: "l", label: "hunk", description: "Go to the next hunk in reading order." },
+  { id: "nav.next_hunk", key: "l", label: "hunk", short: 2, description: "Go to the next hunk in reading order." },
   { id: "nav.next_chapter", key: "J", label: "chapter", description: "Go to the first hunk of the next chapter." },
   { id: "nav.prev_chapter", key: "K", label: "chapter", description: "Go to the first hunk of the previous chapter." },
   { id: "nav.next_finding", key: "]f", label: "find", short: 1, description: "Go to the next finding anywhere in the review and open it." },

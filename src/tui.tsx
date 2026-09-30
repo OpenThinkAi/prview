@@ -272,7 +272,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const act = (id: string, n?: number) => {
     switch (id) {
       case "nav.quit": onDone({ kind: "quit" }); exit(); return;
-      case "nav.bindings": setFloat({ title: "Key bindings · reading", body: bindingsBody(stateOf()), copy: bindingsBody(stateOf()) }); return;
+      case "nav.bindings": { const body = bindingsBody(stateOf()); setFloat({ title: "Key bindings · no box open", body, copy: body }); return; }
       case "nav.submit": setMode({ kind: "verdict" }); setFloat(null); return;
       case "nav.line_down": setPos({ ...pos, line: Math.min(lines.length - 1, line + (n ?? 1)) }); return;
       case "nav.line_up": setPos({ ...pos, line: Math.max(0, line - (n ?? 1)) }); return;
