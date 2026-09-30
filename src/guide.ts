@@ -12,10 +12,12 @@ import type { FileDiff, Hunk } from "./diff.ts";
 /** `intent` is the one line shown with every hunk of the chapter; `why` is the paragraph behind `?`. */
 export type Chapter = { title: string; intent: string; why: string; hunks: string[] };
 export type Mechanical = { id: string; why: string };
-export type Plan = { summary: string; chapters: Chapter[]; mechanical: Mechanical[]; by: "guide" | "files" };
+/** `by` names who ordered the chapters: "files" is the rule-based fallback (a chapter per file). */
+export type Plan = { summary: string; chapters: Chapter[]; mechanical: Mechanical[]; by: string };
 export type Severity = "blocking" | "warn" | "nit";
+/** `source` is the producer that raised it, set by that producer; it is shown, never branched on. */
 export type Finding = {
-  id: number; hunk: string; side: "new" | "old"; line: number; severity: Severity; kind: string;
+  id: string; source: string; hunk: string; side: "new" | "old"; line: number; severity: Severity; kind: string;
   claim: string; evidence: string; status: "upheld" | "withdrawn" | "unrefuted"; refute?: string;
 };
 
@@ -62,7 +64,7 @@ export function classify(files: FileDiff[]): Mechanical[] {
 
 // ---------------------------------------------------------------- the guide
 
-const clip = (s: string, n: number) => s.length > n ? s.slice(0, n) + "…" : s;
+export const clip = (s: string, n: number) => s.length > n ? s.slice(0, n) + "…" : s;
 
 function hunkText(h: Hunk, max = 60): string {
   const lines = h.lines.map((l) => `${l.t}${l.text}`);
@@ -98,7 +100,11 @@ export function jsonIn(text: string): unknown {
 
 /** The guide's answer checked against the hunks: unknown ids dropped, repeats kept once, strays collected. */
 export function parseGuide(reply: string, hunks: HunkAt[], mechanical: Mechanical[]): Plan {
-  const j = jsonIn(reply) as { summary?: unknown; chapters?: unknown };
+  return checkPlan(jsonIn(reply) as object, hunks, mechanical, "guide");
+}
+
+/** Any producer's chapters, held to the same rules as the guide's: a document's plan goes through here too. */
+export function checkPlan(j: { summary?: unknown; chapters?: unknown }, hunks: HunkAt[], mechanical: Mechanical[], by: string): Plan {
   const skip = new Set(mechanical.map((m) => m.id));
   const want = new Set(hunks.filter((h) => !skip.has(h.id)).map((h) => h.id));
   const seen = new Set<string>();
@@ -110,7 +116,7 @@ export function parseGuide(reply: string, hunks: HunkAt[], mechanical: Mechanica
   const strays = [...want].filter((id) => !seen.has(id));
   if (strays.length) chapters.push({ title: chapters.length ? "Also changed" : "The change", intent: chapters.length ? "Hunks the guide did not place" : "", why: chapters.length ? "The guide left these out of every chapter; read them too." : "", hunks: strays });
   if (!chapters.length) throw new Error("the guide placed no hunks");
-  return { summary: clip(String(j.summary ?? "").trim(), 400), chapters, mechanical, by: "guide" };
+  return { summary: clip(String(j.summary ?? "").trim(), 400), chapters, mechanical, by };
 }
 
 /** The guide's one-liner, held to one line: no "verify that", no trailing period, at most 12 words. */
@@ -152,7 +158,13 @@ export function criticPrompt(src: { title: string }, chapter: Chapter, hunks: Hu
   return `# ${src.title}\n\n## Chapter: ${chapter.title}\n${chapter.intent}. ${chapter.why}\n\n${parts.join("\n\n")}`;
 }
 
-const SEV = new Set<Severity>(["blocking", "warn", "nit"]);
+export const SEVERITIES = new Set<Severity>(["blocking", "warn", "nit"]);
+
+/** A finding's line if the hunk shows it on that side; otherwise the hunk's first line on that side. */
+export function anchorLine(h: Hunk, side: "new" | "old", line: number): number {
+  return h.lines.some((l) => (side === "new" ? l.n : l.o) === line) ? line : side === "new" ? h.newStart : h.oldStart;
+}
+
 export function parseCritic(reply: string, chapter: Chapter, hunks: HunkAt[], firstId: number): Finding[] {
   const j = jsonIn(reply);
   const at = new Map(hunks.map((h) => [h.id, h]));
@@ -160,13 +172,12 @@ export function parseCritic(reply: string, chapter: Chapter, hunks: HunkAt[], fi
   for (const f of Array.isArray(j) ? j as any[] : []) {
     const h = typeof f?.hunk === "string" ? at.get(f.hunk) : undefined;
     if (!h?.hunk || !chapter.hunks.includes(h.id)) continue;
-    const side = f.side === "old" ? "old" : "new", line = Number(f.line);
-    const has = h.hunk.lines.some((l) => (side === "new" ? l.n : l.o) === line);
+    const side = f.side === "old" ? "old" : "new";
     const claim = String(f.claim ?? "").trim();
     if (!claim) continue;
     out.push({
-      id: firstId + out.length, hunk: h.id, side, line: has ? line : (side === "new" ? h.hunk.newStart : h.hunk.oldStart),
-      severity: SEV.has(f.severity) ? f.severity : "warn", kind: String(f.kind ?? "correctness").trim().toLowerCase(),
+      id: String(firstId + out.length), source: "critic", hunk: h.id, side, line: anchorLine(h.hunk, side, Number(f.line)),
+      severity: SEVERITIES.has(f.severity) ? f.severity : "warn", kind: String(f.kind ?? "correctness").trim().toLowerCase(),
       claim: clip(claim, 300), evidence: clip(String(f.evidence ?? "").trim(), 500), status: "unrefuted",
     });
   }

@@ -29,9 +29,10 @@ const lineOf = (h: Hunk, f: Finding) => h.lines.findIndex((l) => f.side === "new
 
 /** `]f` / `[f`: the next or previous finding in reading order, across hunks and chapters. */
 export function nextFinding(items: NavItem[], findings: Finding[], from: At, dir: 1 | -1): (At & { finding: Finding }) | undefined {
+  // Ties on one line keep the document's order.
   const spots = items.flatMap((it, item) =>
-    findings.filter((f) => f.hunk === it.id).map((f) => ({ item, line: Math.max(0, lineOf(it.hunk, f)), finding: f })),
-  ).sort((a, b) => a.item - b.item || a.line - b.line || a.finding.id - b.finding.id);
+    findings.map((f, k) => ({ f, k })).filter(({ f }) => f.hunk === it.id).map(({ f, k }) => ({ item, line: Math.max(0, lineOf(it.hunk, f)), finding: f, k })),
+  ).sort((a, b) => a.item - b.item || a.line - b.line || a.k - b.k);
   const after = (s: At) => s.item > from.item || (s.item === from.item && s.line > from.line);
   const before = (s: At) => s.item < from.item || (s.item === from.item && s.line < from.line);
   return dir > 0 ? spots.find(after) : [...spots].reverse().find(before);

@@ -3,7 +3,7 @@
 
 import { existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { all, build, Fail, filesOf, home, load, remove, reopen, repoFor, save, writeup, type BuildOpts, type Review } from "./build.ts";
+import { all, build, checkHead, exportDocument, Fail, filesOf, home, importDocument, load, remove, reopen, repoFor, writeup, type BuildOpts, type Review } from "./build.ts";
 import { PROVIDERS, type Provider } from "./llm.ts";
 import { show } from "./tui.tsx";
 
@@ -28,6 +28,10 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   prview list                 reviews that still exist
   prview open <name>          reopen one (e.g. pm-pr-12), rebuilt at the PR's current head
   prview writeup <name>       print the compiled review without opening the screen
+  prview export <name>        print its review document (prview-review/1 JSON; schema/ describes it)
+  prview import <file | ->    merge a review document's findings and chapters into the review at its
+                              head, or start one in this clone; any producer's document, no source named
+  prview show <file | ->      import a document, then open it
   prview done <name>          remove it (worktree, fetched refs, state)`;
 
 function editor(): string[] {
@@ -44,6 +48,7 @@ function editorArgs(cmd: string[], path: string, line: number): string[] {
 }
 
 async function review(r: Review): Promise<void> {
+  checkHead(r);
   const files = filesOf(r);
   for (;;) {
     const o = await show(r, files);
@@ -54,7 +59,7 @@ async function review(r: Review): Promise<void> {
       continue;
     }
     if (o.kind === "submit") {
-      const md = writeup(r, files);
+      const md = writeup(r.doc, files);
       const out = join(home(), `${r.slug}.review.md`);
       writeFileSync(out, md);
       process.stdout.write(md + `\nSaved to ${out}. Posting to the PR's platform is not built yet; the markdown above is the review.\n`);
@@ -77,23 +82,25 @@ async function main(args: string[]): Promise<void> {
       if (!PROVIDERS.includes(p)) throw new Fail(`--ai takes one of ${PROVIDERS.join(", ")}`);
       opts.ai = p;
     }
-    else if (a.startsWith("-") && a !== "-h" && a !== "--help") throw new Fail(`unknown flag ${a}`);
+    else if (a.startsWith("-") && a !== "-" && a !== "-h" && a !== "--help") throw new Fail(`unknown flag ${a}`);
     else rest.push(a);
   }
   opts.say = (s) => process.stderr.write(`prview: ${s}\n`);
   const [cmd, a1] = rest;
+  const doc = async () => { if (!a1) throw new Fail(`usage: prview ${cmd} <file | ->`); return a1 === "-" ? Bun.stdin.text() : Bun.file(resolve(a1)).text().catch(() => { throw new Fail(`cannot read ${a1}`); }); };
   switch (cmd) {
     case "-h": case "--help": case "help": console.log(USAGE); return;
-    case "list": console.log(all().map((r) => `${r.slug}\t${r.label}\t${r.visited.length} read · ${r.notes.length} notes\t${r.title}`).join("\n")); return;
-    case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r, filesOf(r))); return; }
-    case "done": { if (!a1) throw new Fail("usage: prview done <name>"); console.log(remove(load(a1))); return; }
+    case "list": console.log(all().map(({ slug, doc: { target: t, human: h } }) => `${slug}\t${t.label}\t${h.visited.length} read · ${h.comments.length} notes\t${t.title}`).join("\n")); return;
+    case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r.doc, filesOf(r))); return; }
+    case "export": { if (!a1) throw new Fail("usage: prview export <name>"); process.stdout.write(exportDocument(load(a1))); return; }
+    case "import": { const r = importDocument(await doc(), opts.repo); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
+    case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); return review(importDocument(await doc(), opts.repo)); }
+    case "done": { if (!a1) throw new Fail("usage: prview done <name>"); console.log(remove(a1)); return; }
     case "open": { if (!a1) throw new Fail("usage: prview open <name> (prview list)"); return review(await reopen(a1, opts)); }
-    case "prepare": { const r = await build(repoFor(a1, opts.repo), a1, opts); console.log(`${r.slug}: ${r.plan.chapters.length} chapters, ${r.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
+    case "prepare": { const r = await build(repoFor(a1, opts.repo), a1, opts); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${r.doc.findings.filter((f) => f.status !== "withdrawn").length} findings. Open it with: prview open ${r.slug}`); return; }
   }
   if (!process.stdout.isTTY) throw new Fail("prview needs a terminal");
-  const r = await build(repoFor(cmd, opts.repo), cmd, opts);
-  save(r);
-  return review(r);
+  return review(await build(repoFor(cmd, opts.repo), cmd, opts));
 }
 
 main(process.argv.slice(2)).then(() => process.exit(0), (e) => {
