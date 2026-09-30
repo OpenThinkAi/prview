@@ -241,7 +241,7 @@ export type Suggested = { by: string; verdict: Verdict; reason?: string };
  * A document's `human` layer belongs to whoever wrote it, and anything posted from this review is the
  * reader's own words. So a document from anywhere but the reader's own export loses its human layer
  * here: each comment becomes a finding of kind `comment` the reader triages like any other (`c`/`b`
- * adopt it as their own editable comment, `n` rejects it), and the verdict comes back separately, as
+ * adopt it as their own editable comment, `i` ignores it), and the verdict comes back separately, as
  * information. Decisions, coverage and reveals are theirs too, and are dropped. A comment on the whole
  * change is anchored at the diff's first hunk; one on a hunk this diff does not have is dropped by `fit`.
  * The findings take the producer's name as their source when every finding in the document shares one,

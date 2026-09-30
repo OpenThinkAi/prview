@@ -34,10 +34,46 @@ export function spotsOf(items: NavItem[], findings: Finding[]): (At & { finding:
   ).sort((a, b) => a.item - b.item || a.line - b.line || a.k - b.k).map(({ item, line, finding }) => ({ item, line, finding }));
 }
 
-/** `]f` / `[f`: the next or previous finding in reading order, across hunks and chapters. */
+/** The next or previous finding in reading order, across hunks and chapters; none past either end. */
 export function nextFinding(items: NavItem[], findings: Finding[], from: At, dir: 1 | -1): (At & { finding: Finding }) | undefined {
   const spots = spotsOf(items, findings);
   const after = (s: At) => s.item > from.item || (s.item === from.item && s.line > from.line);
   const before = (s: At) => s.item < from.item || (s.item === from.item && s.line < from.line);
   return dir > 0 ? spots.find(after) : [...spots].reverse().find(before);
+}
+
+/** Most serious first: what "by severity" walks through. */
+const RANK = { blocking: 0, warn: 1, nit: 2 } as const;
+
+/**
+ * `g h` / `g H`: every blocking finding in reading order, then the warnings, then the nits, wrapping round. From the
+ * open finding (`current`) it steps along that order; with none open it starts at the most serious (or, backwards, the least).
+ */
+export function nextBySeverity(items: NavItem[], findings: Finding[], current: string | undefined, dir: 1 | -1): (At & { finding: Finding }) | undefined {
+  const order = spotsOf(items, findings).map((s, i) => ({ s, i })).sort((a, b) => RANK[a.s.finding.severity] - RANK[b.s.finding.severity] || a.i - b.i).map(({ s }) => s);
+  if (!order.length) return undefined;
+  const at = current ? order.findIndex((s) => s.finding.id === current) : -1;
+  if (at < 0) return dir > 0 ? order[0] : order[order.length - 1];
+  return order[(at + dir + order.length) % order.length];
+}
+
+/** `g f` / `g F`: the next or previous finding in reading order, wrapping round at either end. */
+export function nextFindingWrapping(items: NavItem[], findings: Finding[], from: At, dir: 1 | -1): (At & { finding: Finding }) | undefined {
+  const spots = spotsOf(items, findings);
+  return nextFinding(items, findings, from, dir) ?? (dir > 0 ? spots[0] : spots[spots.length - 1]);
+}
+
+/** `g g` / `g e`: the first line of this file's first block, or the last line of its last block, by line number. */
+export function fileEdge(items: NavItem[], current: number, edge: "top" | "end"): At | undefined {
+  const path = items[current]?.path;
+  const mine = items.map((it, i) => ({ it, i })).filter(({ it }) => it.path === path);
+  if (!mine.length) return undefined;
+  const pick = mine.reduce((a, b) => (edge === "top" ? b.it.hunk.newStart < a.it.hunk.newStart : b.it.hunk.newStart > a.it.hunk.newStart) ? b : a);
+  return { item: pick.i, line: edge === "top" ? 0 : Math.max(0, pick.it.hunk.lines.length - 1) };
+}
+
+/** `g c <n> Enter`: chapter n's first block (chapters count from 1; the mechanical group is the one after the last). */
+export function chapterStart(items: NavItem[], n: number): At | undefined {
+  const i = items.findIndex((it) => it.chapter === n - 1);
+  return i < 0 ? undefined : { item: i, line: 0 };
 }

@@ -1,271 +1,388 @@
-// The keys, one table per screen state. Each row is an action: a stable id (`<state>.<action>`), the key that
-// triggers it, the label the key panel shows and a one-line description of what it does. The panel (panel.ts) is drawn
-// from the tables and the key handler resolves a keypress to an action id through the same tables, so what the panel
-// shows is exactly what works: nothing listed does nothing, and nothing acts that is not listed. The footer keeps one
-// permanent hint, the key of `nav.bindings`; the panel opens by itself in any state with keys of its own.
-// Esc and paging (PgUp/PgDn, ctrl-u/ctrl-d) always act and are not listed, except in the preview, which lists paging.
-// A `hidden` row acts but stays out of the panel: `[f` is the unspoken twin of `]f`.
-// The tables below are the defaults. `effectiveKeys` lays the user's [keys] over them and `installKeymap` makes the
-// result the one every hint, panel and lookup reads; nothing outside this file names a key directly.
+// The keys (key map v2). Every action is a row: a stable id, the states it acts in, a primary key, an optional
+// secondary key (the vim/helix spelling), the label the key panel shows and a one-line description. Arrows move around
+// the review; letter prefixes hold everything else: `a` AI, `f` filter, `v` view, `g` go to. A prefixed row's key is
+// its second key, pressed after the prefix. The key panel (panel.ts) is drawn from these rows and the key handler
+// resolves a keypress through the same rows (chord.ts), so what the panel lists is exactly what acts.
+//
+// Ids are `<state>.<action>` for an action of one state, and `<group>.<action>` for one shared by several: the
+// prefix groups (`ai`, `filter`, `view`, `go`) and `review`, the keys that act anywhere outside a finding.
+// Esc is not a row: it always backs out of whatever is open (a pending prefix, a finding, the content area, a prompt).
+// Keys are tokens: one printable character, or a name (`down`, `shift-down`, `enter`, `tab`, `pgdn`, `ctrl-d`, ...).
+// The rows below are the defaults. `effectiveKeys` lays the user's [keys] over them and `installKeymap` makes the result
+// the one every hint, panel and lookup reads; nothing outside this file names a key directly.
+
+export const STATES = ["toc", "code", "finding", "content", "prompt", "submit", "settings"] as const;
+export type State = (typeof STATES)[number];
+/** The states whose keys can be remapped; prompts, the submit steps and settings keep theirs. */
+export const REMAPPABLE_STATES: readonly State[] = ["toc", "code", "finding", "content"];
+
+export const PREFIXES = { a: "AI", f: "filter", v: "view", g: "go to" } as const;
+export type Prefix = keyof typeof PREFIXES;
+export const isPrefix = (k: string): k is Prefix => k in PREFIXES;
 
 export type Action = {
-  /** Stable across key changes: bindings, the key panel and docs name the action by it. */
+  /** Stable across key changes: bindings, the key panel and the docs name the action by it. */
   id: string;
-  /** One key, or a two-key chord like "]f". */
+  /** Where it acts. */
+  states: readonly State[];
+  /** Pressed after this prefix: `key` is then the second key. */
+  prefix?: Prefix;
+  /** The primary key, a token; "" when unbound. */
   key: string;
+  /** The alias (vim/helix spelling), if any. */
+  secondary?: string;
   label: string;
   description: string;
-  hidden?: true;
+  /** Not remappable: Tab, the prompt and submit steps, settings, and `g <digits> Enter`. */
+  fixed?: true;
+  /** Not built yet: the key acts with a notice naming what is coming. */
+  coming?: string;
+  /** Submit only: the step it is pressed in, and the choice it needs the submit to have. */
+  step?: "verdict" | "preview";
+  needs?: "hook" | "coverage";
 };
 
-/** Where a key is pressed: the open box, or none. The same key means different actions in each. */
-export type NavAction = Action & { blind?: true };
-/** One table per state: what the footer, the lookup and the key panel read. */
-export type Keymap = { nav: NavAction[]; finding: Action[]; info: Action[] };
-
-/**
- * The box, prompt or step a key is pressed in, or none. `prompt.kind` is the line being typed (`decide`: a block or
- * comment that decides a finding); in the preview `hook` and `coverage` are the current toggles, or null when the
- * submit has no such choice.
- */
-export type KeyState =
-  | { box: "finding" }
-  | { box: "info"; copyable: boolean }
-  | { box: null; blind: boolean }
-  | { box: "prompt"; kind: PromptKind; decide?: boolean }
-  | { box: "results" }
-  | { box: "verdict" }
-  | { box: "preview"; dryRun: boolean; hook: boolean | null; coverage: boolean | null };
-
-/** The line being typed: `docs` is the question put to the offline docs search (`ask` is the one put to a model). */
+/** A line being typed: `docs` is the question put to the docs search (`ask` is the one put to a model). */
 export type PromptKind = "ask" | "comment" | "reason" | "docs";
 
-/** Consecutive visible rows with the same label read as one panel entry: j and k, both "line", show as "j/k line". */
+/**
+ * Where a key is pressed. `content` with `results`: docs search answers, where the arrows select. In the submit
+ * preview `hook` and `coverage` are the current toggles, or null when the submit has no such choice.
+ */
+export type KeyState =
+  | { state: "toc" | "code" | "finding" | "settings" }
+  | { state: "content"; results?: boolean }
+  | { state: "prompt"; kind: PromptKind; decide?: boolean }
+  | { state: "submit"; step: "verdict" }
+  | { state: "submit"; step: "preview"; dryRun: boolean; hook: boolean | null; coverage: boolean | null };
+
+const TOC: readonly State[] = ["toc"], CODE: readonly State[] = ["code"], FINDING: readonly State[] = ["finding"], CONTENT: readonly State[] = ["content"];
+const OUTSIDE: readonly State[] = ["toc", "code"], READING: readonly State[] = ["toc", "code", "finding"];
+const TOC_COMING = "the table of contents";
+
+export const DEFAULT_ACTIONS: readonly Action[] = [
+  // ---- the table of contents (drawn with navigation v2; until then the code is where you are)
+  { id: "toc.down", states: TOC, key: "down", secondary: "j", label: "block", description: "Move to the next block in the table of contents.", coming: TOC_COMING },
+  { id: "toc.up", states: TOC, key: "up", secondary: "k", label: "block", description: "Move to the previous block in the table of contents.", coming: TOC_COMING },
+  { id: "toc.next_chapter", states: TOC, key: "shift-down", secondary: "J", label: "chapter", description: "Move to the next chapter in the table of contents.", coming: TOC_COMING },
+  { id: "toc.prev_chapter", states: TOC, key: "shift-up", secondary: "K", label: "chapter", description: "Move to the previous chapter in the table of contents.", coming: TOC_COMING },
+  { id: "toc.expand", states: TOC, key: "right", secondary: "l", label: "expand / enter", description: "Expand the chapter under the cursor, or enter the block's code.", coming: TOC_COMING },
+  { id: "toc.collapse", states: TOC, key: "left", secondary: "h", label: "collapse", description: "Collapse the chapter under the cursor.", coming: TOC_COMING },
+  { id: "toc.focus_content", states: TOC, key: "tab", label: "content", description: "Move focus into the content area to scroll it.", fixed: true },
+
+  // ---- the code
+  { id: "code.down", states: CODE, key: "down", secondary: "j", label: "line", description: "Move down a line; at the end of a block it runs on into the next one." },
+  { id: "code.up", states: CODE, key: "up", secondary: "k", label: "line", description: "Move up a line; at the start of a block it runs on into the one before." },
+  { id: "code.next_chapter", states: CODE, key: "shift-down", secondary: "J", label: "chapter", description: "Go to the first block of the next chapter." },
+  { id: "code.prev_chapter", states: CODE, key: "shift-up", secondary: "K", label: "chapter", description: "Go to the first block of the previous chapter." },
+  { id: "code.open_finding", states: CODE, key: "right", secondary: "l", label: "open finding", description: "Open the finding on the cursor line." },
+  { id: "code.to_toc", states: CODE, key: "left", secondary: "h", label: "contents", description: "Back to the table of contents at this block, which shows the chapter's intent and why." },
+  { id: "code.focus_content", states: CODE, key: "tab", label: "content", description: "Move focus into the content area to scroll it.", fixed: true },
+  { id: "code.new_finding", states: CODE, key: "enter", label: "new finding", description: "Write a finding of your own on the cursor line, posted as your comment at that line." },
+
+  // ---- anywhere outside a finding
+  { id: "review.submit", states: OUTSIDE, key: "s", label: "submit", description: "Submit the review: choose a verdict, see what will be posted, then send it." },
+  { id: "review.copy", states: OUTSIDE, key: "y", label: "copy", description: "Copy the content area's main text; with nothing there, the cursor line's path and line number." },
+  { id: "review.search_docs", states: OUTSIDE, key: "?", label: "search docs", description: "Search the docs in your own words and see the actions that answer it, with your keys; offline, no model." },
+  { id: "review.settings", states: OUTSIDE, key: "\\", label: "settings", description: "Open the settings: keys, default actions, models, editor and display.", coming: "the settings view" },
+  { id: "review.quit", states: OUTSIDE, key: "q", label: "quit", description: "Leave prview; the review so far is kept." },
+
+  // ---- inside a finding
+  { id: "finding.close", states: FINDING, key: "x", label: "close", description: "Close the finding without deciding anything." },
+  { id: "finding.back", states: FINDING, key: "left", secondary: "h", label: "back", description: "Close the finding and go back to its line in the code." },
+  { id: "finding.block", states: FINDING, key: "b", label: "block", description: "Block on the finding with a comment that requests changes, prefilled with its text or your comment." },
+  { id: "finding.comment", states: FINDING, key: "c", label: "comment", description: "Answer the finding with a comment that does not block, prefilled with its text or your comment." },
+  { id: "finding.ignore", states: FINDING, key: "i", label: "ignore", description: "Ignore the finding, with an optional private note that is never posted." },
+  { id: "finding.copy", states: FINDING, key: "y", label: "copy", description: "Copy the finding's text to the clipboard." },
+  { id: "finding.page_down", states: FINDING, key: "pgdn", secondary: "ctrl-d", label: "page", description: "Page the finding's text down." },
+  { id: "finding.page_up", states: FINDING, key: "pgup", secondary: "ctrl-u", label: "page", description: "Page the finding's text up." },
+
+  // ---- the content area, with focus in it
+  { id: "content.down", states: CONTENT, key: "down", secondary: "j", label: "scroll", description: "Scroll the content area down, or select the next search result." },
+  { id: "content.up", states: CONTENT, key: "up", secondary: "k", label: "scroll", description: "Scroll the content area up, or select the previous search result." },
+  { id: "content.page_down", states: CONTENT, key: "pgdn", secondary: "ctrl-d", label: "page", description: "Page the content area down." },
+  { id: "content.page_up", states: CONTENT, key: "pgup", secondary: "ctrl-u", label: "page", description: "Page the content area up." },
+  { id: "content.copy", states: CONTENT, key: "y", label: "copy", description: "Copy the content area's main text, or the selected search result." },
+  { id: "content.back", states: CONTENT, key: "tab", label: "back", description: "Move focus back out of the content area.", fixed: true },
+
+  // ---- a: AI
+  { id: "ai.info", states: OUTSIDE, prefix: "a", key: "i", label: "info", description: "Show the summary of this change: the overview, suggested verdicts and who prepared it." },
+  { id: "ai.ask", states: READING, prefix: "a", key: "?", label: "ask", description: "Ask the model a question about the block under the cursor, or the open finding's block." },
+  { id: "ai.draft", states: OUTSIDE, prefix: "a", key: "s", label: "draft submission", description: "Have the model draft a submission: the findings to include, a verdict and a comment, for you to review.", coming: "drafted submissions" },
+  { id: "ai.accept", states: FINDING, prefix: "a", key: "a", label: "accept answer", description: "Accept the model's answer about this finding and update the finding from it.", coming: "follow-up answers on findings" },
+  { id: "ai.discard", states: FINDING, prefix: "a", key: "x", label: "discard answer", description: "Discard the model's answer about this finding and leave the finding as it was.", coming: "follow-up answers on findings" },
+
+  // ---- f: filter
+  { id: "filter.high", states: OUTSIDE, prefix: "f", key: "h", label: "high only", description: "Show only the high severity findings.", coming: "filters" },
+  { id: "filter.medium", states: OUTSIDE, prefix: "f", key: "m", label: "high and medium", description: "Show the high and medium severity findings.", coming: "filters" },
+  { id: "filter.all", states: OUTSIDE, prefix: "f", key: "a", label: "all", description: "Show every finding.", coming: "filters" },
+
+  // ---- v: view
+  { id: "view.zen", states: READING, prefix: "v", key: "z", label: "zen", description: "Hide or show the table of contents.", coming: "the new layout" },
+  { id: "view.fullscreen", states: READING, prefix: "v", key: "c", label: "full-screen content", description: "Make the content area full-screen, or restore it.", coming: "the new layout" },
+  { id: "view.editor", states: READING, prefix: "v", key: "e", label: "editor", description: "Open the file in your editor at the cursor line." },
+  { id: "view.wrap", states: READING, prefix: "v", key: "w", label: "wrap", description: "Wrap long lines onto more rows, or cut them again." },
+
+  // ---- g: go to
+  { id: "go.next_finding", states: READING, prefix: "g", key: "f", label: "next finding", description: "Go to the next finding anywhere in the review and open it, wrapping round at the end." },
+  { id: "go.prev_finding", states: READING, prefix: "g", key: "F", label: "previous finding", description: "Go to the previous finding anywhere in the review and open it, wrapping round at the start." },
+  { id: "go.next_severity", states: READING, prefix: "g", key: "h", label: "next by severity", description: "Go to the next finding by severity: every blocking one in order, then the warnings, then the nits." },
+  { id: "go.prev_severity", states: READING, prefix: "g", key: "H", label: "previous by severity", description: "Go to the previous finding by severity, the reverse of next by severity." },
+  { id: "go.top", states: READING, prefix: "g", key: "g", label: "top of file", description: "Go to the first line of this file's first block." },
+  { id: "go.end", states: READING, prefix: "g", key: "e", label: "end of file", description: "Go to the last line of this file's last block." },
+  { id: "go.line", states: READING, prefix: "g", key: "<n>", label: "line", description: "Type a line number and Enter to go to that line of this file, or the nearest line shown.", fixed: true },
+  { id: "go.chapter", states: READING, prefix: "g", key: "c", label: "chapter", description: "Type a chapter number and Enter to go to that chapter's first block." },
+
+  // ---- a line being typed
+  { id: "prompt.send", states: ["prompt"], key: "enter", label: "send", description: "Send the line.", fixed: true },
+  { id: "prompt.clear", states: ["prompt"], key: "ctrl-u", label: "clear line", description: "Clear the whole line.", fixed: true },
+  { id: "prompt.word", states: ["prompt"], key: "ctrl-w", label: "delete word", description: "Delete the last word.", fixed: true },
+  { id: "prompt.cancel", states: ["prompt"], key: "esc", label: "cancel", description: "Cancel; nothing is recorded.", fixed: true },
+
+  // ---- submit: the verdict, then the preview. Enter takes the default: request changes when anything is blocking.
+  { id: "submit.approve", states: ["submit"], step: "verdict", key: "a", label: "approve", description: "Approve the change.", fixed: true },
+  { id: "submit.request_changes", states: ["submit"], step: "verdict", key: "r", label: "request changes", description: "Request changes.", fixed: true },
+  { id: "submit.comment", states: ["submit"], step: "verdict", key: "c", label: "comment", description: "Leave a comment verdict, neither approving nor blocking.", fixed: true },
+  { id: "submit.default", states: ["submit"], step: "verdict", key: "enter", label: "default verdict", description: "Take the default verdict: request changes when anything is blocking, else the one already chosen.", fixed: true },
+  { id: "submit.cancel", states: ["submit"], step: "verdict", key: "esc", label: "cancel", description: "Go back to the review without a verdict.", fixed: true },
+  { id: "submit.send", states: ["submit"], step: "preview", key: "enter", label: "submit", description: "Submit: write the document and post it (a dry run only prints the calls).", fixed: true },
+  { id: "submit.hook", states: ["submit"], step: "preview", needs: "hook", key: "x", label: "allow command", description: "Allow or disallow the document's on_submit command for this submit.", fixed: true },
+  { id: "submit.coverage", states: ["submit"], step: "preview", needs: "coverage", key: "v", label: "coverage line", description: "Add or drop the line saying how much you read in the posted summary.", fixed: true },
+  { id: "submit.down", states: ["submit"], step: "preview", key: "down", secondary: "j", label: "scroll", description: "Scroll the preview down a line.", fixed: true },
+  { id: "submit.up", states: ["submit"], step: "preview", key: "up", secondary: "k", label: "scroll", description: "Scroll the preview up a line.", fixed: true },
+  { id: "submit.page_down", states: ["submit"], step: "preview", key: "pgdn", secondary: "ctrl-d", label: "page", description: "Page the preview down.", fixed: true },
+  { id: "submit.page_up", states: ["submit"], step: "preview", key: "pgup", secondary: "ctrl-u", label: "page", description: "Page the preview up.", fixed: true },
+  { id: "submit.back", states: ["submit"], step: "preview", key: "esc", label: "back", description: "Go back to the verdict.", fixed: true },
+
+  // ---- settings (the view arrives with its own change; the keys are fixed here so nothing can take them)
+  { id: "settings.down", states: ["settings"], key: "down", secondary: "j", label: "field", description: "Move to the next field.", fixed: true, coming: "the settings view" },
+  { id: "settings.up", states: ["settings"], key: "up", secondary: "k", label: "field", description: "Move to the previous field.", fixed: true, coming: "the settings view" },
+  { id: "settings.edit", states: ["settings"], key: "enter", label: "edit", description: "Edit the field; for a key, the next keypress becomes the binding.", fixed: true, coming: "the settings view" },
+  { id: "settings.clear", states: ["settings"], key: "backspace", label: "clear secondary", description: "Clear a key's secondary binding.", fixed: true, coming: "the settings view" },
+  { id: "settings.leave", states: ["settings"], key: "esc", label: "leave", description: "Leave the settings, asking first when there are unsaved changes.", fixed: true, coming: "the settings view" },
+];
+
+/**
+ * Old `[keys]` action ids (before key map v2), each to the action that took its place, or null when it was removed.
+ * A config naming one is refused with this, so an old binding never silently does nothing.
+ */
+export const RENAMED: Readonly<Record<string, string | null>> = {
+  "nav.line_down": "code.down", "nav.line_up": "code.up", "nav.next_chapter": "code.next_chapter", "nav.prev_chapter": "code.prev_chapter",
+  "nav.next_hunk": null, "nav.prev_hunk": null, "nav.finding_here": "code.open_finding", "nav.next_finding": "go.next_finding",
+  "nav.prev_finding": "go.prev_finding", "nav.reveal": null, "nav.withdrawn": null, "nav.why": "code.to_toc", "nav.summary": "ai.info",
+  "nav.copy": "review.copy", "nav.ask": "ai.ask", "nav.ask_docs": "review.search_docs", "nav.edit": "view.editor", "nav.note": "code.new_finding",
+  "nav.general_note": null, "nav.wrap": "view.wrap", "nav.pan_left": null, "nav.pan_right": null, "nav.submit": "review.submit",
+  "nav.bindings": null, "nav.quit": "review.quit",
+  "finding.not_an_issue": "finding.ignore", "finding.undo": null, "finding.hide": "finding.close", "finding.next": "go.next_finding",
+  "finding.prev": "go.prev_finding",
+  "info.hide": null, "info.copy": "review.copy", "info.next_finding": "go.next_finding", "info.prev_finding": "go.prev_finding",
+};
+
+// ---------------------------------------------------------------- key tokens
+
+/** The named keys a binding may use besides one printable character. */
+export const NAMED_KEYS = ["up", "down", "left", "right", "shift-up", "shift-down", "shift-left", "shift-right", "tab", "shift-tab", "enter", "esc", "backspace", "pgup", "pgdn", "space", "home", "end"] as const;
+const SHOWN: Record<string, string> = {
+  up: "↑", down: "↓", left: "←", right: "→", "shift-up": "⇧↑", "shift-down": "⇧↓", "shift-left": "⇧←", "shift-right": "⇧→",
+  tab: "Tab", "shift-tab": "⇧Tab", enter: "Enter", esc: "Esc", backspace: "Backspace", pgup: "PgUp", pgdn: "PgDn", space: "Space", home: "Home", end: "End", "<n>": "<n> Enter",
+};
+/** A token as the panel and hints draw it: arrows as arrows, names capitalised, a character as itself. */
+export const showKey = (token: string): string => SHOWN[token] ?? token;
+
+const ALIASES: Record<string, string> = { return: "enter", escape: "esc", pagedown: "pgdn", pageup: "pgup", "page-down": "pgdn", "page-up": "pgup", " ": "space", "↑": "up", "↓": "down", "←": "left", "→": "right" };
+const printable = (c: string) => /^[^\p{C}\s]$/u.test(c);
+
+/** A key as written in the config to its token (`Shift+Down` → `shift-down`), or null when it is no key at all. */
+export function normKey(raw: string): string | null {
+  if ([...raw].length === 1) return ALIASES[raw] ?? (printable(raw) ? raw : null);
+  const s = raw.trim().toLowerCase().replace(/\s*\+\s*/g, "-");
+  const t = ALIASES[s] ?? s;
+  if ((NAMED_KEYS as readonly string[]).includes(t)) return t;
+  if (/^ctrl-[a-z]$/.test(t)) return t;
+  return null;
+}
+
+// ---------------------------------------------------------------- the installed keymap
+
+export type Keymap = { actions: readonly Action[] };
+export const DEFAULT_KEYMAP: Keymap = { actions: DEFAULT_ACTIONS };
+let active: Keymap = DEFAULT_KEYMAP;
+/** Make `km` the keymap every panel, hint and lookup reads. The CLI does this once at startup; tests restore DEFAULT_KEYMAP. */
+export const installKeymap = (km: Keymap): void => { active = km; };
+export const currentKeymap = (): Keymap => active;
+
+/** Every action a reader presses while reading (the docs describe these); the prompt, submit and settings steps are STEP_ACTIONS. */
+export const ALL_ACTIONS: readonly Action[] = DEFAULT_ACTIONS.filter((a) => a.states.some((s) => REMAPPABLE_STATES.includes(s)));
+export const STEP_ACTIONS: readonly Action[] = DEFAULT_ACTIONS.filter((a) => !ALL_ACTIONS.includes(a));
+
+export const rowById = (id: string, km: Keymap = active): Action | undefined => km.actions.find((a) => a.id === id);
+/** The keys that trigger a row, primary first; the unbound ones left out. */
+export const keysOf = (a: Action): string[] => [a.key, a.secondary ?? ""].filter(Boolean);
+/** The key an action is bound to right now, for hints that name a key in a sentence: `g f`, `⇧↓`, `Enter`. */
+export function keyOf(id: string, km: Keymap = active): string {
+  const a = rowById(id, km);
+  const k = a ? keysOf(a)[0] : undefined;
+  if (!a || !k) return "(unbound)";
+  const second = a.id === "go.chapter" ? `${showKey(k)} <n> Enter` : showKey(k);
+  return a.prefix ? `${a.prefix} ${second}` : second;
+}
+
+const inState = (ks: KeyState) => (a: Action): boolean => {
+  if (!a.states.includes(ks.state)) return false;
+  if (ks.state !== "submit") return true;
+  if (a.step !== ks.step) return false;
+  return ks.step !== "preview" || !a.needs || ks[a.needs] !== null;
+};
+
+/** How a row reads in this state: labels that say what Enter, x or v will do right now. */
+function worded(ks: KeyState, a: Action): Action {
+  if (ks.state === "prompt") {
+    if (a.id === "prompt.send") return { ...a, label: ks.kind === "ask" ? "ask" : ks.kind === "docs" ? "search" : ks.kind === "reason" ? "ignore" : ks.decide ? "save" : "send" };
+    if (a.id === "prompt.cancel" && ks.decide) return { ...a, label: "cancel decision" };
+  }
+  if (ks.state === "content" && ks.results && (a.id === "content.down" || a.id === "content.up")) return { ...a, label: "select" };
+  if (ks.state === "content" && ks.results && a.id === "content.back") return { ...a, label: "close" };
+  if (ks.state === "submit" && ks.step === "preview") {
+    if (a.id === "submit.send" && ks.dryRun) return { ...a, label: "print the calls" };
+    if (a.needs === "hook") return { ...a, label: ks.hook ? "disallow command" : "allow command" };
+    if (a.needs === "coverage") return { ...a, label: ks.coverage ? "drop coverage line" : "add coverage line" };
+  }
+  return a;
+}
+
+/** The top-level rows that act in a state (no prefix), bound ones only, in table order. A prompt drops ctrl-w for the one-word ignore note. */
+export const rowsOf = (ks: KeyState, km: Keymap = active): Action[] =>
+  km.actions.filter((a) => !a.prefix && inState(ks)(a) && keysOf(a).length && !(ks.state === "prompt" && ks.kind === "reason" && a.id === "prompt.word")).map((a) => worded(ks, a));
+
+/** The second keys of prefix `p` in a state. */
+export const prefixRows = (ks: KeyState, p: Prefix, km: Keymap = active): Action[] =>
+  km.actions.filter((a) => a.prefix === p && inState(ks)(a) && keysOf(a).length);
+
+/** The prefixes that have second keys in a state, in a/f/v/g order. */
+export const prefixesOf = (ks: KeyState, km: Keymap = active): Prefix[] => (Object.keys(PREFIXES) as Prefix[]).filter((p) => prefixRows(ks, p, km).length);
+
+/** Consecutive rows with the same label read as one panel entry: ↓ and ↑, both "line", show as "↓/↑ j/k line". */
 export function groups<R extends Action>(rows: R[]): R[][] {
   const out: R[][] = [];
-  for (const r of rows.filter((x) => !x.hidden && x.key)) {
+  for (const r of rows) {
     const last = out[out.length - 1];
     if (last && last[0]!.label === r.label) last.push(r); else out.push([r]);
   }
   return out;
 }
 
-/** A finding's box: the decisions, plus hide, the next finding and copy. */
-export const FINDING_KEYS: Action[] = [
-  { id: "finding.not_an_issue", key: "n", label: "not an issue", description: "Dismiss the finding as not an issue, with a reason." },
-  { id: "finding.block", key: "b", label: "block", description: "Block on the finding with a comment that requests changes." },
-  { id: "finding.comment", key: "c", label: "comment", description: "Answer the finding with a comment that does not block." },
-  { id: "finding.undo", key: "u", label: "undo", description: "Take back the decision made on this finding." },
-  { id: "finding.hide", key: "h", label: "hide", description: "Close the box without deciding anything." },
-  { id: "finding.next", key: "]f", label: "next", description: "Go to the next finding anywhere in the review." },
-  { id: "finding.prev", key: "[f", label: "previous", description: "Go to the previous finding anywhere in the review.", hidden: true },
-  { id: "finding.copy", key: "y", label: "copy", description: "Copy the finding's text to the clipboard." },
-];
-
-/** Every other box: the opening summary, `?` why, an `a` answer, `F` reveal and the notices. Hide records nothing. */
-export const INFO_KEYS: Action[] = [
-  { id: "info.hide", key: "h", label: "hide", description: "Close the box; nothing is recorded." },
-  { id: "info.copy", key: "y", label: "copy", description: "Copy the box's text to the clipboard." },
-  { id: "info.next_finding", key: "]f", label: "finding", description: "Go to the next finding anywhere in the review." },
-  { id: "info.prev_finding", key: "[f", label: "previous finding", description: "Go to the previous finding anywhere in the review.", hidden: true },
-];
-/** A notice with no source text of its own (a hint, an error) has nothing for `y` to copy, so it does not list it and `y` does nothing. */
-export const infoRows = (copyable: boolean): Action[] => copyable ? active.info : active.info.filter((k) => k.id !== "info.copy");
-
-/**
- * No box open. `blind`: only with --blind.
- * Not listed but acting (documented exceptions, see NAV_ALIASES and the handler): a count before G or a chord
- * (`123G`), `gg`/`G`, the arrow keys, space, and `]c`/`[c`.
- */
-export const NAV_KEYS: NavAction[] = [
-  { id: "nav.line_down", key: "j", label: "line", description: "Move the cursor down a line (a count moves that many)." },
-  { id: "nav.line_up", key: "k", label: "line", description: "Move the cursor up a line (a count moves that many)." },
-  { id: "nav.prev_hunk", key: "h", label: "hunk", description: "Go to the previous hunk in reading order." },
-  { id: "nav.next_hunk", key: "l", label: "hunk", description: "Go to the next hunk in reading order." },
-  { id: "nav.next_chapter", key: "J", label: "chapter", description: "Go to the first hunk of the next chapter." },
-  { id: "nav.prev_chapter", key: "K", label: "chapter", description: "Go to the first hunk of the previous chapter." },
-  { id: "nav.next_finding", key: "]f", label: "find", description: "Go to the next finding anywhere in the review and open it." },
-  { id: "nav.finding_here", key: "f", label: "find", description: "Open the next finding in this hunk, from the cursor, wrapping." },
-  { id: "nav.prev_finding", key: "[f", label: "find", description: "Go to the previous finding anywhere in the review and open it.", hidden: true },
-  { id: "nav.reveal", key: "F", label: "reveal", blind: true, description: "Reveal this chapter's findings before you have been through it." },
-  { id: "nav.withdrawn", key: "W", label: "withdrawn", description: "Show or hide the findings the second look withdrew, dimmed in the gutter with its reason; they are never decided or posted." },
-  { id: "nav.why", key: "?", label: "why", description: "Explain why this chapter is here and what to check in it." },
-  { id: "nav.summary", key: "S", label: "summary", description: "Show the summary of this change again: the overview, any suggested verdicts and who prepared it." },
-  { id: "nav.copy", key: "y", label: "copy", description: "Copy the cursor line's path:line reference." },
-  { id: "nav.ask", key: "a", label: "ask", description: "Ask the model a question about this hunk." },
-  { id: "nav.ask_docs", key: "/", label: "ask the docs", description: "Ask how to do something in your own words and see the actions that answer it, with your keys; offline, no model." },
-  { id: "nav.edit", key: "e", label: "edit", description: "Open the file in the editor at the cursor line." },
-  { id: "nav.note", key: "n", label: "note", description: "Write a comment on the cursor line." },
-  { id: "nav.general_note", key: "N", label: "note", description: "Write a general comment on the whole pull request." },
-  { id: "nav.wrap", key: "w", label: "wrap", description: "Toggle wrapping long lines." },
-  { id: "nav.pan_left", key: "H", label: "pan", description: "Scroll unwrapped code left." },
-  { id: "nav.pan_right", key: "L", label: "pan", description: "Scroll unwrapped code right." },
-  { id: "nav.submit", key: "s", label: "submit", description: "Choose a verdict and preview the submission." },
-  { id: "nav.bindings", key: "\\", label: "bindings", description: "Show or hide the panel of keys for where you are; it works in every state but a prompt, where it is text." },
-  { id: "nav.quit", key: "q", label: "quit", description: "Leave prview; the review so far is kept." },
-];
-const navRows = (blind: boolean) => active.nav.filter((k) => !k.blind || blind);
-/** Keys that act with no box open without a row of their own: spare spellings of a listed action, left out of the footer. */
-export const NAV_ALIASES: Record<string, string> = { " ": "nav.next_hunk", "]c": "nav.next_chapter", "[c": "nav.prev_chapter" };
-
-/** A line being typed: Enter, ctrl-u, ctrl-w and Esc act in every prompt, and what Enter does is worded per prompt. Text goes in as typed, so the bindings key cannot open the panel here. */
-export const PROMPT_KEYS: Action[] = [
-  { id: "prompt.send", key: "Enter", label: "send", description: "Send the line." },
-  { id: "prompt.clear", key: "ctrl-u", label: "clear line", description: "Clear the whole line." },
-  { id: "prompt.word", key: "ctrl-w", label: "delete word", description: "Delete the last word." },
-  { id: "prompt.cancel", key: "Esc", label: "cancel", description: "Cancel; nothing is recorded." },
-];
-const promptRows = (s: { kind: PromptKind; decide?: boolean }): Action[] => {
-  const send = s.kind === "ask" ? "ask" : s.kind === "docs" ? "search" : s.kind === "reason" ? "decide" : s.decide ? "save" : "send";
-  return PROMPT_KEYS.filter((r) => s.kind !== "reason" || r.id !== "prompt.word").map((r) =>
-    r.id === "prompt.send" ? { ...r, label: send } : r.id === "prompt.cancel" && s.decide ? { ...r, label: "cancel decision" } : r);
-};
-
-/** The answers to a docs question: pick one, copy it, close. Not remappable, like the other steps. */
-export const RESULT_KEYS: Action[] = [
-  { id: "results.down", key: "j", label: "select", description: "Select the next result." },
-  { id: "results.up", key: "k", label: "select", description: "Select the previous result." },
-  { id: "results.copy", key: "y", label: "copy", description: "Copy the selected result as plain text." },
-  { id: "results.close", key: "Esc", label: "close", description: "Close the results." },
-];
-
-/** The verdict step after `s`. Enter takes the default: request changes when anything is blocking. */
-export const VERDICT_KEYS: Action[] = [
-  { id: "verdict.approve", key: "a", label: "approve", description: "Approve the change." },
-  { id: "verdict.request_changes", key: "r", label: "request changes", description: "Request changes." },
-  { id: "verdict.comment", key: "c", label: "comment", description: "Leave a comment verdict, neither approving nor blocking." },
-  { id: "verdict.default", key: "Enter", label: "default verdict", description: "Take the default verdict: request changes when anything is blocking, else the one already chosen." },
-  { id: "verdict.cancel", key: "Esc", label: "cancel", description: "Go back to the review without a verdict." },
-];
-
-/** The submit preview. `x` and `v` exist only when the submit has a command or a platform adapter to choose about. */
-export const PREVIEW_KEYS: (Action & { needs?: "hook" | "coverage" })[] = [
-  { id: "preview.submit", key: "Enter", label: "submit", description: "Submit: write the document and post it (a dry run only prints the calls)." },
-  { id: "preview.hook", key: "x", label: "allow command", needs: "hook", description: "Allow or disallow the document's on_submit command for this submit." },
-  { id: "preview.coverage", key: "v", label: "coverage line", needs: "coverage", description: "Add or drop the line saying how much you read in the posted summary." },
-  { id: "preview.scroll_down", key: "j", label: "scroll", description: "Scroll the preview down a line." },
-  { id: "preview.scroll_up", key: "k", label: "scroll", description: "Scroll the preview up a line." },
-  { id: "preview.page", key: "PgUp/PgDn", label: "page", description: "Page the preview (ctrl-u and ctrl-d do the same)." },
-  { id: "preview.back", key: "Esc", label: "back", description: "Go back to the verdict." },
-];
-const previewRows = (s: { dryRun: boolean; hook: boolean | null; coverage: boolean | null }): Action[] =>
-  PREVIEW_KEYS.filter((r) => !r.needs || s[r.needs] !== null).map((r) =>
-    r.id === "preview.submit" && s.dryRun ? { ...r, label: "print the calls" }
-    : r.needs === "hook" ? { ...r, label: s.hook ? "disallow command" : "allow command" }
-    : r.needs === "coverage" ? { ...r, label: s.coverage ? "drop coverage line" : "add coverage line" } : r);
-
-/** The show-bindings row as it is bound now. One action, one key, in every state that can show the panel. */
-const bindingsRow = (): Action => active.nav.find((r) => r.id === BINDINGS_ACTION)!;
-
-/** The rows that act in a state: an unbound row (key "") does nothing and is not listed. A prompt takes text, so it has no bindings row. */
-export const rowsOf = (s: KeyState): Action[] => {
-  const rows: Action[] = s.box === "finding" ? active.finding : s.box === "info" ? infoRows(s.copyable) : s.box === "prompt" ? promptRows(s)
-    : s.box === "results" ? RESULT_KEYS : s.box === "verdict" ? VERDICT_KEYS : s.box === "preview" ? previewRows(s) : navRows(s.blind);
-  return [...rows, ...(s.box === null || s.box === "prompt" ? [] : [bindingsRow()])].filter((r) => r.key);
-};
-
-/** The one lookup: a key (or a finished chord) in a state, to the action it triggers, if any. */
-export const actionOf = (s: KeyState, key: string): string | undefined =>
-  rowsOf(s).find((r) => r.key === key)?.id ?? (s.box === null ? NAV_ALIASES[key] : undefined);
-
-/** `]` or `[` starts a chord where some action in the state is bound to one beginning with it. */
-export const startsChord = (s: KeyState, ch: string): boolean =>
-  [...rowsOf(s).map((r) => r.key), ...(s.box === null ? Object.keys(NAV_ALIASES) : [])].some((k) => k.length === 2 && k[0] === ch);
-
-/** Every remappable action, for the uniqueness check and anything that lists them (docs). */
-export const ALL_ACTIONS: Action[] = [...NAV_KEYS, ...FINDING_KEYS, ...INFO_KEYS];
-/** The prompt, verdict and preview steps: listed in the key panel and acted on there, not remappable and not in the docs, since they are the last step of a flow the docs already describe. */
-export const STEP_ACTIONS: Action[] = [...PROMPT_KEYS, ...RESULT_KEYS, ...VERDICT_KEYS, ...PREVIEW_KEYS];
-
 // ---------------------------------------------------------------- the user's bindings
-
-export const DEFAULT_KEYMAP: Keymap = { nav: NAV_KEYS, finding: FINDING_KEYS, info: INFO_KEYS };
-let active: Keymap = DEFAULT_KEYMAP;
-/** Make `km` the keymap every footer, hint and lookup reads. The CLI does this once at startup; tests restore DEFAULT_KEYMAP. */
-export const installKeymap = (km: Keymap): void => { active = km; };
-export const currentKeymap = (): Keymap => active;
-
-/** The key an action is bound to right now, for hints that name a key in a sentence. */
-export const rowById = (id: string): Action | undefined => [...active.nav, ...active.finding, ...active.info].find((a) => a.id === id);
-export const keyOf = (id: string): string => rowById(id)?.key || "(unbound)";
-
-/** The action that shows the bindings: it can be rebound but never unbound, or the user could not find the others. */
-export const BINDINGS_ACTION = "nav.bindings";
-/** The footer's one permanent hint, from the effective binding. */
-export const bindingsHint = (): string => `${keyOf(BINDINGS_ACTION)} ${bindingsRow().label}`;
 
 export class KeysError extends Error {}
 
-const STATES = ["nav", "finding", "info"] as const;
-/** Keys that act before the tables are consulted: a digit starts a count, g and G are gg/G and the go-to-line. */
-const RAW = /^[0-9gG]$/;
-const CHORD_FIRST = "[]";
-const printable = (c: string) => /^[^\p{C}\s]$/u.test(c);
+/** A [keys] entry: `"<action>" = "k"` sets the primary; `{ primary = "k", secondary = "j" }` either or both, `secondary = ""` removes it. */
+export type Binding = { primary?: string; secondary?: string };
 
-/** Why `key` cannot be a binding, or null when it can: one printable character, or a two-key chord starting with [ or ]. */
-export function badKey(key: string): string | null {
-  const cs = [...key];
-  if (/^(esc|escape)$/i.test(key) || key === "\x1b") return "Esc always closes and cannot be rebound";
-  if (cs.length === 1 && printable(key)) return RAW.test(key) ? "digits, g and G are taken by counts, gg and G" : null;
-  if (cs.length === 2 && CHORD_FIRST.includes(cs[0]!) && printable(cs[1]!)) return null;
-  return 'a key is one printable character or a chord like "]f" (a [ or ] and one more)';
-}
-
-/** The state's own tables, in order, with the spare spellings (space, ]c, [c) as rows of their own for the conflict check. */
-function occupants(state: (typeof STATES)[number], km: Keymap): { id: string; key: string }[] {
-  const rows: { id: string; key: string }[] = km[state].filter((r) => r.key);
-  // The bindings key works in a box too, so it occupies its key there and another action cannot take it.
-  if (state !== "nav") return [...rows, ...km.nav.filter((r) => r.id === BINDINGS_ACTION && r.key)];
-  const spare = Object.entries(NAV_ALIASES)
-    .filter(([k, id]) => !rows.some((r) => r.id === id && r.key === k))
-    .map(([k, id]) => ({ id: `${id} (its spare spelling)`, key: k }));
-  return [...rows, ...spare];
+/** Why `token` cannot be `a`'s key, or null when it can. */
+function badKey(a: Action, token: string): string | null {
+  if (token === "esc") return "Esc always backs out and cannot be rebound";
+  if (token === "tab" || token === "shift-tab") return "Tab moves focus to the content area and back, and cannot be rebound";
+  if (a.prefix === "g" && /^[0-9]$/.test(token)) return "after g a digit starts a line number";
+  return null;
 }
 
 /**
- * The defaults with `overrides` ({ "<state>.<action>": key }) laid over them. An empty key unbinds an action. Throws a
- * KeysError, worded for the person who wrote the config, on an unknown action, a key that cannot be a binding, the show-bindings
- * action unbound, or two actions in one state on the same key (or one key swallowing the other's chord).
+ * The defaults with `overrides` ({ "<id>": binding }) laid over them. Throws a KeysError, worded for the person who
+ * wrote the config, on an old or unknown action, a fixed one, a key that is no key, Esc or Tab, or two bindings on one
+ * key in one state (primary or secondary, a prefix's second keys among themselves, or a key that is a prefix there).
  */
-export function effectiveKeys(overrides: Record<string, string> = {}): Keymap {
-  const known = new Set(ALL_ACTIONS.map((a) => a.id));
-  for (const [id, key] of Object.entries(overrides)) {
-    if (!known.has(id)) throw new KeysError(`[keys]: unknown action "${id}"; prview keys lists them`);
-    if (key === "") {
-      if (id === BINDINGS_ACTION) throw new KeysError(`[keys]: ${id} can be rebound but not unbound`);
-      continue;
-    }
-    const why = badKey(key);
-    if (why) throw new KeysError(`[keys]: ${id} = ${JSON.stringify(key)}: ${why}`);
-  }
-  const lay = <R extends Action>(rows: R[]): R[] => rows.map((r) => (r.id in overrides ? { ...r, key: overrides[r.id]! } : r));
-  const km: Keymap = { nav: lay(NAV_KEYS), finding: lay(FINDING_KEYS), info: lay(INFO_KEYS) };
-  for (const state of STATES) {
-    const rows = occupants(state, km);
-    rows.forEach((a, i) => {
-      for (const b of rows.slice(i + 1)) {
-        if (a.key === b.key) throw new KeysError(`[keys]: ${a.id} and ${b.id} are both ${JSON.stringify(a.key)} in the ${state} state`);
-        for (const [x, y] of [[a, b], [b, a]] as const) {
-          if ([...x.key].length === 1 && [...y.key].length === 2 && y.key[0] === x.key) throw new KeysError(`[keys]: ${x.id} = ${JSON.stringify(x.key)} would swallow ${y.id}, bound to ${JSON.stringify(y.key)}, in the ${state} state`);
-        }
+export function effectiveKeys(overrides: Record<string, Binding> = {}): Keymap {
+  const byId = new Map(DEFAULT_ACTIONS.map((a) => [a.id, a]));
+  const set = new Map<string, Binding>();
+  for (const [id, b] of Object.entries(overrides)) {
+    const a = byId.get(id);
+    if (!a) {
+      if (id in RENAMED) {
+        const now = RENAMED[id];
+        throw new KeysError(now ? `[keys]: "${id}" is from the old key map; it is now "${now}" (prview keys lists them)` : `[keys]: "${id}" was removed in the new key map; delete that line (prview keys lists what there is)`);
       }
-    });
+      throw new KeysError(`[keys]: unknown action "${id}"; prview keys lists them`);
+    }
+    if (a.fixed) throw new KeysError(`[keys]: ${id} is fixed (${showKey(a.key)}) and cannot be rebound`);
+    const norm: Binding = {};
+    for (const slot of ["primary", "secondary"] as const) {
+      const raw = b[slot];
+      if (raw === undefined) continue;
+      if (raw === "") { norm[slot] = ""; continue; }
+      const t = normKey(raw);
+      if (!t) throw new KeysError(`[keys]: ${id} ${slot} = ${JSON.stringify(raw)}: a key is one printable character or a name (${NAMED_KEYS.filter((k) => !/tab|esc/.test(k)).join(", ")}, ctrl-<letter>)`);
+      const why = badKey(a, t);
+      if (why) throw new KeysError(`[keys]: ${id} ${slot} = ${JSON.stringify(raw)}: ${why}`);
+      norm[slot] = t;
+    }
+    set.set(id, norm);
   }
+  const actions = DEFAULT_ACTIONS.map((a) => {
+    const b = set.get(a.id);
+    if (!b) return a;
+    const key = b.primary ?? a.key, secondary = b.secondary ?? a.secondary;
+    return { ...a, key, secondary: secondary || undefined };
+  });
+  const km: Keymap = { actions };
+  checkConflicts(km);
   return km;
 }
 
-const STATE_NAMES: Record<(typeof STATES)[number], string> = { nav: "nav: reading, no box open", finding: "finding: a finding's box is open", info: "info: any other box is open" };
+const where = (a: Action, slot: "primary" | "secondary") => `${a.id}${slot === "secondary" ? " (secondary)" : ""}`;
 
-/** `prview keys`: the effective bindings grouped by state, as aligned columns of action, key and description. */
+/** Two bindings on one key in one state, per layer: the keys pressed first, and each prefix's second keys. */
+function checkConflicts(km: Keymap): void {
+  for (const state of REMAPPABLE_STATES) {
+    const ks = { state } as KeyState;
+    const layers: [string, Action[]][] = [["", rowsOf(ks, km)], ...prefixesOf(ks, km).map((p): [string, Action[]] => [p, prefixRows(ks, p, km)])];
+    const prefixes = prefixesOf(ks, km);
+    for (const [layer, rows] of layers) {
+      const seen = new Map<string, string>();
+      for (const a of rows) {
+        for (const slot of ["primary", "secondary"] as const) {
+          const k = slot === "primary" ? a.key : a.secondary;
+          if (!k) continue;
+          const at = layer ? ` after ${layer}` : "";
+          if (!layer && isPrefix(k) && prefixes.includes(k)) throw new KeysError(`[keys]: ${where(a, slot)} = ${JSON.stringify(k)}, but ${k} is the ${PREFIXES[k]} prefix in the ${state} state`);
+          const other = seen.get(k);
+          if (other) throw new KeysError(other.startsWith(a.id + " ") || other === a.id ? `[keys]: ${a.id} has ${JSON.stringify(k)} as both primary and secondary` : `[keys]: ${other} and ${where(a, slot)} are both ${JSON.stringify(k)}${at} in the ${state} state`);
+          seen.set(k, where(a, slot));
+        }
+      }
+    }
+  }
+}
+
+const STATE_NAMES: Record<State, string> = {
+  toc: "toc: the table of contents", code: "code: reading the code, no finding open", finding: "finding: a finding is open",
+  content: "content: focus in the content area (Tab)", prompt: "prompt: a line being typed", submit: "submit: the verdict, then the preview",
+  settings: "settings: the settings view",
+};
+
+/** `prview keys`: every action by state, then each prefix group, as aligned columns of action, primary, secondary and description. */
 export function describeKeymap(km: Keymap = active): string {
-  const out: string[] = [];
+  const all = km.actions;
+  const w = Math.max(...all.map((a) => a.id.length));
+  const shown = (a: Action, k: string | undefined) => (k ? (a.prefix ? `${a.prefix} ${showKey(k)}` : showKey(k)) : "-");
+  const kw = Math.max(7, ...all.map((a) => shown(a, a.key || undefined).length)), sw = Math.max(9, ...all.map((a) => shown(a, a.secondary).length));
+  const line = (a: Action) => `  ${a.id.padEnd(w)}  ${(a.key ? shown(a, a.key) : "(unbound)").padEnd(kw)}  ${shown(a, a.secondary).padEnd(sw)}  ${a.description}${a.coming ? ` (coming: ${a.coming})` : ""}${a.fixed ? " (fixed)" : ""}`;
+  const out: string[] = [`  ${"action".padEnd(w)}  ${"primary".padEnd(kw)}  ${"secondary".padEnd(sw)}  description`, ""];
   for (const state of STATES) {
-    const rows: Action[] = km[state];
-    const w = Math.max(...rows.map((r) => r.id.length)), kw = Math.max(...rows.map((r) => (r.key || "(unbound)").length));
+    const rows = all.filter((a) => !a.prefix && a.states.includes(state) && (a.states[0] === state || a.states.length === 1));
+    const shared = all.filter((a) => !a.prefix && a.states.length > 1 && a.states[0] !== state && a.states.includes(state));
+    if (!rows.length && !shared.length) continue;
     out.push(STATE_NAMES[state]);
-    for (const r of rows) out.push(`  ${r.id.padEnd(w)}  ${(r.key || "(unbound)").padEnd(kw)}  ${r.description}`);
+    for (const a of rows) out.push(line(a));
+    if (shared.length) out.push(`  (and ${shared.map((a) => a.id).join(", ")}, listed above)`);
     out.push("");
   }
-  out.push("Always on, not rebindable: Esc closes, PgUp/PgDn and ctrl-u/ctrl-d page, 123G and gg/G, the arrow keys, space, ]c and [c.");
+  for (const p of Object.keys(PREFIXES) as Prefix[]) {
+    const rows = all.filter((a) => a.prefix === p);
+    const states = [...new Set(rows.flatMap((a) => a.states))];
+    out.push(`${p} then: ${PREFIXES[p]} (${states.join(", ")})`);
+    for (const a of rows) out.push(line(a));
+    out.push("");
+  }
+  out.push("Always: Esc backs out of anything (a pending prefix, a finding, the content area, a prompt). Esc and Tab cannot be rebound.");
   return out.join("\n");
 }

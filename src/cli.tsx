@@ -20,51 +20,46 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
 
   With no target: the current branch against the default branch. Every open fetches the PR's current
   head; the guide and findings are redone only when the head moved (or with --fresh).
-  --blind hides findings in a chapter until you have visited every hunk in it (F reveals early, and the
-  write-up says so); blind = true in the config makes that the default, --no-blind turns it off for a run.
+  --blind hides findings in a chapter until you have visited every hunk in it; blind = true in the config
+  makes that the default, --no-blind turns it off for a run.
   --dry-run prints the API calls a submit would make and posts nothing (nothing is written or run either).
   --samples N runs the critic N times per chapter (default 2) and keeps what the runs agree on, with votes shown.
   Models are named in ~/.config/prview/config.toml ($PRVIEW_CONFIG) and assigned per role (guide, critic,
   refute, ask); with no config every role is claude -p on your subscription. --ai MODEL uses one named
   model for all four roles this run; --no-ai skips the models.
 
-  Keys (the defaults: [keys] in the config remaps them per state, prview keys prints yours):
-         j/k line   h/l hunk   J/K chapter   123G go to file line   gg/G first/last   ]f [f next/previous finding
-         F reveal this chapter's findings early (--blind only)
-         S show the summary of this change again (after h closed it)
-         W show or hide the findings the second look withdrew (dimmed ▽, with its reason; the header counts them)
-         Deciding on findings (]f opens the next; each decision moves on to the next undecided one, and the
-         box shows how many are decided, e.g. 3/9 decided):
-           n not an issue (an optional one-line reason, kept in the document, never posted)
-           b block on it: your line comment at the finding's line, prefilled with its title; edit, Enter saves
-             (ctrl-u clears the line, Esc cancels); submit then defaults to request changes
-           c comment: the same, not blocking     u undo the decision (and the comment it wrote)
-           h hide any box (finding, summary, ? why, answer) without deciding (Esc does the same)
-           With a box open only its panel's keys, [f, Esc and paging act: a finding lists n b c u h ]f y,
-           every other box h y ]f. With none open b/c/u do nothing.
-         ? why this chapter matters   f next finding in this hunk   a ask about this hunk
-         / ask the docs: type what you want to do, Enter lists the matching actions with your keys (offline, no model;
-           j/k select, y copy the selected one, Esc close)
-         y copy the open box (finding, ? why, ask answer) as clean text; with none open, the line's path:line
-           (pbcopy, wl-copy, xclip, else OSC 52; PRVIEW_CLIPBOARD=osc52 forces the terminal route)
-         e open the file here in your editor (inside tmux: in a split pane, this screen stays up)
-         n comment on this line   N summary comment   w wrap long lines   H/L pan them sideways
-         PgUp/PgDn (ctrl-u/ctrl-d) page an open box   below 100 columns the rail shows chapter numbers only
-         s submit: pick a verdict (Enter takes request changes when anything is blocking), preview the review,
-           the findings still undecided, and what submit will do, Enter. Findings post only as the b/c comments
-           you saved. The document is
-           written to $PRVIEW_HOME/submitted/<slug>.json (+ .md), then posted through the adapter for its
-           target's platform (github: gh api), then, if the document declares on_submit, its command runs
-           only if you press x in the preview to allow it (shown in full first; no shell); v in the preview
-           adds a line saying how much you read to the posted summary (off by default)
-         \\ show or hide the key panel (bottom-left); a box, prompt or the submit steps open it by themselves,
-           and it lists exactly the keys that act there. The footer shows only this hint.
-         q quit (everything is kept)
+  Keys (the defaults; [keys] in the config remaps them, prview keys prints yours). Arrows move; the prefixes
+  a (AI), f (filter), v (view) and g (go to) hold the rest, and the key panel (bottom-left, always there) lists
+  the keys for where you are, or a prefix's second keys once it is pressed. Esc backs out of anything.
+    ↓/↑ (j/k) line, running on into the next block   ⇧↓/⇧↑ (J/K) chapter   Tab into the box to scroll it, and back
+    → (l) open the finding on this line   ← (h) the chapter's intent and why   Enter your own finding on this line
+    s submit: pick a verdict (Enter takes request changes when anything is blocking), preview the review, the
+      findings still undecided and what submit will do, Enter. Findings post only as the b/c comments you saved.
+      The document is written to $PRVIEW_HOME/submitted/<slug>.json (+ .md), then posted through the adapter
+      for its target's platform (github: gh api), then, if the document declares on_submit, its command runs
+      only if you press x in the preview to allow it (shown in full first; no shell); v in the preview adds
+      a line saying how much you read to the posted summary (off by default)
+    y copy the box (a finding, the summary, an answer) as clean text; with none open, the line's path:line
+      (pbcopy, wl-copy, xclip, else OSC 52; PRVIEW_CLIPBOARD=osc52 forces the terminal route)
+    ? search the docs: type what you want to do, Enter lists the matching actions with your keys (offline, no model)
+    q quit (everything is kept)
+    a then: i the summary · ? ask the model about this block (or the open finding's)
+    v then: e open the file here in your editor (inside tmux: in a split pane, this screen stays up) · w wrap
+    g then: f/F next/previous finding (wrapping) · h/H next/previous by severity · g/e top/end of the file
+            · <digits> Enter that line of this file · c <digits> Enter that chapter
+    Inside a finding (→ or g f opens one; each decision moves on to the next undecided one, and the box shows
+    how many are decided, e.g. 3/9 decided):
+      b block on it: your line comment at the finding's line, prefilled with its title (or your comment);
+        edit, Enter saves (ctrl-u clears the line, Esc cancels); submit then defaults to request changes
+      c comment: the same, not blocking   i ignore, with an optional private note (never posted)
+      x or ← close it without deciding   y copy it   PgUp/PgDn page it   deciding again changes the decision
+    Coming with later changes (they say so when pressed): the table of contents, \\ settings, a s drafts,
+    f h/m/a filters, v z zen, v c full-screen content.
 
   prview prepare <target>     build it (fetch, guide, critic) without opening the screen; open it later
   prview models               list the configured models and roles, and check each model is reachable
-  prview keys                 print the effective key bindings by state (action, key, description);
-                              a bad [keys] table is refused here exactly as at startup
+  prview keys                 print the effective key bindings by state and prefix (action, primary, secondary,
+                              description); a bad [keys] table is refused here exactly as at startup
   prview list                 reviews that still exist
   prview open <name>          reopen one (e.g. pm-pr-12), rebuilt at the PR's current head
   prview writeup <name>       print the compiled review without opening the screen
@@ -72,7 +67,7 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   prview import <file | ->    merge a review document's findings and chapters into the review at its
                               head, or start one in this clone; any producer's document, no source named.
                               Its comments arrive as findings (kind comment) you decide on like any other:
-                              c/b adopt one as your own comment to edit, n rejects it. Its verdict is shown
+                              c/b adopt one as your own comment to edit, i ignores it. Its verdict is shown
                               in the opening summary, never picked for you; nothing of it is posted as is.
   prview import --mine <file | ->
                               restore your own export: comments, decisions and verdict kept as they were

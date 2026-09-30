@@ -51,8 +51,6 @@ export function windowOf(heights: number[], cursor: number, budget: number): { s
 /** Rows a line of `len` columns takes when wrapped to `width`. */
 export const rowsFor = (len: number, width: number) => Math.max(1, Math.ceil(len / Math.max(1, width)));
 
-/** How far right a long line can scroll: never past the point where its last column is at the right edge. */
-export const clampX = (x: number, longest: number, width: number) => Math.max(0, Math.min(x, longest - width));
 
 export function wrapText(s: string, width: number): string[] {
   const out: string[] = [];

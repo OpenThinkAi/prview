@@ -1,7 +1,7 @@
-// `/` ask the docs: a question in a reviewer's words, answered from the committed docs index (docs-index.ts) with
+// `?` search the docs: a question in a reviewer's words, answered from the committed docs index (docs-index.ts) with
 // the actions that do it. Offline and modelless: nothing here touches the network or a configured model. The search
 // finds action ids; the key and the label are read from the installed keymap at the moment the answer is drawn,
-// so a remap shows correctly. Pure, so the ranking and the text are tested without a screen. (Not `nav.ask`, which
+// so a remap shows correctly. Pure, so the ranking and the text are tested without a screen. (Not `ai.ask`, which
 // asks a model about the hunk.)
 
 import { stateOf } from "./corpus.ts";

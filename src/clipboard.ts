@@ -13,12 +13,12 @@ export function findingText(f: Finding, where: string): string {
   return `${where} — ${lead}${detail ? `\n\n${detail}` : ""}`;
 }
 
-/** The `?` box: the chapter title, its one-line intent, then the longer why. */
+/** The chapter's box (← in the code): the chapter title, its one-line intent, then the longer why. */
 export function whyText(title: string, intent: string | undefined, why: string): string {
   return [title, intent, why].filter(Boolean).join("\n\n");
 }
 
-/** An `a` answer with the question it answered. */
+/** An `a ?` answer with the question it answered. */
 export function askText(question: string, answer: string): string {
   return `${question}\n\n${answer}`;
 }

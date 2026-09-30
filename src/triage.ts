@@ -2,7 +2,7 @@
 // nav.ts, so the rules are tested without a screen.
 //
 // A block or comment decision is carried out as an ordinary line comment of the reader's own, at the
-// finding's line, holding whatever text they saved. It posts like any comment they typed with `n`,
+// finding's line, holding whatever text they saved. It posts like any comment they typed with Enter on a line,
 // through the same path; the decision only remembers which comment it wrote, so undoing it or
 // changing it to "not an issue" takes that comment away again and nothing stale is posted.
 
@@ -34,7 +34,7 @@ export function progress(findings: Finding[], h: Pick<Human, "decisions">): { de
 }
 
 /**
- * Where a decision sends the cursor: the first undecided finding at or after `from` in `]f` order,
+ * Where a decision sends the cursor: the first undecided finding at or after `from` in `g f` order,
  * else the first undecided one from the top, so a pass that started midway still finishes.
  * At-or-after, not after: a second finding on the line just decided is the next one.
  */

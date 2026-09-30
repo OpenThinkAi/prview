@@ -44,11 +44,11 @@ test("corpus: one doc per action plus one per phrasing, and no doc's text carrie
   const docs = buildCorpus(recipes);
   expect(docs.length).toBe(ALL_ACTIONS.length + recipes.reduce((n, r) => n + r.q.length, 0));
   expect(new Set(docs.map((d) => d.id)).size).toBe(docs.length);
-  const keys = [...new Set(ALL_ACTIONS.map((a) => a.key))];
-  // Punctuation keys (] [ ? / and the backslash) must not appear at all, which also catches a chord like ]f. Letter keys are words in prose,
+  const keys = [...new Set(ALL_ACTIONS.flatMap((a) => [a.key, a.secondary ?? ""]).filter((k) => [...k].length === 1))];
+  // Punctuation keys (? and the backslash) must not appear at all. Letter keys are words in prose,
   // so they are checked as the forms a writer would use to name one: quoted, or "key x".
   const punct = [...new Set(keys.join("").replace(/[A-Za-z0-9\s]/g, ""))];
-  expect(punct.sort()).toEqual(["/", "?", "[", "\\", "]"]);
+  expect(punct.sort()).toEqual(["?", "\\"]);
   for (const d of docs) {
     const text = d.text + "\n" + (d.kind === "recipe" ? d.why : "");
     for (const ch of punct) expect({ id: d.id, ch, has: text.includes(ch) }).toEqual({ id: d.id, ch, has: false });
@@ -59,16 +59,17 @@ test("corpus: one doc per action plus one per phrasing, and no doc's text carrie
 
 test("action docs say which state they act in, and recipes point at action ids", () => {
   const docs = buildCorpus(recipes);
-  expect(docs.find((d) => d.id === "finding.block")).toMatchObject({ kind: "action", state: "in a finding's box" });
-  expect(docs.find((d) => d.id === "nav.submit")!.text).toContain("verdict");
+  expect(docs.find((d) => d.id === "finding.block")).toMatchObject({ kind: "action", state: "in an open finding" });
+  expect(docs.find((d) => d.id === "go.next_finding")).toMatchObject({ state: "after the go to prefix, in the table of contents, the code or an open finding" });
+  expect(docs.find((d) => d.id === "review.submit")!.text).toContain("verdict");
   const r = docs.find((d) => d.kind === "recipe")!;
   expect(r.actions.length).toBeGreaterThan(0);
 });
 
 test("recipes file errors are specific", () => {
   expect(() => parseRecipes("")).toThrow(/no \[\[recipe\]\]/);
-  expect(() => parseRecipes('[[recipe]]\nq = []\nactions = ["nav.quit"]\nwhy = "x"')).toThrow(/recipe 1: q/);
-  expect(() => parseRecipes('[[recipe]]\nq = ["a"]\nactions = ["nav.quit"]')).toThrow(/why/);
+  expect(() => parseRecipes('[[recipe]]\nq = []\nactions = ["review.quit"]\nwhy = "x"')).toThrow(/recipe 1: q/);
+  expect(() => parseRecipes('[[recipe]]\nq = ["a"]\nactions = ["review.quit"]')).toThrow(/why/);
 });
 
 test("toml subset: arrays of tables and string arrays", () => {
