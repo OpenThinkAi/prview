@@ -407,7 +407,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const liveFindings = d.findings.filter(open).length;
   const anyHidden = d.findings.some((f) => live(f) && !unhidden(f));
   // The counts on the right of the header: read, open ▲, withdrawn (when any were), comments. The title gets the rest.
-  const countsW = Math.max(32, `${seen}/${total} read · ${liveFindings} ▲${anyHidden ? "?" : ""}${withdrawnCount ? ` · ${withdrawnCount} withdrawn` : ""} · ${h.comments.length} comments `.length);
+  const countsW = Math.max(32, `${seen}/${total} read · ${liveFindings} ▲${anyHidden ? "?" : ""}${withdrawnCount ? ` · ${withdrawnCount} withdrawn` : ""} · ${h.comments.length} comment${h.comments.length === 1 ? "" : "s"} `.length);
 
   // A finding's float sits right under the cursor line (the summary at the top of the hunk), so the window keeps that many rows free.
   const leadLines = float?.lead ? wrapText(float.lead, floatInner) : [];
