@@ -77,6 +77,8 @@ export function parseDocument(input: unknown): Doc {
       severity: SEVERITIES.has(f.severity as Severity) ? f.severity as Severity : "warn", kind: str(f.kind, 30).toLowerCase() || "finding",
       claim, evidence: str(f.evidence, 500), status: STATUSES.has(f.status as Finding["status"]) ? f.status as Finding["status"] : "unrefuted",
       ...(str(f.refute, 300) ? { refute: str(f.refute, 300) } : {}),
+      // Only a producer that ran a reviewer several times has votes; anything else is left unset.
+      ...(Number.isInteger(f.votes) && (f.votes as number) >= 1 && (f.votes as number) <= 99 ? { votes: f.votes as number } : {}),
     });
   }
 

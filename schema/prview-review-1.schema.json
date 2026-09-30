@@ -64,7 +64,8 @@
           "claim": { "type": "string", "minLength": 1, "maxLength": 300 },
           "evidence": { "type": "string", "maxLength": 500 },
           "refute": { "type": "string", "maxLength": 300, "description": "what a second look concluded" },
-          "status": { "enum": ["upheld", "withdrawn", "unrefuted"], "default": "unrefuted" }
+          "status": { "enum": ["upheld", "withdrawn", "unrefuted"], "default": "unrefuted" },
+          "votes": { "type": "integer", "minimum": 1, "maximum": 99, "description": "how many of the producer's repeated runs raised this finding; leave out if it ran once" }
         }
       }
     },

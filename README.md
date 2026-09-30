@@ -29,7 +29,9 @@ What you get is a full-screen review, not a diff dump:
 
 Models: `claude -p` on your subscription by default; `--ai qwen|gemma|deepseek` for the local
 servers or DeepSeek; `--no-ai` to skip the guide and critic. The guide and findings are redone
-only when the PR head moves, or with `--fresh`.
+only when the PR head moves, or with `--fresh`. The critic reads each chapter `--samples N` times
+(default 2) and merges the runs: a finding shows how many runs raised it (`2/3`), and the gutter marks
+the worst by severity, then votes. Each run's time and cost are kept in the review's JSON.
 
 State lives under `~/.cache/prview` (`$PRVIEW_HOME`): a worktree per review and one JSON file.
 `prview done <name>` removes both.

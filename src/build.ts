@@ -15,12 +15,14 @@ import { parseDiff, type FileDiff } from "./diff.ts";
 import { blank, Fail, fit, merge, parseDocument, SCHEMA, type Comment, type Doc, type Target } from "./document.ts";
 import {
   applyRefute, classify, CRITIC_SYSTEM, criticPrompt, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, numbered,
-  parseCritic, parseGuide, REFUTE_SYSTEM, refutePrompt, type Finding, type Plan,
+  mergeFindings, parseCritic, parseGuide, REFUTE_SYSTEM, refutePrompt, type Finding, type Plan,
 } from "./guide.ts";
-import { complete, pool, type Provider } from "./llm.ts";
+import { complete, pool, type Provider, type Usage } from "./llm.ts";
 
 export { Fail };
-export type Ai = { provider: Provider; at: string; errors: string[] };
+/** One model call: which role, how long, what it cost where the provider reports it. */
+export type Run = { role: "guide" | "critic" | "refute"; ms: number; cost?: number };
+export type Ai = { provider: Provider; at: string; errors: string[]; samples?: number; runs?: Run[] };
 export type Pos = { item: number; line: number };
 /** `ref` is what was asked for (a PR number or a range), so the review can be rebuilt at a newer head. */
 export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; ai?: Ai; doc: Doc };
@@ -98,19 +100,28 @@ export const isPR = (target: string | undefined) => !!target && (/^#?\d+$/.test(
 export type Progress = (s: string) => void;
 
 /** The default producer: the guide orders the hunks, the critic raises findings, refute re-checks them. */
-async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, provider: Provider, say: Progress): Promise<{ doc: Doc; errors: string[] }> {
-  const errors: string[] = [];
+async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, provider: Provider, samples: number, say: Progress): Promise<{ doc: Doc; errors: string[]; runs: Run[] }> {
+  const errors: string[] = [], runs: Run[] = [];
+  const timed = (role: Run["role"]) => (u: Usage) => { runs.push({ role, ...u }); };
   const mechanical = classify(files);
   const hunks = hunksOf(files);
   let plan: Plan;
   say(`guide: reading ${hunks.length - mechanical.length} hunks (${mechanical.length} mechanical)…`);
-  try { plan = parseGuide(await complete(provider, GUIDE_SYSTEM, guidePrompt(src, hunks, mechanical)), hunks, mechanical); }
+  try { plan = parseGuide(await complete(provider, GUIDE_SYSTEM, guidePrompt(src, hunks, mechanical), timed("guide")), hunks, mechanical); }
   catch (e) { errors.push(`guide: ${(e as Error).message}`); plan = filePlan(files, mechanical); }
   say(`guide: ${plan.chapters.length} chapters${plan.by === "files" ? " (by file: the guide failed)" : ""}`);
 
-  say(`critic: ${plan.chapters.length} chapters in parallel…`);
+  // One critic run is a coin flip on what it notices, so each chapter is read `samples` times and the
+  // runs are merged; a run that fails costs a vote, not the chapter.
+  say(`critic: ${plan.chapters.length} chapters x ${samples} run${samples === 1 ? "" : "s"}…`);
   const reviews = await pool(plan.chapters.map((c, i) => async () => {
-    const fs = parseCritic(await complete(provider, CRITIC_SYSTEM, criticPrompt(src, c, hunks)), c, hunks, i * 100);
+    const prompt = criticPrompt(src, c, hunks);
+    const each = await Promise.all(Array.from({ length: samples }, () =>
+      complete(provider, CRITIC_SYSTEM, prompt, timed("critic")).then((t) => parseCritic(t, c, hunks, 0)).catch((e) => e instanceof Error ? e : new Error(String(e)))));
+    const ok = each.filter((r): r is Finding[] => !(r instanceof Error));
+    for (const r of each) if (r instanceof Error) errors.push(`critic (${c.title}): ${r.message}`);
+    if (!ok.length) throw new Error("every run failed");
+    const fs = mergeFindings(ok, i * 100);
     say(`critic: ${i + 1}. ${c.title} → ${fs.length} finding${fs.length === 1 ? "" : "s"}`);
     return fs;
   }));
@@ -124,14 +135,14 @@ async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, 
     const h = at.get(f.hunk)!;
     const file = join(worktree, h.file.path);
     const text = f.side === "new" && existsSync(file) ? readFileSync(file, "utf8") : null;
-    return applyRefute(f, await complete(provider, REFUTE_SYSTEM, refutePrompt(f, h.hunk!, text)));
+    return applyRefute(f, await complete(provider, REFUTE_SYSTEM, refutePrompt(f, h.hunk!, text), timed("refute")));
   }));
   const settled = new Map<string, Finding>();
   verdicts.forEach((v, i) => { if (v instanceof Error) errors.push(`refute: ${v.message}`); else settled.set(contested[i]!.id, v); });
   findings = findings.map((f) => settled.get(f.id) ?? f);
   const kept = findings.filter((f) => f.status !== "withdrawn").length;
   say(`findings: ${kept} kept, ${findings.length - kept} withdrawn`);
-  return { doc: { ...blank(src), plan, findings }, errors };
+  return { doc: { ...blank(src), plan, findings }, errors, runs };
 }
 
 const ASK_SYSTEM = `You help a human reviewer understand one hunk of a code change. You know the change's summary and what the reviewer is meant to verify in this chapter. Answer their question about the hunk; with no question, explain what the hunk does, why it is probably written this way, and what could go wrong. Ground everything in the code shown; say so when you would need to see more. Plain text, short paragraphs, no markdown headers, under 180 words.`;
@@ -237,7 +248,7 @@ function worktreeAt(repo: string, slug: string, head: string): string {
 
 // ---------------------------------------------------------------- building
 
-export type BuildOpts = { context?: number; ai?: Provider | null; fresh?: boolean; say?: Progress };
+export type BuildOpts = { context?: number; ai?: Provider | null; fresh?: boolean; samples?: number; say?: Progress };
 
 export async function build(repo: string, target: string | undefined, opts: BuildOpts = {}): Promise<Review> {
   const context = opts.context ?? 3, say = opts.say ?? (() => {});
@@ -257,9 +268,10 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   } else {
     if (prior) r.doc.human.comments = prior.doc.human.comments;
     if (opts.ai) {
-      const { doc, errors } = await guideAndCritic(t, files, worktree, opts.ai, say);
+      const samples = Math.max(1, Math.floor(opts.samples ?? 2));
+      const { doc, errors, runs } = await guideAndCritic(t, files, worktree, opts.ai, samples, say);
       r.doc = merge(r.doc, fit(doc, files));
-      r.ai = { provider: opts.ai, at: new Date().toISOString(), errors };
+      r.ai = { provider: opts.ai, at: new Date().toISOString(), errors, samples, runs };
       for (const e of errors) say(`warning: ${e}`);
     }
   }

@@ -12,7 +12,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput, useStdout } from "ink";
 import { where, type DiffLine, type FileDiff } from "./diff.ts";
-import { hunksOf, type Finding, type HunkAt } from "./guide.ts";
+import { hunksOf, worstFirst, type Finding, type HunkAt } from "./guide.ts";
 import { ask, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
 import type { Doc, Verdict } from "./document.ts";
 import { gotoLine, nextFinding, type NavItem } from "./nav.ts";
@@ -31,7 +31,6 @@ function itemsOf(d: Doc, files: FileDiff[]): Item[] {
 }
 
 const SEV = { blocking: "red", warn: "yellow", nit: "blue" } as const;
-const ORDER = ["blocking", "warn", "nit"];
 type Float = { title: string; body: string; color?: string; tall?: boolean };
 type Mode = { kind: "nav" } | { kind: "comment"; general: boolean } | { kind: "ask" } | { kind: "verdict" } | { kind: "preview" };
 
@@ -88,7 +87,7 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
   };
   const showFinding = (f: Finding) => {
     const gone = h.dismissals.includes(f.id);
-    setFloat({ title: `▲ ${f.source} · ${f.kind} · ${f.severity}${gone ? " · dismissed" : ""}`, color: SEV[f.severity], body: `${f.claim}\n\n${f.evidence}${f.refute ? `\n\nSecond look: ${f.refute}` : ""}\n\nd to ${gone ? "restore" : "dismiss"}.` });
+    setFloat({ title: `▲ ${f.source} · ${f.kind} · ${f.severity}${f.votes && r.ai?.samples ? ` · ${f.votes}/${r.ai.samples}` : ""}${gone ? " · dismissed" : ""}`, color: SEV[f.severity], body: `${f.claim}\n\n${f.evidence}${f.refute ? `\n\nSecond look: ${f.refute}` : ""}\n\nd to ${gone ? "restore" : "dismiss"}.` });
   };
   const jumpFinding = (dir: 1 | -1) => {
     const hit = nextFinding(items, d.findings.filter(live), { item: pos.item, line }, dir);
@@ -263,7 +262,7 @@ function App({ review, files, onDone }: { review: Review; files: FileDiff[]; onD
                 const i = start + k;
                 const cur = i === line;
                 const fs = findingsAt(l), ns = notesAt(l);
-                const worst = fs.filter(kept).sort((a, b) => ORDER.indexOf(a.severity) - ORDER.indexOf(b.severity))[0];
+                const worst = fs.filter(kept).sort(worstFirst)[0];
                 const mark = worst ? <Text color={SEV[worst.severity]}>▲</Text> : fs.length ? <Text dimColor>△</Text> : ns.length ? <Text color="cyan">»</Text> : <Text> </Text>;
                 const num = String(l.n ?? l.o ?? "").padStart(gutterW);
                 const color = l.t === "+" ? "green" : l.t === "-" ? "red" : undefined;

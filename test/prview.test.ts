@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDiff } from "../src/diff.ts";
-import { applyRefute, classify, filePlan, hunksOf, oneLine, parseCritic, parseGuide } from "../src/guide.ts";
+import { applyRefute, classify, filePlan, hunksOf, mergeFindings, oneLine, parseCritic, parseGuide, sameClaim, worstFirst, type Finding } from "../src/guide.ts";
 import { blank, fit, merge, parseDocument, SCHEMA, type Doc } from "../src/document.ts";
 import { gotoLine, nextFinding } from "../src/nav.ts";
 
@@ -266,4 +266,39 @@ test("round trip: export, import into a fresh clone with its own store, the same
     expect(first.slug).toBe("clone-pr-7");
     expect(() => importDocument(JSON.stringify({ ...pr, target: { ...pr.target, head: C } }), clone)).toThrow("only opens against its own head");
   } finally { process.env.PRVIEW_HOME = join(tmp, "store"); }
+});
+
+const F = (o: Partial<Finding>): Finding => ({ id: "0", source: "critic", hunk: "a@1:1", side: "new", line: 10, severity: "warn", kind: "bug", claim: "the loop never ends", evidence: "", status: "unrefuted", ...o });
+
+test("sampled critic runs merge: the same finding in different words counts once, with a vote per run", () => {
+  expect(sameClaim("The loop never ends.", "the loop never ends")).toBe(true);
+  expect(sameClaim("the loop never ends when n is zero", "the loop never ends")).toBe(true);
+  expect(sameClaim("the loop never ends", "token is written to the log")).toBe(false);
+  const merged = mergeFindings([
+    [F({ claim: "The loop never ends" }), F({ line: 40, claim: "token is written to the log", severity: "nit" })],
+    [F({ line: 11, claim: "the loop never ends when n is 0" })],
+    [F({ claim: "the loop never ends", severity: "blocking" }), F({ claim: "the loop never ends", line: 10 })], // two matches in one run: one vote
+  ], 300);
+  expect(merged.map((f) => [f.id, f.claim.slice(0, 8), f.votes, f.severity])).toEqual([["300", "The loop", 3, "warn"], ["301", "token is", 1, "nit"]]);
+});
+
+test("merging keeps distinct findings apart: another hunk, side, or a line far away is not a duplicate", () => {
+  const merged = mergeFindings([[F({}), F({ hunk: "b@1:1" }), F({ side: "old" }), F({ line: 20 })], [F({})]], 0);
+  expect(merged.length).toBe(4);
+  expect(merged.find((f) => f.hunk === "a@1:1" && f.side === "new" && f.line === 10)?.votes).toBe(2);
+  expect(mergeFindings([], 0)).toEqual([]);
+});
+
+test("severity is the one most runs gave, ties to the worse; the gutter orders by severity then votes", () => {
+  const sev = (...s: Finding["severity"][]) => mergeFindings(s.map((severity) => [F({ severity })]), 0)[0]!.severity;
+  expect(sev("nit", "nit", "blocking")).toBe("nit");
+  expect(sev("warn", "blocking")).toBe("blocking");
+  const list = [F({ severity: "nit", votes: 3 }), F({ severity: "warn", votes: 1 }), F({ severity: "warn", votes: 2 }), F({ severity: "blocking", votes: 1 })];
+  expect(list.sort(worstFirst).map((f) => [f.severity, f.votes])).toEqual([["blocking", 1], ["warn", 2], ["warn", 1], ["nit", 3]]);
+});
+
+test("votes survive the document: read when a whole number, ignored otherwise", () => {
+  const sha = "a".repeat(40), doc = (votes: unknown) => parseDocument({ schema: SCHEMA, target: { base: sha, head: "b".repeat(40) }, findings: [{ source: "critic", hunk: "a@1:1", line: 1, claim: "x", votes }] });
+  expect(doc(3).findings[0]!.votes).toBe(3);
+  for (const bad of [0, 2.5, "3", null, 1000]) expect(doc(bad).findings[0]!.votes).toBeUndefined();
 });
