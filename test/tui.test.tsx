@@ -20,7 +20,7 @@ import { highlightLines, langOf, sliceSpans, styleOf } from "../src/highlight.ts
 import { bottomHeight, boxLines, clampScroll, layoutOf, pageStep, windowOf, wrapText } from "../src/layout.ts";
 import { DROP_ORDER, fitFields, statusFields, type StatusInput } from "../src/status.ts";
 import { editorArgs, tmuxSplit, besideIn } from "../src/editor.ts";
-import { nextBySeverity, nextFindingWrapping, fileEdge, chapterStart } from "../src/nav.ts";
+import { nextBySeverity, nextFindingWrapping, fileEdge, chapterStart, tocIndex, tocMove, tocRows, type TocAt, type TocMove } from "../src/nav.ts";
 
 // The screens, driven with keys the way a reader would. App writes the review to $PRVIEW_HOME as it
 // goes, so each test gets a scratch one; there is no terminal, so the size is passed in.
@@ -78,7 +78,8 @@ const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const row = (keys: string, label: string) => new RegExp(`(?:│ |  )${esc(keys)} +${esc(label)}(?: |\\s*│)`);
 const listing = (e: { keys: string; label: string }[]) => e.map((x) => `${x.keys} ${x.label}`);
 const settle = () => new Promise((r) => setTimeout(r, 30));
-async function open(over?: Over, props: { ai?: Review["ai"]; suggested?: Review["suggested"]; blind?: boolean; dryRun?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined } = {}) {
+/** `code`: step from the table of contents, where a review opens, into the first block's code (→), as most tests start there. */
+async function open(over?: Over, props: { ai?: Review["ai"]; suggested?: Review["suggested"]; blind?: boolean; dryRun?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined; code?: boolean } = {}) {
   const outcomes: Outcome[] = [];
   const r = fixture(over);
   r.ai = props.ai;
@@ -87,6 +88,7 @@ async function open(over?: Over, props: { ai?: Review["ai"]; suggested?: Review[
   await settle();
   // One key at a time: a handler closes over the state of its render, so two keys in one chunk would both see the old cursor.
   const press = async (keys: string) => { for (const k of keys.match(KEY) ?? []) { app.stdin.write(k); await settle(); } };
+  if (props.code) await press(RIGHT);
   return { r, app, press, outcomes, cols: props.cols ?? 120, rows: props.rows ?? 40, frame: () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "") };
 }
 type Shown = { frame: () => string; cols: number; rows: number };
@@ -102,14 +104,14 @@ const shown = (t: Shown, s: KeyState, full = false) => {
   if (p.fit === "grid") for (const e of entriesOf(s)) expect(t.frame(), `${e.keys} ${e.label}`).toMatch(row(e.keys, e.label));
 };
 
-test("rail: the current chapter is marked with its hunks, a read chapter is ticked, findings are counted", async () => {
+test("rail: every chapter with its blocks (▾ expanded), the cursor's block marked, a read chapter ticked, findings counted", async () => {
   const t = await open();
-  expect(t.frame()).toContain("▸ 1 Core change ▲1");
-  expect(t.frame()).toContain("› a.rs:10");
-  expect(t.frame()).toContain("2 The ts side");
+  expect(t.frame()).toContain("✓▾ 1 Core change ▲1"); // its one block is read on open
+  expect(t.frame()).toContain("› a.rs:10 ▲");
+  expect(t.frame()).toContain(" ▾ 2 The ts side");
+  expect(t.frame()).toContain("b.ts:1");
   await t.press("J");
-  expect(t.frame()).toContain("✓ 1 Core change");
-  expect(t.frame()).toContain("▸ 2 The ts side");
+  expect(t.frame()).toContain("✓▾ 2 The ts side");
   expect(t.r.doc.human.visited).toEqual([h1!.id, h2!.id]);
 });
 
@@ -134,14 +136,15 @@ test("layout: the bottom panel is a third of the screen, 8 to 14 rows; the middl
 
 test("rail: below 100 columns it collapses to chapter numbers and the code keeps the room", async () => {
   const t = await open(undefined, { cols: 80 });
-  expect(t.frame()).toContain("▸1▲1");
-  expect(t.frame()).not.toContain("Core change");
-  expect(t.frame()).toContain("Check the answer is derived"); // the chapter's intent is still on the hunk header
+  expect(t.frame()).toContain("▾1▲1");
+  expect(t.frame()).toContain(" ›1 ▲"); // its block, by number
+  expect(regions(t).middle).not.toContain("Core change");
+  expect(regions(t).middle).toContain("Check the answer is derived"); // the chapter's intent is still on the hunk header
   for (const line of t.frame().split("\n")) expect([...line].length).toBeLessThanOrEqual(80);
 });
 
 test("cursor: ↓/↑ and j/k move a line and run on across blocks; ⇧↓/⇧↑ and J/K move a chapter; g g and g e the file's edges", async () => {
-  const t = await open(undefined, { cols: 100 });
+  const t = await open(undefined, { cols: 100, code: true });
   expect(t.r.pos.line).toBe(0);
   await t.press("jj");
   expect(t.r.pos.line).toBe(2);
@@ -186,7 +189,7 @@ test("g <digits> Enter goes to that line of the file, g c <digits> Enter to a ch
 });
 
 test("a prefix shows its second keys in the panel; Esc cancels it, an unknown second key does nothing", async () => {
-  const t = await open();
+  const t = await open(undefined, { code: true });
   await t.press("g");
   for (const e of entriesOf({ state: "code" }, { prefix: "g" })) expect(t.frame()).toMatch(row(e.keys, e.label));
   expect(t.frame()).toContain("g go to");
@@ -200,7 +203,7 @@ test("a prefix shows its second keys in the panel; Esc cancels it, an unknown se
 });
 
 test("finding: → on its line opens it with progress, the panel lists the finding's keys, x closes it", async () => {
-  const t = await open();
+  const t = await open(undefined, { code: true });
   await t.press(RIGHT);
   expect(t.frame()).toContain("no finding on this line");
   await t.press("jj" + RIGHT);
@@ -256,7 +259,7 @@ test("g h / g H: by severity, every blocking finding first, then the warnings, t
 });
 
 test("Enter on a line writes your own finding there, shown under the line with a mark in the gutter", async () => {
-  const t = await open();
+  const t = await open(undefined, { code: true });
   await t.press("jj\r");
   expect(t.frame()).toContain("new finding ›");
   shown(t, { state: "prompt", kind: "comment" });
@@ -361,7 +364,7 @@ test("submit flow: with --dry-run the preview says nothing will be posted", asyn
 });
 
 test("long lines: cut with an ellipsis, v w wraps onto more rows and back", async () => {
-  const t = await open(undefined, { cols: 100 });
+  const t = await open(undefined, { cols: 100, code: true });
   await t.press("jj");
   expect(t.frame()).toContain("…");
   expect(t.frame()).not.toContain("end");
@@ -374,12 +377,12 @@ test("long lines: cut with an ellipsis, v w wraps onto more rows and back", asyn
 });
 
 test("editor: without tmux `v e` hands the file and line back; with a side pane it opens there and the screen stays", async () => {
-  const plain = await open();
+  const plain = await open(undefined, { code: true });
   await plain.press("jjve");
   expect(plain.outcomes).toEqual([{ kind: "edit", path: "src/a.rs", line: 11 }]);
 
   const opened: [string, number][] = [];
-  const t = await open(undefined, { beside: (p, l) => { opened.push([p, l]); return undefined; } });
+  const t = await open(undefined, { code: true, beside: (p, l) => { opened.push([p, l]); return undefined; } });
   await t.press("jve");
   expect(opened).toEqual([["src/a.rs", 11]]); // the cursor is on a removed line: the next new line is the anchor
   expect(t.outcomes).toEqual([]);
@@ -492,7 +495,7 @@ test("blind: a document from before the pass loads, `revealed` is read defensive
 
 test("blind: before visiting, the gutter has no ▲, the rail shows ▲?, → and g f find nothing and the decision keys do nothing", async () => {
   // Two hunks in one chapter, cursor on the first: the chapter is not read yet.
-  const t = await open({ plan: { summary: "", by: "guide", mechanical: [], chapters: [{ title: "Both", intent: "Check it", why: "w", hunks: [h1!.id, h2!.id] }] } }, { blind: true });
+  const t = await open({ plan: { summary: "", by: "guide", mechanical: [], chapters: [{ title: "Both", intent: "Check it", why: "w", hunks: [h1!.id, h2!.id] }] } }, { blind: true, code: true });
   expect(t.frame()).not.toContain("▲ ");
   expect(t.frame()).toContain("Both ▲?");
   expect(t.frame()).toContain("to decide none · more hidden ▲?"); // status: nothing revealed, something hidden
@@ -516,7 +519,7 @@ test("blind: before visiting, the gutter has no ▲, the rail shows ▲?, → an
 });
 
 test("blind: visiting every hunk of a chapter reveals it without recording anything", async () => {
-  const t = await open({ plan: { summary: "", by: "guide", mechanical: [], chapters: [{ title: "Both", intent: "Check it", why: "w", hunks: [h1!.id, h2!.id] }] } }, { blind: true });
+  const t = await open({ plan: { summary: "", by: "guide", mechanical: [], chapters: [{ title: "Both", intent: "Check it", why: "w", hunks: [h1!.id, h2!.id] }] } }, { blind: true, code: true });
   expect(t.frame()).toContain("Both ▲?");
   await t.press("jjjjj"); // runs on into the second hunk; the first was visited on open
   expect(t.r.pos.item).toBe(1);
@@ -620,7 +623,7 @@ test("triage: a whole pass is g f and one key per finding; the decisions are in 
 });
 
 test("triage with nothing to act on: off a finding b/c/i are not keys; in blind, a revealed chapter's findings are the only ones counted", async () => {
-  const t = await open(three);
+  const t = await open(three, { code: true });
   await t.press("jjc\r"); // on a finding's line with no box open: c is nothing, Enter starts your own finding
   expect(t.frame()).not.toContain("comment on the finding ›");
   expect(t.frame()).toContain("new finding ›");
@@ -650,6 +653,39 @@ test("nav helpers (pure): wrapping, severity order, file edges and chapter start
   expect(fileEdge(items, 1, "top")).toEqual({ item: 1, line: 0 });
   expect(chapterStart(items, 2)).toEqual({ item: 1, line: 0 });
   expect(chapterStart(items, 3)).toBeUndefined();
+});
+
+test("table of contents (pure): rows, ↓/↑ block to block with a collapsed chapter one stop, chapters, expand, collapse, enter", () => {
+  // Chapter 0 with two blocks, chapter 1 with one, chapter 2 (mechanical, collapsed) with two.
+  const mk = (chapter: number) => ({ id: `h${chapter}`, path: "p", hunk: h1!.hunk!, chapter });
+  const items = [mk(0), mk(0), mk(1), mk(2), mk(2)];
+  const folded: ReadonlySet<number> = new Set([2]);
+  expect(tocRows(items, folded).map((r) => `${r.kind[0]}${r.item}`)).toEqual(["c0", "b0", "b1", "c2", "b2", "c3"]);
+  const move = (at: TocAt, m: TocMove, c = folded) => tocMove(items, c, at, m);
+  const on = (item: number, onChapter = false): TocAt => ({ item, onChapter });
+  expect(move(on(0), "down").at).toEqual(on(1));
+  expect(move(on(1), "down").at).toEqual(on(2)); // over chapter 1's row, to its block
+  expect(move(on(2), "down").at).toEqual(on(3, true)); // a collapsed chapter is one stop
+  expect(move(on(3, true), "down").at).toEqual(on(3, true)); // the end
+  expect(move(on(2), "up").at).toEqual(on(1));
+  expect(move(on(0), "up").at).toEqual(on(0)); // the top
+  expect(move(on(0, true), "down").at).toEqual(on(0)); // a chapter row down to its first block
+  expect(move(on(1), "next_chapter").at).toEqual(on(2, true));
+  expect(move(on(2), "next_chapter").at).toEqual(on(3, true));
+  expect(move(on(2), "prev_chapter").at).toEqual(on(0, true));
+  expect(move(on(0, true), "prev_chapter").at).toEqual(on(0, true));
+  const opened = move(on(3, true), "expand");
+  expect([...opened.collapsed]).toEqual([]);
+  expect(opened.at).toEqual(on(3, true));
+  expect(move(on(3, true), "expand", opened.collapsed).at).toEqual(on(3)); // expanded: down to the first block
+  expect(move(on(1), "expand").enter).toBe(true);
+  expect(move(on(1), "collapse").at).toEqual(on(0, true)); // a block goes up to its chapter
+  const shut = move(on(0, true), "collapse");
+  expect([...shut.collapsed].sort()).toEqual([0, 2]);
+  expect(move(on(3, true), "collapse")).toEqual({ at: on(3, true), collapsed: folded }); // already collapsed: nothing
+  // A block of a collapsed chapter (the code got there some other way) sits on its chapter's row.
+  expect(tocIndex(tocRows(items, folded), items, on(4))).toBe(5);
+  expect(move(on(4), "up").at).toEqual(on(2));
 });
 
 // ---------------------------------------------------------------- clipboard
@@ -699,6 +735,7 @@ async function copying(over?: Over) {
   const app = render(<App review={r} files={files} onDone={() => {}} copier={copier} size={{ cols: 120, rows: 40 }} />);
   await settle();
   const press = async (keys: string) => { for (const k of keys.match(KEY) ?? []) { app.stdin.write(k); await settle(); } };
+  await press(RIGHT); // into the code
   return { copied, press, frame: () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "") };
 }
 
@@ -713,7 +750,7 @@ test("y: with a finding open copies its source text and the footer says how much
   await t.press("y");
   expect(t.copied[1]).toBe("src/a.rs:11 — Hard-coded answer in main\n\nanswer is hard-coded\n\n42 appears with no source");
   expect(t.copied[1]).not.toMatch(/[│─╭╮╰╯]/);
-  await t.press("x" + LEFT); // close the finding, then ← opens the chapter's intent and why
+  await t.press("x" + LEFT); // close the finding, then ← goes back to the table of contents, which shows the chapter
   await t.press("y");
   expect(t.copied[2]).toBe("Core change\n\nCheck the answer is derived\n\nIt is the heart of it.");
   expect(t.frame()).toContain(`copied ${t.copied[2]!.length} chars`);
@@ -746,11 +783,11 @@ test("resize: a terminal that changes size recomputes the layout, and wipes the 
   const strip = () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "");
   resizeTo(out, 140, 40);
   await new Promise((r) => setTimeout(r, 120));
-  expect(strip()).toContain("▸ 1 Core change");
+  expect(strip()).toContain("▾ 1 Core change");
   resizeTo(out, 80, 24);
   await new Promise((r) => setTimeout(r, 120));
   const f = strip();
-  expect(f).not.toContain("▸ 1 Core change"); // the rail collapsed to numbers
+  expect(f).not.toContain("▾ 1 Core change"); // the rail collapsed to numbers
   expect(f.split("\n").every((l) => l.length <= 80)).toBe(true);
   expect(app.frames.includes(WIPE)).toBe(true);
 });
@@ -807,7 +844,7 @@ const withSummary = (plan: Partial<Doc["plan"]> = {}) => ({ plan: { summary: SUM
 const models = { guide: "g", critic: "c", refute: "r", ask: "a" };
 
 test("opening summary: in the content area under the code, titled as the summary; the code's keys act beside it; Esc closes it", async () => {
-  const t = await open(withSummary());
+  const t = await open(withSummary(), { code: true });
   const f = t.frame();
   expect(f).toContain("Summary of this change · not a finding");
   expect(f).toContain(SUMMARY);
@@ -831,7 +868,7 @@ test("a i brings the summary back after Esc closed it; with none, it says so", a
   await t.press("ai");
   expect(t.frame()).toContain("Summary of this change · not a finding");
   expect(t.frame()).toContain(SUMMARY);
-  const none = await open(withSummary({ summary: "" }));
+  const none = await open(withSummary({ summary: "" }), { code: true });
   expect(none.frame()).not.toContain("Summary of this change");
   expect(none.frame()).toContain("Nothing here. a i shows the summary"); // the empty content area says how to fill it
   await none.press("ai");
@@ -852,7 +889,7 @@ test("opening summary: a finding opens on its line and in the content area, and 
 
 test("Tab moves focus into the content area: the arrows scroll it, y copies it, Tab or Esc comes back; with nothing there it says so", async () => {
   const long = Array.from({ length: 60 }, (_, i) => `line ${i}`).join("\n");
-  const t = await open(withSummary({ summary: long }));
+  const t = await open(withSummary({ summary: long }), { code: true });
   expect(t.frame()).toContain("Tab to scroll"); // the box says it scrolls, and how
   await t.press(TAB);
   expect(t.frame()).toContain("focused");
@@ -874,13 +911,105 @@ test("Tab moves focus into the content area: the arrows scroll it, y copies it, 
   expect(t.frame()).toContain("the content area is empty");
 });
 
-test("← shows the chapter's intent and why (where the table of contents will); a mechanical hunk says it was classified by rule", async () => {
+// ---------------------------------------------------------------- the table of contents
+
+const withMechanical = (): Over => ({ plan: { summary: "", by: "guide", mechanical: [{ id: h2!.id, why: "whitespace only" }], chapters: [{ title: "Core change", intent: "Check the answer is derived", why: "It is the heart of it.", hunks: [h1!.id] }] } });
+
+test("a review opens in the table of contents on the first block: the code shows it, the content area its chapter's intent and why", async () => {
   const t = await open();
+  const { middle, bottom } = regions(t);
+  expect(middle).toContain("› a.rs:10");
+  expect(middle).toContain("src/a.rs · fn main()"); // the code pane shows the cursor's block
+  expect(bottom).toContain("1 · Core change");
+  expect(bottom).toContain("Check the answer is derived");
+  expect(bottom).toContain("It is the heart of it.");
+  expect(bottom).toMatch(/contents/); // the key panel is the table of contents'
+  await t.press("j");
+  expect(t.r.pos).toEqual({ item: 1, line: 0 });
+  expect(regions(t).bottom).toContain("2 · The ts side");
+  expect(regions(t).bottom).toContain("Second.");
+  expect(regions(t).middle).toContain("src/b.ts");
+  await t.press("j"); // the last block: nowhere to go
+  expect(t.r.pos).toEqual({ item: 1, line: 0 });
+  await t.press(UP);
+  expect(t.r.pos).toEqual({ item: 0, line: 0 });
+});
+
+test("table of contents: ← goes up to the chapter and collapses it, → expands it and goes down to the block, → again enters the code", async () => {
+  const t = await open();
+  await t.press(LEFT); // the block's chapter row: the block stays listed, no longer marked
+  expect(regions(t).middle).toContain("a.rs:10");
+  expect(regions(t).middle).not.toContain("› a.rs:10");
+  await t.press(LEFT); // collapsed: its block is gone from the rail
+  expect(regions(t).middle).toContain("▸ 1 Core change");
+  expect(regions(t).middle).not.toContain("a.rs:10");
+  await t.press("j"); // on to the next block, past the collapsed chapter's
+  expect(t.r.pos.item).toBe(1);
+  await t.press("K" + RIGHT); // back to chapter 1's row, expanded again
+  expect(regions(t).middle).toContain("▾ 1 Core change");
+  expect(regions(t).middle).toContain("a.rs:10");
+  await t.press(RIGHT + RIGHT); // down to the block, then into its code
+  expect(regions(t).bottom).toMatch(/│ keys/); // the code's key panel
+  await t.press("jj");
+  expect(t.r.pos).toEqual({ item: 0, line: 2 });
+  await t.press(LEFT); // no finding open: back to the table of contents at this block
+  expect(regions(t).bottom).toContain("It is the heart of it.");
+  expect(regions(t).bottom).toMatch(/│ contents/);
+  await t.press(RIGHT); // and in again, on the line it left
+  expect(t.r.pos).toEqual({ item: 0, line: 2 });
+});
+
+test("table of contents: ⇧↓/⇧↑ and J/K go chapter to chapter; the mechanical chapter starts collapsed and is one stop for ↓", async () => {
+  const t = await open(withMechanical());
+  expect(regions(t).middle).toContain("▸ 2 Mechanical (1)");
+  expect(regions(t).middle).not.toContain("b.ts:1");
+  await t.press("j"); // the collapsed chapter's row
+  expect(t.r.pos.item).toBe(1);
+  expect(regions(t).bottom).toContain("Classified by rule");
+  await t.press(RIGHT + "j"); // expanded, then down to its block
+  expect(regions(t).middle).toContain("b.ts:1");
+  await t.press(SUP);
+  expect(t.r.pos.item).toBe(0);
+  await t.press(SDOWN);
+  expect(t.r.pos.item).toBe(1);
+  await t.press("K" + "J");
+  expect(t.r.pos.item).toBe(1);
+});
+
+test("code: ← closes an open finding first, then goes back to the table of contents; g commands move between the two", async () => {
+  const t = await open(undefined, { code: true });
+  await t.press("jj" + RIGHT);
+  expect(t.frame()).toContain("answer is hard-coded");
   await t.press(LEFT);
-  expect(t.frame()).toContain("1 · Core change");
-  expect(t.frame()).toContain("It is the heart of it.");
-  await t.press("h"); // h is ← too
-  expect(t.frame()).toContain("It is the heart of it.");
+  expect(t.frame()).not.toContain("answer is hard-coded");
+  expect(regions(t).bottom).toMatch(/│ keys/); // still in the code
+  await t.press("h");
+  expect(regions(t).bottom).toMatch(/│ contents/);
+  await t.press("gf"); // from the table of contents a finding opens in the code
+  expect(t.frame()).toContain("answer is hard-coded");
+  expect(regions(t).bottom).toMatch(/│ finding/);
+  await t.press("x" + LEFT + "gc2\r"); // g c: the table of contents, on chapter 2's first block
+  expect(t.r.pos).toEqual({ item: 1, line: 0 });
+  expect(regions(t).bottom).toMatch(/│ contents/);
+  expect(regions(t).bottom).toContain("2 · The ts side");
+  await t.press("g2\r"); // a line is in the code (new-side line 2 is the third row: the second is the removed one)
+  expect(t.r.pos).toEqual({ item: 1, line: 2 });
+  expect(regions(t).bottom).toMatch(/│ keys/);
+});
+
+test("g c into a collapsed chapter expands it; ← from its code comes back with it expanded", async () => {
+  const t = await open(withMechanical());
+  await t.press("gc2\r");
+  expect(regions(t).middle).toContain("▾ 2 Mechanical (1)");
+  expect(regions(t).middle).toContain("› b.ts:1");
+  await t.press("K" + LEFT); // chapter 1's row, collapsed
+  expect(regions(t).middle).toContain("▸ 1 Core change");
+  await t.press("ge"); // g e: the end of this file, in the code
+  expect(t.r.pos).toEqual({ item: 0, line: 4 });
+  expect(regions(t).bottom).toMatch(/│ keys/);
+  await t.press(LEFT); // back at that block, its chapter expanded so the cursor shows
+  expect(regions(t).middle).toContain("▾ 1 Core change");
+  expect(regions(t).middle).toContain("› a.rs:10");
 });
 
 test("keys that come with later changes say so, and do nothing else", async () => {
@@ -900,6 +1029,10 @@ test("keys that come with later changes say so, and do nothing else", async () =
 
 test("the panel is always there with the keys for where you are; it follows the state and never needs a key to show", async () => {
   const t = await open(undefined, { cols: 140 });
+  shown(t, { state: "toc" }); // a review opens in the table of contents
+  expect(listing(entriesOf({ state: "toc" }))).toEqual(["↓/↑ j/k block", "⇧↓/⇧↑ J/K chapter", "→ l expand / enter", "← h collapse", "Tab content", "s submit", "y copy", "? search docs", "\\ settings", "q quit", "a AI…", "f filter…", "v view…", "g go to…"]);
+  expect(t.frame()).toContain("contents");
+  await t.press(RIGHT);
   shown(t, { state: "code" });
   expect(listing(entriesOf({ state: "code" }))).toEqual(["↓/↑ j/k line", "⇧↓/⇧↑ J/K chapter", "→ l open finding", "← h contents", "Tab content", "Enter new finding", "s submit", "y copy", "? search docs", "\\ settings", "q quit", "a AI…", "f filter…", "v view…", "g go to…"]);
   await t.press("gf");
@@ -921,7 +1054,7 @@ test("each state's panel lists its keys, and leaving the state brings the code's
     { name: "docs results", into: "?mark this finding as wrong\r", state: { state: "content", results: true }, out: ESC },
   ];
   for (const s of states) {
-    const t = await open(s.over, { cols: 140, rows: 40 });
+    const t = await open(s.over, { cols: 140, rows: 40, code: true });
     await t.press(s.into);
     shown(t, s.state);
     await t.press(s.out);
@@ -930,7 +1063,7 @@ test("each state's panel lists its keys, and leaving the state brings the code's
 });
 
 test("prompts: their panel is the keys that work; text goes in as typed, prefixes and backslash included", async () => {
-  const t = await open();
+  const t = await open(undefined, { code: true });
   await t.press("\r");
   expect(listing(entriesOf({ state: "prompt", kind: "comment" }))).toEqual(["Enter send", "ctrl-u clear line", "ctrl-w delete word", "Esc cancel"]);
   await t.press("one gv two\\ ?");
@@ -993,7 +1126,7 @@ test("the bottom panel never covers the cursor line or the finding's box, and it
 
 test("the key panel at narrow widths: the grid drops the secondaries, then flows; every primary and label is still there", async () => {
   for (const [cols, rows] of [[90, 40], [80, 24], [60, 20]] as const) {
-    const t = await open(undefined, { cols, rows });
+    const t = await open(undefined, { cols, rows, code: true });
     shown(t, { state: "code" });
     const p = panelAt(t, { state: "code" });
     if (p.fit !== "flow") for (const e of entriesOf({ state: "code" })) expect(t.frame(), `${cols}x${rows} ${e.label}`).toMatch(row(e.prim, e.label));
@@ -1028,7 +1161,7 @@ test("panelOf: the fewest columns that fit the height, secondaries dim; without 
 test("remapped keys: the panel and the hints show the new keys, the new keys act and the old ones do not", async () => {
   installKeymap(effectiveKeys({ "finding.ignore": { primary: "d" }, "finding.close": { primary: "X" }, "go.next_finding": { primary: "n" }, "code.down": { secondary: "" }, "ai.info": { primary: "o" } }));
   try {
-    const t = await open({ ...three, ...withSummary() });
+    const t = await open({ ...three, ...withSummary() }, { code: true });
     expect(t.frame()).toContain("Esc closes this; a o brings it back"); // the summary's hint names the key as bound now
     expect(t.frame()).toMatch(row("↓/↑ k", "line"));
     await t.press("j"); // the removed secondary does nothing
@@ -1085,7 +1218,7 @@ test("? is listed in the code's panel as search docs, and opens a one-line quest
 });
 
 test("? a question: the top answers show the action, the user's key, where it works and the why; Esc closes", async () => {
-  const t = await open();
+  const t = await open(undefined, { code: true });
   await t.press("?mark this finding as wrong\r");
   const f = t.frame();
   expect(f).toContain("Search the docs · mark this finding as wrong");
@@ -1207,7 +1340,7 @@ test("status fields (pure): a PR shows its number and commits, a range its branc
 
 test("bottom panel: the content area on the left and the key panel on the right share the same rows, under the code", async () => {
   for (const [cols, rows] of [[120, 32], [100, 28], [80, 24]] as const) {
-    const t = await open(withSummary(), { cols, rows });
+    const t = await open(withSummary(), { cols, rows, code: true });
     const { middle, bottom } = regions(t);
     const at = `${cols}x${rows}`;
     expect(middle, at).toContain("let answer");
@@ -1220,7 +1353,7 @@ test("bottom panel: the content area on the left and the key panel on the right 
 });
 
 test("content area: prompts, docs search, answers and the verdict show there, one at a time, not over the code", async () => {
-  const t = await open(withSummary());
+  const t = await open(withSummary(), { code: true });
   await t.press("\r");
   expect(regions(t).bottom).toContain("new finding ›");
   expect(regions(t).bottom).toContain("Your own finding at src/a.rs:10");
@@ -1256,7 +1389,7 @@ test("finding: a short box on its line (header in its border, bold title, at mos
 });
 
 test("v z hides the table of contents and gives the code its width; again brings it back", async () => {
-  const t = await open();
+  const t = await open(undefined, { code: true });
   const longs = () => (regions(t).middle.match(/long/g) ?? []).length;
   expect(regions(t).middle).toContain("READ IN ORDER");
   const before = longs();
@@ -1273,7 +1406,7 @@ test("v z hides the table of contents and gives the code its width; again brings
 
 test("v c makes the content area full-screen: the arrows scroll it, Esc or v c restores it; with nothing there it says so", async () => {
   const long = Array.from({ length: 60 }, (_, i) => `line ${i}`).join("\n");
-  const t = await open(withSummary({ summary: long }), { cols: 120, rows: 32 });
+  const t = await open(withSummary({ summary: long }), { cols: 120, rows: 32, code: true });
   await t.press("vc");
   const lines = t.frame().split("\n");
   expect(t.frame()).not.toContain("READ IN ORDER"); // no middle

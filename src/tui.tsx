@@ -8,7 +8,9 @@
 // the app again with the same state. Inside tmux the CLI passes `beside` instead, and the editor opens in
 // a split pane while this screen stays up.
 //
-// Keys are key map v2 (keys.ts): arrows move, and the prefixes a/f/v/g hold the rest. Deciding on findings is the
+// Keys are key map v2 (keys.ts): arrows move, and the prefixes a/f/v/g hold the rest. A review opens in the table of
+// contents, whose cursor walks chapters and blocks (nav.ts) while the content area shows the chapter's intent and why;
+// → enters a block's code and ← comes back out. Deciding on findings is the
 // first pass: `g f` opens the next one, and one key decides it (b block on it, c comment, i ignore; x closes the box
 // without deciding, and deciding again changes the decision). b and c open the ordinary comment line prefilled with the
 // finding's title, so what posts is what the reader saved. Each decision moves straight to the next undecided finding.
@@ -24,7 +26,7 @@ import { claimAddsTo, hunksOf, MECHANICAL_INTENT, titleOf, worstFirst, type Find
 import { ask, preparedBy, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
 import type { Doc, Human, Verdict } from "./document.ts";
 import { chapterHidden, hiddenHunks } from "./blind.ts";
-import { chapterStart, fileEdge, gotoLine, nextBySeverity, nextFindingWrapping, type NavItem } from "./nav.ts";
+import { chapterStart, fileEdge, gotoLine, nextBySeverity, nextFindingWrapping, tocIndex, tocMove, tocRows, type NavItem, type TocMove } from "./nav.ts";
 import { highlightLines, langOf, lengthOf, sliceSpans, styleOf, type Span } from "./highlight.ts";
 import { boxLines, clampScroll, layoutOf, STATUS_H, pageStep, rowsFor, windowOf, wrapText } from "./layout.ts";
 import type { Beside } from "./editor.ts";
@@ -107,6 +109,11 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const [scroll, setScroll] = useState(0);
   // Tab moves focus into the content area and back; `v c` makes it the whole screen, `v z` hides the rail.
   const [focus, setFocus] = useState<"code" | "content">("code");
+  // Out of the content area the arrows act in the table of contents (where a review opens) or in the code. In the
+  // table of contents the cursor is on a block or (`onChapter`) on its chapter's row; the mechanical chapter starts collapsed.
+  const [tree, setTree] = useState<"toc" | "code">("toc");
+  const [onChapter, setOnChapter] = useState(false);
+  const [collapsed, setCollapsed] = useState<ReadonlySet<number>>(() => new Set(items[pos.item]?.chapter === d.plan.chapters.length ? [] : [d.plan.chapters.length]));
   const [full, setFull] = useState(false);
   const [zen, setZen] = useState(false);
   // What `y` just did, or why a key did nothing, shown in the footer until the next key.
@@ -122,15 +129,6 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   // Long lines are cut with an ellipsis, or wrap onto more rows (v w).
   const [wrap, setWrap] = useState(false);
 
-  // Where a key is pressed: the submit steps, a prompt, the docs results, the content area (full-screen, or Tab), an open finding, or the code.
-  const keyState: KeyState = mode.kind === "verdict" ? { state: "submit", step: "verdict" }
-    : mode.kind === "preview" ? (() => { const p = planOf(r, files, { coverage: mode.coverage }); return { state: "submit" as const, step: "preview" as const, dryRun, hook: p.hook ? mode.hook : null, coverage: p.adapter ? mode.coverage : null }; })()
-    : mode.kind === "results" ? { state: "content", results: true }
-    : mode.kind !== "nav" ? { state: "prompt", kind: mode.kind, decide: mode.kind === "comment" && !!mode.decide }
-    : full && content ? { state: "content" }
-    : content?.finding ? { state: "finding" }
-    : focus === "content" && content ? { state: "content" } : { state: "code" };
-
   const item = items[pos.item];
   const hunk = item?.hunk ?? null;
   const lines = hunk?.lines ?? [];
@@ -140,6 +138,25 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const spans = useMemo(() => highlightLines(shape, item ? langOf(item.path) : undefined), [shape, item?.path]);
   const chapter = item ? d.plan.chapters[item.chapter] : undefined;
   const chapterTitle = item ? chapter?.title ?? "Mechanical" : "";
+
+  // In the table of contents, with nothing else shown, the content area shows the cursor's chapter: its intent and why.
+  const chapterView = (): Content | null => {
+    if (!item) return null;
+    const why = chapter?.why || "The guide gave no reason for this chapter.";
+    const body = item.mechanical ? `${MECHANICAL_INTENT}\n\nMechanical: ${item.mechanical}. Classified by rule, not by a model.` : `${chapter?.intent ? chapter.intent + "\n\n" : ""}${why}`;
+    return { title: `${item.chapter + 1} · ${chapterTitle}`, body, copy: item.mechanical ? body : whyText(chapterTitle, chapter?.intent, why) };
+  };
+  const view: Content | null = content ?? (tree === "toc" && mode.kind === "nav" ? chapterView() : null);
+
+  // Where a key is pressed: the submit steps, a prompt, the docs results, the content area (full-screen, or Tab), an
+  // open finding, the table of contents or the code.
+  const keyState: KeyState = mode.kind === "verdict" ? { state: "submit", step: "verdict" }
+    : mode.kind === "preview" ? (() => { const p = planOf(r, files, { coverage: mode.coverage }); return { state: "submit" as const, step: "preview" as const, dryRun, hook: p.hook ? mode.hook : null, coverage: p.adapter ? mode.coverage : null }; })()
+    : mode.kind === "results" ? { state: "content", results: true }
+    : mode.kind !== "nav" ? { state: "prompt", kind: mode.kind, decide: mode.kind === "comment" && !!mode.decide }
+    : full && view ? { state: "content" }
+    : content?.finding ? { state: "finding" }
+    : focus === "content" && view ? { state: "content" } : { state: tree };
 
   const live = (f: Finding) => f.status !== "withdrawn";
   // Blind: what the critic found is not shown, counted or reachable until the chapter has been read. Everything below that
@@ -175,12 +192,27 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     if (i < 0 || i >= items.length) return;
     goTo({ item: i, line: dir > 0 ? 0 : Math.max(0, items[i]!.hunk.lines.length - 1) });
   };
+  // Back to the table of contents at block `at`, its chapter expanded so the cursor can be seen; the content area shows the chapter.
+  const toToc = (at: Pos) => {
+    const c = items[at.item]?.chapter;
+    if (c !== undefined && collapsed.has(c)) setCollapsed(new Set([...collapsed].filter((x) => x !== c)));
+    setTree("toc"); setOnChapter(false); setContent(null); setPos(at);
+  };
+  // One key in the table of contents (nav.ts). Every move shows the cursor's chapter in the content area; → on a block enters its code.
+  const tocGo = (move: TocMove) => {
+    const res = tocMove(items, collapsed, { item: pos.item, onChapter }, move);
+    if (res.enter) { setTree("code"); return; }
+    setCollapsed(res.collapsed); setOnChapter(res.at.onChapter); setContent(null);
+    if (res.at.item !== pos.item) setPos({ item: res.at.item, line: 0 });
+  };
   const anchor = (): { side: "new" | "old"; line: number | null } => {
     const l = lines[line];
     if (!l) return { side: "new", line: null };
     return l.n !== null ? { side: "new", line: l.n } : { side: "old", line: l.o };
   };
+  // A finding opens in the code, whichever of the two the cursor was in.
   const showFinding = (f: Finding) => {
+    setTree("code");
     const dec = decisionOf(h, f.id), p = progress(visible(), h), mine = linkedComment(h, f.id);
     const state = dec
       ? `Decided: ${LABEL[dec.kind]}${dec.reason ? ` (${dec.reason})` : ""}${mine ? `. Your comment: ${mine.text}` : ""}`
@@ -268,7 +300,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
     if (mode.kind === "results") { const a = mode.answers[mode.sel]; setNote(a ? confirmation(copier(answerText(a))) : "nothing to copy here"); return; }
     // The content area copies its own text; with nothing there, the cursor line's reference, which is what you paste into a note.
     const l = lines[line], at = l ? l.n ?? l.o : null;
-    const text = content ? content.copy : item && at !== null ? `${item.path}:${at}` : undefined;
+    const text = view ? view.copy : item && at !== null ? `${item.path}:${at}` : undefined;
     setNote(text ? confirmation(copier(text)) : "nothing to copy here");
   };
   // Enter in a prompt: what the typed line does depends on the prompt.
@@ -318,16 +350,18 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
         showFinding(here[0]!);
         return;
       }
-      case "code.to_toc": {
-        // The table of contents shows the chapter's intent and why; until it is drawn, they open here.
-        if (!item) return;
-        const body = item.mechanical ? `${MECHANICAL_INTENT}\n\nMechanical: ${item.mechanical}. Classified by rule, not by a model.` : `${chapter?.intent ? chapter.intent + "\n\n" : ""}${chapter?.why || "The guide gave no reason for this chapter."}`;
-        setContent({ title: `${item.chapter + 1} · ${chapterTitle}`, body, copy: item.mechanical ? body : whyText(chapterTitle, chapter?.intent, chapter?.why || "The guide gave no reason for this chapter.") });
-        return;
-      }
+      case "code.to_toc": if (item) toToc({ item: pos.item, line }); return;
       case "code.focus_content": case "toc.focus_content":
-        if (content && !content.finding) setFocus("content"); else setNote("the content area is empty");
+        if (view && !view.finding) setFocus("content"); else setNote("the content area is empty");
         return;
+
+      // ---- the table of contents
+      case "toc.down": tocGo("down"); return;
+      case "toc.up": tocGo("up"); return;
+      case "toc.next_chapter": tocGo("next_chapter"); return;
+      case "toc.prev_chapter": tocGo("prev_chapter"); return;
+      case "toc.expand": tocGo("expand"); return;
+      case "toc.collapse": tocGo("collapse"); return;
       case "code.new_finding": setMode({ kind: "comment" }); return;
 
       // ---- the content area
@@ -369,15 +403,16 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       case "view.wrap": setWrap(!wrap); return;
       case "view.zen": setZen(!zen); return;
       case "view.fullscreen":
-        if (full) setFull(false); else if (content) setFull(true); else setNote("the content area is empty");
+        if (full) setFull(false); else if (view) setFull(true); else setNote("the content area is empty");
         return;
 
       // ---- g: go to
       case "go.next_finding": case "go.prev_finding": land(nextFindingWrapping(items, visible(), { item: pos.item, line }, id === "go.next_finding" ? 1 : -1)); return;
       case "go.next_severity": case "go.prev_severity": land(nextBySeverity(items, visible(), target()?.id, id === "go.next_severity" ? 1 : -1)); return;
-      case "go.top": case "go.end": { const at = fileEdge(items, pos.item, id === "go.top" ? "top" : "end"); if (at) goTo(at); return; }
-      case "go.line": { const at = n !== undefined ? gotoLine(items, pos.item, n) : undefined; if (at) { setContent(null); setPos(at); } return; }
-      case "go.chapter": { const at = n !== undefined ? chapterStart(items, n) : undefined; if (at) goTo(at); else setNote(`there is no chapter ${n}`); return; }
+      // A line is in the code, so these land there; a chapter is in the table of contents.
+      case "go.top": case "go.end": { const at = fileEdge(items, pos.item, id === "go.top" ? "top" : "end"); if (at) { setTree("code"); goTo(at); } return; }
+      case "go.line": { const at = n !== undefined ? gotoLine(items, pos.item, n) : undefined; if (at) { setTree("code"); setContent(null); setPos(at); } return; }
+      case "go.chapter": { const at = n !== undefined ? chapterStart(items, n) : undefined; if (at) toToc(at); else setNote(`there is no chapter ${n}`); return; }
 
       // ---- a line being typed
       case "prompt.send": send(); return;
@@ -401,7 +436,6 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
       case "submit.back": setMode({ kind: "verdict" }); setContent(null); return;
 
       // ---- keys whose behaviour comes with a later change: each says so
-      case "toc.down": case "toc.up": case "toc.next_chapter": case "toc.prev_chapter": case "toc.expand": case "toc.collapse":
       case "review.settings": case "ai.draft": case "ai.accept": case "ai.discard": case "filter.high": case "filter.medium": case "filter.all":
       case "settings.down": case "settings.up": case "settings.edit": case "settings.clear": case "settings.leave":
         coming(id); return;
@@ -409,7 +443,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   };
 
   // ---- layout
-  const L = layoutOf(cols, rows, { zen, full: (full && !!content) || mode.kind === "preview" });
+  const L = layoutOf(cols, rows, { zen, full: (full && !!view) || mode.kind === "preview" });
   const { railW, mainW, gutterW, codeW, boxW, boxInner } = L;
   const codeCols = codeW - 1; // the +/- sign takes the first column
   const total = items.filter((i) => !i.mechanical).length, seen = items.filter((i) => !i.mechanical && h.visited.includes(i.id)).length;
@@ -425,8 +459,8 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   }), cols - 4);
 
   // The content area: one thing at a time, scrolled within its rows. A finding's title is bold above its detail.
-  const leadLines = content?.lead ? wrapText(content.lead, L.contentInner) : [];
-  const contentLines = content ? [...leadLines, ...wrapText(content.body, L.contentInner)] : [];
+  const leadLines = view?.lead ? wrapText(view.lead, L.contentInner) : [];
+  const contentLines = view ? [...leadLines, ...wrapText(view.body, L.contentInner)] : [];
   const sc = clampScroll(scroll, contentLines.length, L.contentRows);
   const shownContent = contentLines.slice(sc, sc + L.contentRows);
   const focused = keyState.state === "content";
@@ -441,6 +475,10 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
   const bodyRows = L.middleH - 2; // the path line and the intent
   const heights = lines.map((l, i) => (wrap ? rowsFor(lengthOf(spans[i] ?? []), codeCols) : 1) + notesAt(l).length);
   const { start, end } = windowOf(heights, line, Math.max(1, bodyRows - boxH));
+  // The table of contents: every chapter, the blocks of the expanded ones, windowed round the cursor's row like the code.
+  const railRows = tocRows(items, collapsed);
+  const railWin = windowOf(railRows.map(() => 1), Math.max(0, tocIndex(railRows, items, { item: pos.item, onChapter: tree === "toc" && onChapter })), Math.max(1, L.middleH - 1));
+  const railShown = railRows.slice(railWin.start, railWin.end);
   const shown = lines.slice(start, end);
   const fit = (t: string) => t.length > codeW ? t.slice(0, codeW - 1) + "…" : t;
 
@@ -489,21 +527,21 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
         </>;
       }
     }
-    if (!content) return <>
+    if (!view) return <>
       <Text dimColor wrap="truncate">content</Text>
       <Text dimColor>Nothing here. {keyOf("ai.info")} shows the summary; {keyOf("review.search_docs")} searches the docs.</Text>
     </>;
     const more = contentLines.length > L.contentRows;
-    const scrollHint = focused ? "" : content.finding ? ` ${keyOf("finding.page_up")}/${keyOf("finding.page_down")}` : ` ${keyOf("code.focus_content")} to scroll`;
+    const scrollHint = focused ? "" : view.finding ? ` ${keyOf("finding.page_up")}/${keyOf("finding.page_down")}` : ` ${keyOf("code.focus_content")} to scroll`;
     return <>
-      <Text wrap="truncate"><Text bold color={content.color}>{content.title}</Text>{busy ? <Text dimColor> · {busy}</Text> : null}{more ? <Text dimColor> · {sc + 1}-{Math.min(contentLines.length, sc + L.contentRows)}/{contentLines.length}{scrollHint}</Text> : null}{focused ? <Text color="cyan"> · focused</Text> : null}</Text>
+      <Text wrap="truncate"><Text bold color={view.color}>{view.title}</Text>{busy ? <Text dimColor> · {busy}</Text> : null}{more ? <Text dimColor> · {sc + 1}-{Math.min(contentLines.length, sc + L.contentRows)}/{contentLines.length}{scrollHint}</Text> : null}{focused ? <Text color="cyan"> · focused</Text> : null}</Text>
       {shownContent.map((t, j) => <Text key={j} bold={sc + j < leadLines.length} wrap="truncate">{t || " "}</Text>)}
     </>;
   };
 
   const footer = note
     ? <Text wrap="truncate" color="green"> {note}</Text>
-    : <Text wrap="truncate" dimColor> {busy ? `${busy} keys wait until it answers` : full && content && mode.kind !== "preview" ? `${keyOf("view.fullscreen")} or Esc restores the layout` : ""}{pending ? <Text color="cyan">   {pendingText(pending)}</Text> : null}</Text>;
+    : <Text wrap="truncate" dimColor> {busy ? `${busy} keys wait until it answers` : full && view && mode.kind !== "preview" ? `${keyOf("view.fullscreen")} or Esc restores the layout` : ""}{pending ? <Text color="cyan">   {pendingText(pending)}</Text> : null}</Text>;
 
   if (tooSmall(term)) return <Text wrap="truncate">terminal too small, need {MIN_COLS}x{MIN_ROWS}</Text>;
 
@@ -517,23 +555,24 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
         <Box height={L.middleH} overflow="hidden">
           {railW ? (
             <Box width={railW} flexDirection="column" borderStyle="single" borderRight borderTop={false} borderBottom={false} borderLeft={false} borderColor="gray" paddingRight={1}>
-              <Text dimColor>{L.narrow ? " #" : " READ IN ORDER"}</Text>
-              {[...d.plan.chapters.map((c, i) => ({ i, title: c.title })), ...(d.plan.mechanical.length ? [{ i: d.plan.chapters.length, title: `Mechanical (${d.plan.mechanical.length})` }] : [])].map(({ i, title }) => {
-                const mine = items.filter((x) => x.chapter === i);
-                const done = mine.length > 0 && mine.every((x) => h.visited.includes(x.id));
-                const here = item?.chapter === i;
+              <Text dimColor={tree !== "toc"} color={tree === "toc" ? "cyan" : undefined} wrap="truncate">{L.narrow ? " #" : " READ IN ORDER"}</Text>
+              {railShown.map((row) => {
+                const c = row.chapter, mine = items.filter((x) => x.chapter === c);
+                const here = item?.chapter === c, expanded = !collapsed.has(c);
+                if (row.kind === "block") {
+                  // While the cursor is on the chapter's row, its first block (which the code shows) is not marked as well.
+                  const x = items[row.item]!, cur = row.item === pos.item && !(tree === "toc" && onChapter), sel = cur && tree === "toc";
+                  return <Text key={`b${row.item}`} color={cur ? "cyan" : undefined} inverse={sel} dimColor={!cur && h.visited.includes(x.id)} wrap="truncate">{L.narrow ? ` ${cur ? "›" : " "}${mine.indexOf(x) + 1}` : `   ${cur ? "›" : " "} ${printable(x.path.split("/").pop()!)}:${x.hunk.newStart}`}{d.findings.some((f) => f.hunk === x.id && open(f)) ? " ▲" : ""}</Text>;
+                }
+                const title = c < d.plan.chapters.length ? d.plan.chapters[c]!.title : `Mechanical (${d.plan.mechanical.length})`;
+                const done = mine.every((x) => h.visited.includes(x.id));
                 const fs = d.findings.filter((f) => open(f) && mine.some((x) => x.id === f.hunk)).length;
-                const blindFs = chapterHidden(blind, chapters[i] ?? [], h) && d.findings.some((f) => live(f) && mine.some((x) => x.id === f.hunk));
+                const blindFs = chapterHidden(blind, chapters[c] ?? [], h) && d.findings.some((f) => live(f) && mine.some((x) => x.id === f.hunk));
+                // ▾ expanded, ▸ collapsed; ✓ every block read.
                 return (
-                  <Box key={i} flexDirection="column">
-                    <Text color={here ? "cyan" : done ? "green" : undefined} bold={here} wrap="truncate">
-                      {here ? "▸" : done ? "✓" : " "}{L.narrow ? "" : " "}{i + 1}{L.narrow ? "" : ` ${title}`}{fs ? <Text color="yellow">{L.narrow ? "" : " "}▲{fs}</Text> : blindFs ? <Text color="yellow">{L.narrow ? "" : " "}▲?</Text> : null}
-                    </Text>
-                    {here && !L.narrow && mine.map((x) => {
-                      const cur = x === item;
-                      return <Text key={x.id} color={cur ? "cyan" : undefined} dimColor={!cur && h.visited.includes(x.id)} wrap="truncate">   {cur ? "›" : " "} {printable(x.path.split("/").pop()!)}:{x.hunk.newStart}{d.findings.some((f) => f.hunk === x.id && open(f)) ? " ▲" : ""}</Text>;
-                    })}
-                  </Box>
+                  <Text key={`c${c}`} color={here ? "cyan" : done ? "green" : undefined} bold={here} inverse={here && tree === "toc" && onChapter} wrap="truncate">
+                    {L.narrow ? "" : done ? "✓" : " "}{expanded ? "▾" : "▸"}{L.narrow ? "" : " "}{c + 1}{L.narrow ? "" : ` ${printable(title)}`}{fs ? <Text color="yellow">{L.narrow ? "" : " "}▲{fs}</Text> : blindFs ? <Text color="yellow">{L.narrow ? "" : " "}▲?</Text> : null}
+                  </Text>
                 );
               })}
             </Box>
@@ -552,7 +591,7 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
                 </Text>
                 {shown.map((l, k) => {
                   const i = start + k;
-                  const cur = i === line;
+                  const cur = i === line, lit = cur && tree === "code"; // the cursor line is lit only while the arrows act in the code
                   const fs = findingsAt(l), ns = notesAt(l);
                   const worst = fs.filter(open).sort(worstFirst)[0];
                   // ▲ open, △ decided, ▽ withdrawn.
@@ -568,10 +607,10 @@ export function App({ review, files, onDone, beside, size, blind = false, dryRun
                         return (
                           <Text key={k} wrap="truncate">
                             {k === 0
-                              ? <><Text dimColor={!cur} color={cur ? "cyan" : undefined}>{num}</Text> {mark} <Text color={color} inverse={cur}>{l.t}</Text></>
+                              ? <><Text dimColor={!cur} color={cur ? "cyan" : undefined}>{num}</Text> {mark} <Text color={color} inverse={lit}>{l.t}</Text></>
                               : <Text dimColor>{" ".repeat(gutterW + 3)}↪</Text>}
-                            {row.map((sp, j) => { const st = styleOf(sp.kind, changed); return <Text key={j} color={st.color ?? color} bold={st.bold} italic={st.italic} dimColor={st.dim} inverse={cur}>{sp.text}</Text>; })}
-                            {cur ? <Text color={color} inverse>{" ".repeat(Math.max(0, codeCols - used))}</Text> : null}
+                            {row.map((sp, j) => { const st = styleOf(sp.kind, changed); return <Text key={j} color={st.color ?? color} bold={st.bold} italic={st.italic} dimColor={st.dim} inverse={lit}>{sp.text}</Text>; })}
+                            {lit ? <Text color={color} inverse>{" ".repeat(Math.max(0, codeCols - used))}</Text> : null}
                           </Text>
                         );
                       })}

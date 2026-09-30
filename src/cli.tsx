@@ -34,8 +34,13 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   The screen: a status area (title, then PR, branches, read, findings to decide, comments, suggested verdict), the
   table of contents and the code, and a bottom panel: the content area (the summary, a chapter's why, a finding's
   detail, docs results, answers, prompts) beside the key panel. Below 60x20 it asks for a larger terminal.
-    ↓/↑ (j/k) line, running on into the next block   ⇧↓/⇧↑ (J/K) chapter   Tab into the content area to scroll it, and back
-    → (l) open the finding on this line   ← (h) the chapter's intent and why   Enter your own finding on this line
+    A review opens in the table of contents, on the first block; the content area shows its chapter's intent and why.
+    Table of contents: ↓/↑ (j/k) block (a collapsed chapter is one stop)   ⇧↓/⇧↑ (J/K) chapter
+      → (l) expand a chapter, or enter the block's code   ← (h) up to the chapter, then collapse it
+      (the mechanical chapter starts collapsed)
+    Code: ↓/↑ (j/k) line, running on into the next block   ⇧↓/⇧↑ (J/K) chapter
+      → (l) open the finding on this line   ← (h) back to the table of contents   Enter your own finding on this line
+    Tab into the content area to scroll it, and back
     s submit: pick a verdict (Enter takes request changes when anything is blocking), preview the review, the
       findings still undecided and what submit will do, Enter. Findings post only as the b/c comments you saved.
       The document is written to $PRVIEW_HOME/submitted/<slug>.json (+ .md), then posted through the adapter
@@ -50,15 +55,15 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
     v then: z zen (hide or show the table of contents) · c the content area full-screen (Esc or v c restores)
             · e open the file here in your editor (inside tmux: in a split pane, this screen stays up) · w wrap
     g then: f/F next/previous finding (wrapping) · h/H next/previous by severity · g/e top/end of the file
-            · <digits> Enter that line of this file · c <digits> Enter that chapter
+            · <digits> Enter that line of this file (these land in the code)
+            · c <digits> Enter that chapter's first block in the table of contents
     Inside a finding (→ or g f opens one; each decision moves on to the next undecided one, and its header shows
     how many are decided, e.g. 3/9 decided):
       b block on it: your line comment at the finding's line, prefilled with its title (or your comment);
         edit, Enter saves (ctrl-u clears the line, Esc cancels); submit then defaults to request changes
       c comment: the same, not blocking   i ignore, with an optional private note (never posted)
       x or ← close it without deciding   y copy it   PgUp/PgDn page it   deciding again changes the decision
-    Coming with later changes (they say so when pressed): the table of contents, \\ settings, a s drafts,
-    f h/m/a filters.
+    Coming with later changes (they say so when pressed): \\ settings, a s drafts, f h/m/a filters.
 
   prview prepare <target>     build it (fetch, guide, critic) without opening the screen; open it later
   prview models               list the configured models and roles, and check each model is reachable
