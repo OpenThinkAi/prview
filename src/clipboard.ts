@@ -4,12 +4,12 @@
 // fit the float. So `y` copies the source strings instead. Everything here is pure or takes its
 // effects as arguments (a runner for local tools, a writer for OSC 52), so it is tested without a clipboard.
 
-import type { Finding } from "./guide.ts";
+import { claimAddsTo, titleOf, type Finding } from "./guide.ts";
 
-/** A finding as prose: where it is and what it says, then the detail. `title` arrives with finding titles; until then the claim leads. */
-export function findingText(f: Finding & { title?: string }, where: string): string {
-  const lead = f.title ?? f.claim;
-  const detail = [f.title ? f.claim : "", f.evidence, f.refute ? `Second look: ${f.refute}` : ""].filter(Boolean).join("\n\n");
+/** A finding as prose: where it is and its title, then the detail (the same order the float reads in). */
+export function findingText(f: Finding, where: string): string {
+  const lead = titleOf(f);
+  const detail = [claimAddsTo(f) ? f.claim : "", f.evidence, f.refute ? `Second look: ${f.refute}` : ""].filter(Boolean).join("\n\n");
   return `${where} — ${lead}${detail ? `\n\n${detail}` : ""}`;
 }
 

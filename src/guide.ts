@@ -18,6 +18,8 @@ export type Severity = "blocking" | "warn" | "nit";
 /** `source` is the producer that raised it, set by that producer; it is shown, never branched on. */
 export type Finding = {
   id: string; source: string; hunk: string; side: "new" | "old"; line: number; severity: Severity; kind: string;
+  /** The glanceable line, at most 12 words. Absent from older documents and from producers that give none: use `titleOf`. */
+  title?: string;
   claim: string; evidence: string; status: "upheld" | "withdrawn" | "unrefuted"; refute?: string;
   /** How many of the critic's runs raised this finding. Absent on reviews saved before sampling. */
   votes?: number;
@@ -261,7 +263,10 @@ export function filePlan(files: FileDiff[], mechanical: Mechanical[]): Plan {
 export const CRITIC_SYSTEM = `You are a senior engineer reviewing one chapter of a code change for a colleague who will make the final call. Raise only what you would stake your name on in a real review: bugs, wrong logic, unhandled cases, security holes, broken or missing tests, a design that will hurt. No style, no praise, no restating the diff.
 Each hunk is shown with line numbers: "n123" is line 123 of the new file, "o120" is line 120 of the old file. Anchor every finding to one of those lines, in the hunk it belongs to.
 Reply with JSON only: an array (empty if nothing is wrong) of at most 4 objects:
-[{"hunk": "the hunk id", "side": "new" or "old", "line": 123, "severity": "blocking" or "warn" or "nit", "kind": "bug|security|correctness|design|test|perf", "claim": "one sentence, what is wrong", "evidence": "at most two sentences, why, concretely"}]
+[{"hunk": "the hunk id", "side": "new" or "old", "line": 123, "severity": "blocking" or "warn" or "nit", "kind": "bug|security|correctness|design|test|perf", "title": "at most 12 words", "claim": "one sentence, what is wrong", "evidence": "at most two sentences, why, concretely"}]
+"title" is the first thing the reader sees, so make it the finding in a glance: what is wrong and where, in plain reviewer language, at most 12 words, no trailing period.
+  good: "Missing test: load_caller_org error path isn't covered"   "Unwrap panics when the list is empty"   "Token is logged on auth failure"
+  bad:  "This could potentially be an issue with error handling"   "Consider adding tests"   "The function load_caller_org does not have a test that exercises the path where the lookup fails and returns an error"
 "blocking" means you would not merge until it is fixed. If you are not sure, leave it out.`;
 
 export function numbered(h: Hunk): string {
@@ -284,23 +289,74 @@ export function anchorLine(h: Hunk, side: "new" | "old", line: number): number {
   return h.lines.some((l) => (side === "new" ? l.n : l.o) === line) ? line : side === "new" ? h.newStart : h.oldStart;
 }
 
+/** A title the critic wrote that was over 12 words: `said` is what it wrote, the finding holds the cut version meanwhile. */
+export type TitleCut = { index: number; said: string };
+
 export function parseCritic(reply: string, chapter: Chapter, hunks: HunkAt[], firstId: number): Finding[] {
+  return readCritic(reply, chapter, hunks, firstId).findings;
+}
+
+/** parseCritic, also saying which titles had to be cut so the caller can ask once for better ones. */
+export function readCritic(reply: string, chapter: Chapter, hunks: HunkAt[], firstId: number): { findings: Finding[]; cuts: TitleCut[] } {
   const j = jsonIn(reply);
   const at = new Map(hunks.map((h) => [h.id, h]));
-  const out: Finding[] = [];
+  const out: Finding[] = [], cuts: TitleCut[] = [];
   for (const f of Array.isArray(j) ? j as any[] : []) {
     const h = typeof f?.hunk === "string" ? at.get(f.hunk) : undefined;
     if (!h?.hunk || !chapter.hunks.includes(h.id)) continue;
     const side = f.side === "old" ? "old" : "new";
     const claim = String(f.claim ?? "").trim();
     if (!claim) continue;
+    // A missing or unusable title is not a reason to drop the finding: `titleOf` derives one from the claim.
+    const said = String(f.title ?? "").trim(), title = fitLine(said);
+    if (title.text && title.cut) cuts.push({ index: out.length, said });
     out.push({
       id: String(firstId + out.length), source: "critic", hunk: h.id, side, line: anchorLine(h.hunk, side, Number(f.line)),
       severity: SEVERITIES.has(f.severity) ? f.severity : "warn", kind: String(f.kind ?? "correctness").trim().toLowerCase(),
+      ...(title.text ? { title: title.text } : {}),
       claim: clip(claim, 300), evidence: clip(String(f.evidence ?? "").trim(), 500), status: "unrefuted",
     });
   }
+  return { findings: out, cuts };
+}
+
+export const TITLE_REASK_SYSTEM = `You raised findings on a code change, but some titles were longer than 12 words and had to be cut. Rewrite only those titles, keeping their meaning.
+A title says what is wrong and where, in plain reviewer language, at most 12 words, no trailing period. Example: "Missing test: load_caller_org error path isn't covered".
+Reply with JSON only: [{"n": 1, "title": "..."}]`;
+
+/** The one follow-up after a cut: each over-long title beside its finding, numbered by position in the run. */
+export function titleReaskPrompt(findings: Finding[], cuts: TitleCut[]): string {
+  return cuts.map((c) => `## n=${c.index + 1}\ntitle (too long): ${c.said}\nclaim: ${findings[c.index]!.claim}`).join("\n\n");
+}
+
+/** Apply the rewritten titles where they now fit; anything still too long, or missing, keeps the cut version. */
+export function applyTitleReask(findings: Finding[], cuts: TitleCut[], reply: string): Finding[] {
+  let j: unknown;
+  try { j = jsonIn(reply); } catch { return findings; } // a failed retry leaves the cut titles standing
+  const asked = new Set(cuts.map((c) => c.index)), out = findings.map((f) => ({ ...f }));
+  for (const r of Array.isArray(j) ? j as any[] : []) {
+    const i = Number(r?.n) - 1;
+    if (!asked.has(i) || !out[i]) continue;
+    const line = fitLine(String(r.title ?? ""));
+    if (line.text && !line.cut) out[i]!.title = line.text;
+  }
   return out;
+}
+
+/** The first sentence of a claim as a title, for a finding whose producer gave none (stamp's prose, imports, old documents). */
+export function deriveTitle(claim: string): string {
+  const t = claim.trim().replace(/\s+/g, " ");
+  // Same sentence rule as twoSentences: "e.g. foo" or "v1.2" do not end one.
+  return fitLine(t.split(/(?<=[.!?])\s+(?=[A-Z"'`(])/)[0] ?? "").text;
+}
+
+/** What every listing of a finding shows first: its own title, else one derived from the claim. */
+export const titleOf = (f: Pick<Finding, "title" | "claim">): string => f.title || deriveTitle(f.claim);
+
+/** With no title of its own, a one-sentence claim short enough to be its own title says nothing more beneath it. */
+export function claimAddsTo(f: Pick<Finding, "title" | "claim">): boolean {
+  const whole = fitLine(f.claim);
+  return !!f.title || whole.cut || whole.text !== titleOf(f);
 }
 
 // ---------------------------------------------------------------- sampling

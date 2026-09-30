@@ -16,7 +16,8 @@ wrote a document; the only trace of a producer is the `source` on each finding.
               "title": "The PR title" },
   "findings": [
     { "id": "1", "source": "hal9k", "hunk": "src/auth.ts@40:42", "side": "new", "line": 57,
-      "severity": "blocking", "kind": "security", "claim": "The token is logged on failure.",
+      "severity": "blocking", "kind": "security", "title": "Token is logged on auth failure",
+      "claim": "The token is logged on failure.",
       "evidence": "Line 57 passes the whole request, headers included, to the logger." }
   ]
 }
@@ -75,5 +76,6 @@ A document can come from anywhere, so `on_submit` is only ever a request, and co
 ## What prview does with it
 
 Unknown fields are ignored and bad values dropped (an unknown severity becomes `warn`, a finding
-without a claim is skipped), so a slightly wrong document degrades rather than fails. Only a
+without a claim is skipped, a `title` is cut to 12 words, and one left out is taken from the claim's
+first sentence), so a slightly wrong document degrades rather than fails. Only a
 different `schema`, or a `target` without full `base` and `head` commit ids, is refused.

@@ -5,16 +5,18 @@
 //
 //   bun scripts/eval-intents.ts                       the five default merges below, with claude
 //   bun scripts/eval-intents.ts --ai NAME             another model from your config (prview models)
+//   bun scripts/eval-intents.ts --findings            also run the critic once per chapter and print each finding's title
 //   bun scripts/eval-intents.ts ~/src/x@abc123 ...    your own: DIR@MERGE (its two parents) or DIR@BASE..HEAD
 //
 // It calls the model for real (one guide call per change, one more when a line had to be cut), so
-// it costs what a `prview prepare` of each change costs. Exit 0 when at least 90% of intents pass.
+// it costs what a `prview prepare` of each change costs (--findings adds one critic call per chapter; it
+// only prints titles, for eyeballing their length and quality, and does not change the exit code). Exit 0 when at least 90% of intents pass.
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { runGuide } from "../src/build.ts";
+import { runCritic, runGuide } from "../src/build.ts";
 import { parseDiff } from "../src/diff.ts";
-import { classify, hunksOf, MECHANICAL_INTENT, rubric, twoSentences } from "../src/guide.ts";
+import { classify, criticPrompt, hunksOf, MECHANICAL_INTENT, rubric, titleOf, twoSentences } from "../src/guide.ts";
 import { loadConfig, realLookups, resolveModel } from "../src/config.ts";
 import { pool } from "../src/llm.ts";
 
@@ -31,6 +33,7 @@ const DEFAULTS = [
 const PASS_RATE = 0.9;
 
 const argv = process.argv.slice(2);
+let findings = false; // --findings: also print the critic's finding titles
 let name = "claude"; // the built-in claude -p model unless --ai names one from the config
 const specs: string[] = [];
 for (let i = 0; i < argv.length; i++) {
@@ -38,7 +41,8 @@ for (let i = 0; i < argv.length; i++) {
     const n = argv[++i];
     if (!n) { console.error("--ai takes a model name from your config"); process.exit(2); }
     name = n;
-  } else specs.push(argv[i]!);
+  } else if (argv[i] === "--findings") findings = true;
+  else specs.push(argv[i]!);
 }
 
 function git(args: string[], cwd: string): string {
@@ -91,6 +95,24 @@ runs.forEach((run, i) => {
   if (run.plan.mechanical.length) console.log(`   (mechanical, ${run.plan.mechanical.length}: fixed intent "${MECHANICAL_INTENT}")`);
   console.log("");
 });
+
+if (findings) {
+  console.log("## finding titles (one critic run per chapter)\n");
+  let n = 0, own = 0, over = 0;
+  const jobs = runs.flatMap((run, i) => run instanceof Error ? [] : run.plan.chapters.map((c) => async () => {
+    const hunks = hunksOf(srcs[i]!.files);
+    return { label: srcs[i]!.label, fs: await runCritic(model, criticPrompt(srcs[i]!, c, hunks), c, hunks) };
+  }));
+  for (const r of await pool(jobs, 4)) {
+    if (r instanceof Error) { console.log(`   critic failed: ${r.message}`); continue; }
+    for (const f of r.fs) {
+      const t = titleOf(f), w = t.split(/\s+/).length;
+      n++; if (f.title) own++; if (w > 12 || t.endsWith("…")) over++;
+      console.log(`   ${f.title ? "title  " : "derived"} ${w}w  ${t}\n           ${r.label} · ${f.severity} · ${f.claim}`);
+    }
+  }
+  console.log(`\n${n} findings: ${own} with the critic's own title, ${n - own} derived from the claim, ${over} over 12 words\n`);
+}
 
 const rate = total ? passed / total : 0;
 console.log(`${passed}/${total} intents pass the rubric (${Math.round(rate * 100)}%, target ${PASS_RATE * 100}%)${failedRuns ? ` · ${failedRuns} guide call${failedRuns === 1 ? "" : "s"} failed` : ""}`);
