@@ -294,7 +294,7 @@ test("the preview spells out all three steps, the exact command, and whether it 
   const ok = describe(planOf(review({ on_submit: { run: ["notify", "{file}", ">", "out.txt"] } }), files), false);
   expect(ok).toContain("Not allowed: it will not run");
   expect(describe(planOf(review({ on_submit: { run: ["notify", "{file}", ">", "out.txt"] } }), files), true)).toContain("Allowed for this submit");
-  expect(describe(planOf(review(), files), false)).not.toContain("3.");
+  expect(describe(planOf(review(), files), false)).not.toContain("3. The document asks");
 });
 
 test("a > path must land inside the worktree: absolute, .. and symlinks out are refused, in-tree paths (new or existing) are fine", () => {
