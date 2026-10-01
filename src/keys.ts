@@ -104,6 +104,7 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "finding.copy", states: FINDING, key: "y", label: "copy", description: "Copy the finding's text to the clipboard." },
   { id: "finding.page_down", states: FINDING, key: "pgdn", secondary: "ctrl-d", label: "page", description: "Page the finding's text down." },
   { id: "finding.page_up", states: FINDING, key: "pgup", secondary: "ctrl-u", label: "page", description: "Page the finding's text up." },
+  { id: "finding.focus_content", states: FINDING, key: "tab", label: "content", description: "Move focus into the content area to scroll the finding's detail; the finding stays open.", fixed: true },
 
   // ---- the content area, with focus in it
   { id: "content.down", states: CONTENT, key: "down", secondary: "j", label: "scroll", description: "Scroll the content area down, or select the next search result." },
@@ -111,7 +112,7 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "content.page_down", states: CONTENT, key: "pgdn", secondary: "ctrl-d", label: "page", description: "Page the content area down." },
   { id: "content.page_up", states: CONTENT, key: "pgup", secondary: "ctrl-u", label: "page", description: "Page the content area up." },
   { id: "content.copy", states: CONTENT, key: "y", label: "copy", description: "Copy the content area's main text, or the selected search result." },
-  { id: "content.back", states: CONTENT, key: "tab", label: "back", description: "Move focus back out of the content area.", fixed: true },
+  { id: "content.back", states: CONTENT, key: "tab", label: "back", description: "Move focus back out of the content area, to the open finding, the code or the table of contents where it was.", fixed: true },
 
   // ---- a: AI
   { id: "ai.info", states: OUTSIDE, prefix: "a", key: "i", label: "info", description: "Show the summary of this change: the overview, suggested verdicts and who prepared it." },

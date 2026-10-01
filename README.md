@@ -109,8 +109,9 @@ What you get is a full-screen review, not a diff dump:
   ignore note, a question) and the submit steps. A review with a summary opens on it ("Summary of this change · not a
   finding"), with "Prepared by …" only when the review recorded which models ran; Esc empties the content area and
   `a i` brings the summary back (or says the review has no summary). The code's keys keep working beside it; `Tab`
-  moves focus into it (its border turns cyan and its title says `focused`), where the arrows and `PgUp`/`PgDn` scroll
-  it, and `Tab` or Esc comes back. A finding pages with `PgUp`/`PgDn` directly. `v c` makes the content area
+  moves focus into it from the table of contents, the code or an open finding (its border turns cyan and its title says
+  `focused`), where the arrows and `PgUp`/`PgDn` scroll it, and `Tab` or Esc comes back to where you were, an open
+  finding still open. A finding also pages with `PgUp`/`PgDn` directly. `v c` makes the content area
   full-screen, under the status area and beside the key panel, where the arrows scroll it; Esc or `v c` restores the
   layout. The submit flow's send step always reads full-screen. `v z` (zen) hides the table of contents so the code has the
   width, and shows it again.
@@ -226,6 +227,7 @@ tables with your own bindings.
 | `y` |  | `finding.copy` | Copy the finding's text to the clipboard. |
 | `PgDn` | `ctrl-d` | `finding.page_down` | Page the finding's text down. |
 | `PgUp` | `ctrl-u` | `finding.page_up` | Page the finding's text up. |
+| `Tab` |  | `finding.focus_content` | Move focus into the content area to scroll the finding's detail; the finding stays open. |
 
 **Content area, with focus in it**
 
@@ -236,7 +238,7 @@ tables with your own bindings.
 | `PgDn` | `ctrl-d` | `content.page_down` | Page the content area down. |
 | `PgUp` | `ctrl-u` | `content.page_up` | Page the content area up. |
 | `y` |  | `content.copy` | Copy the content area's main text, or the selected search result. |
-| `Tab` |  | `content.back` | Move focus back out of the content area. |
+| `Tab` |  | `content.back` | Move focus back out of the content area, to the open finding, the code or the table of contents where it was. |
 
 **`a` AI**
 

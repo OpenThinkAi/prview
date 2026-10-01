@@ -220,7 +220,7 @@ test("finding: → on its line opens it with its action, the panel lists the fin
   expect(fr).toContain("Action: block (default). A high finding starts as block.");
   expect(fr).not.toContain("decided");
   shown(t, { state: "finding" });
-  expect(listing(entriesOf({ state: "finding" }))).toEqual(["x close", "← h back", "b block", "c comment", "i ignore", "y copy", "PgDn/PgUp ctrl-d/ctrl-u page", "a AI…", "v view…", "g go to…"]);
+  expect(listing(entriesOf({ state: "finding" }))).toEqual(["x close", "← h back", "b block", "c comment", "i ignore", "y copy", "PgDn/PgUp ctrl-d/ctrl-u page", "Tab content", "a AI…", "v view…", "g go to…"]);
   await t.press("x");
   expect(t.frame()).not.toContain("answer is hard-coded");
   await t.press("l"); // l is → too
@@ -1079,6 +1079,73 @@ test("Tab moves focus into the content area: the arrows scroll it, y copies it, 
   expect(t.frame()).toContain("Summary of this change");
   await t.press(ESC + TAB);
   expect(t.frame()).toContain("the content area is empty");
+});
+
+test("Tab with a finding open focuses its detail: the arrows scroll it, y copies it, Tab or Esc return to the finding, still open", async () => {
+  const evidence = Array.from({ length: 40 }, (_, i) => `evidence ${i}`).join("\n");
+  const t = await open({ findings: [{ ...finding, evidence }] }, { code: true });
+  await t.press("gf");
+  shown(t, { state: "finding" });
+  expect(t.frame()).toContain("Tab to scroll");
+  await t.press(TAB);
+  expect(t.frame()).toContain("· focused");
+  shown(t, { state: "content" });
+  const at = t.r.pos;
+  await t.press("jj" + DOWN);
+  expect(t.r.pos).toEqual(at); // the arrows scroll the detail, not the code
+  expect(t.frame()).toMatch(/· 4-\d+\/\d+/);
+  await t.press(UP);
+  expect(t.frame()).toMatch(/· 3-\d+\/\d+/);
+  await t.press(TAB); // back to the finding, open, with its keys
+  expect(t.frame()).not.toContain("focused");
+  expect(t.frame()).toContain("Hard-coded answer in main");
+  shown(t, { state: "finding" });
+  await t.press(TAB + ESC); // Esc returns to the finding too: it does not close it
+  shown(t, { state: "finding" });
+  expect(t.frame()).toContain("critic · bug · high");
+  await t.press("b"); // the finding's keys act again
+  shown(t, { state: "prompt", kind: "comment", decide: true });
+  await t.press(ESC + ESC);
+  shown(t, { state: "code" });
+});
+
+test("Tab with a finding open: y copies the finding, v c goes full-screen and comes back to the same focus", async () => {
+  const t = await copying();
+  await t.press("jj" + RIGHT + TAB);
+  await t.press("y");
+  expect(t.copied).toEqual(["src/a.rs:11 — Hard-coded answer in main\n\nanswer is hard-coded\n\n42 appears with no source"]);
+  await t.press("vc");
+  expect(t.frame()).not.toContain("READ IN ORDER");
+  await t.press("vc"); // out of full-screen, still focused in the detail
+  expect(t.frame()).toContain("· focused");
+  await t.press(TAB + "vc" + ESC); // from the finding: full-screen and back leaves focus on the finding
+  expect(t.frame()).not.toContain("focused");
+  expect(t.frame()).toContain("Hard-coded answer in main");
+  await t.press("x");
+  expect(t.frame()).not.toContain("answer is hard-coded");
+});
+
+test("Tab from the table of contents focuses the chapter's why and comes back to the same block; from the code, the summary", async () => {
+  const t = await open();
+  shown(t, { state: "toc" });
+  await t.press(TAB);
+  shown(t, { state: "content" });
+  expect(t.frame()).toContain("· focused");
+  expect(t.frame()).toContain("It is the heart of it.");
+  await t.press("j");
+  expect(t.r.pos).toEqual({ item: 0, line: 0 }); // the cursor stays put
+  await t.press(TAB);
+  shown(t, { state: "toc" });
+  await t.press("j"); // the table of contents moves again
+  expect(t.r.pos.item).toBe(1);
+  await t.press(TAB + ESC);
+  shown(t, { state: "toc" });
+  await t.press(RIGHT + "ai" + TAB); // the summary (here, that there is none), from the code
+  shown(t, { state: "content" });
+  expect(t.frame()).toContain("There is no summary for this review.");
+  await t.press(ESC);
+  shown(t, { state: "code" });
+  expect(t.frame()).toContain("There is no summary for this review.");
 });
 
 // ---------------------------------------------------------------- the table of contents
