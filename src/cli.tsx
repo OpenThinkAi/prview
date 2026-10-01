@@ -118,6 +118,7 @@ function updates(dryRun: boolean, cfg: Config): { note: Promise<string | null>; 
 }
 
 async function review(r: Review, cfg: Config, blind: boolean, dryRun = false, upd = updates(dryRun, cfg)): Promise<void> {
+  // `open` and `show` let the check start here; the default command passes the one it started before the build.
   try { await reviewLoop(r, cfg, blind, dryRun, upd.note); } finally { await upd.finish(); }
 }
 
@@ -237,6 +238,7 @@ async function main(args: string[]): Promise<void> {
   if (!process.stdout.isTTY) throw new Fail("prview needs a terminal");
   // Started before the build (which can take minutes), so its answer is usually in by the time the screen opens.
   const upd = updates(!!opts.dryRun, cfg);
+  // finish() is idempotent: this one covers a build that fails while an install is already running.
   try { return await review(await build(repoFor(cmd, opts.repo), cmd, opts), cfg, opts.blind ?? cfg.blind, opts.dryRun, upd); } finally { await upd.finish(); }
 }
 
