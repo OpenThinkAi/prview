@@ -327,7 +327,6 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   };
   const place = (id: string, l: number | null) => `${printable(items.find((x) => x.id === id)?.path ?? id)}${l !== null ? `:${l}` : ""}`;
 
-
   // Fast typing or a paste can deliver several plain characters in one chunk ("g12"): take them one at a time. An escape
   // sequence Ink did not read as a key (it hands those over with the ESC stripped) stays whole, for tokenOf to read.
   useInput((input, key) => {

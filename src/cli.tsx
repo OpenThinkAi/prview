@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // prview: review a pull request in the terminal. A model prepares the reading; you do the reviewing.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { all, build, preparedBy, checkHead, exportDocument, Fail, filesOf, home, importDocument, load, remove, reopen, repoFor, writeup, type BuildOpts, type Review } from "./build.ts";
 import { ConfigError, configPath, loadConfig, realLookups, resolveModel, ROLES, type Config } from "./config.ts";
@@ -133,8 +133,9 @@ function editComment(r: Review, text: string, configured?: Config["editor"]): st
   const lines = text.split("\n").length;
   const p = Bun.spawnSync(editorArgs(editor(process.env, configured), file, lines), { cwd: r.worktree, stdio: ["inherit", "inherit", "inherit"] });
   if (p.exitCode !== 0) console.error(`prview: the editor exited with ${p.exitCode}; the comment is as it was saved`);
-  // Typed by the reader, but through a file: control characters go, as for anything read back from disk.
-  try { return clean(readFileSync(file, "utf8")).replace(/\s+$/, ""); } catch { return text; }
+  // Typed by the reader, but through a file: control characters go, as for anything read back from disk. The file is
+  // only the editor's copy: the flow holds the comment, so it is removed once read.
+  try { return clean(readFileSync(file, "utf8")).replace(/\s+$/, ""); } catch { return text; } finally { rmSync(file, { force: true }); }
 }
 
 async function models(): Promise<void> {
