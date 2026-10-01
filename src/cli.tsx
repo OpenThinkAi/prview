@@ -78,6 +78,12 @@ const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head
     g then: f/F next/previous finding (wrapping) · h/H next/previous by severity · g/e top/end of the file (the "whole file" rows)
             · <digits> g (or Enter) that line of this file (these land in the code)
             · c <digits> g (or Enter) that chapter's first block in the table of contents
+            · p a re-review's previous comments (the chapter above the others)
+    Re-review: reopen a PR whose head moved since you submitted and the table of contents starts with "Your previous
+      comments": what your last submit posted, each with its status (unchanged, line changed, moved to L<n>, file
+      removed) and, read from GitHub or Azure DevOps in the background, the replies and whether it is resolved.
+      Moving onto one shows your text, the code then and now and the replies; → goes into the code where it is now;
+      y copies it. They are not carried over as your comments, so they never post again.
     Findings are high, medium or low severity, and each has an action: block, comment or ignore. Until you pick
     one it is its severity's default ([defaults] in the config: high = "block", medium and low = "comment"), shown
     as "(default)"; a finding the second look (refute) dropped is shown too, ignored by default, with its reason.

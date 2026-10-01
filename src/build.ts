@@ -28,9 +28,12 @@ import { reviveAsks, type Asks } from "./deep.ts";
 import { git, hasCommit, prSlug, remoteFor, run, type ResolveCtx, type Source } from "./pr.ts";
 import type { Http } from "./azure-auth.ts";
 import { isPR, parseRef, prIn, sourceOf } from "./registry.ts";
-import { carry, type Carried } from "./carryover.ts";
+import { carry, postKey, type Carried } from "./carryover.ts";
 import { rereviewOf } from "./rereview.ts";
 import { sinceOf, type Since } from "./since.ts";
+import { previousItems, previousOf } from "./previous-read.ts";
+import type { Previous } from "./previous.ts";
+import { keyOf } from "./keys.ts";
 
 export { Fail };
 /** One model call: which role, how long, what it cost where the provider reports it. */
@@ -58,7 +61,7 @@ export type Pos = { item: number; line: number };
 /** `ref` is what was asked for (a PR's canonical URL, a PR number in a review stored before URLs were, or a range), so the review can be rebuilt at a newer head. */
 /** `suggested`: the verdicts of documents imported at this head, shown in the opening summary as information only. */
 /** `asks`: the `a ?` conversations, by subject, kept on this machine only (never in the document). */
-export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; /** The severity filter (`f h`/`f m`/`f a`), kept here with the reader's place, never in the document; absent means all. */ filter?: Filter; ai?: Ai; doc: Doc; suggested?: Suggested[]; asks?: Asks; /** Where the reader's carried-over comments came from (carryover.ts), kept with the review, never in the document. */ carried?: Carried; /** A re-review (rereview.ts): the head last submitted at and what changed since; never in the document. */ since?: Since; /** `v s`: only the blocks changed since that review are shown, kept like the filter. */ sinceOnly?: true };
+export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; /** The severity filter (`f h`/`f m`/`f a`), kept here with the reader's place, never in the document; absent means all. */ filter?: Filter; ai?: Ai; doc: Doc; suggested?: Suggested[]; asks?: Asks; /** Where the reader's carried-over comments came from (carryover.ts), kept with the review, never in the document. */ carried?: Carried; /** A re-review (rereview.ts): the head last submitted at and what changed since; never in the document. */ since?: Since; /** `v s`: only the blocks changed since that review are shown, kept like the filter. */ sinceOnly?: true; /** A re-review: what the last submit posted, and where each item is now (previous.ts); worked out on every open, never in the document. */ previous?: Previous };
 
 export const home = () => process.env.PRVIEW_HOME ?? join(homedir(), ".cache", "prview");
 const metaOf = (slug: string) => join(home(), `${slug}.json`);
@@ -294,14 +297,20 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   // produced it); once the head moves only the reader's own comments carry over (re-anchored where their line still is,
   // marked with the head they came from: carryover.ts), with the record of what was submitted before.
   const same = !!prior && prior.doc.target.head === t.head && !opts.fresh;
+  // A re-review: the latest submission that reached the PR reviewed another head (previous-read.ts).
+  const pre = previousItems(t, slug);
   const r: Review = { slug, repo, ref: isPR(target) ? t.url ?? target!.replace(/^#/, "") : target, worktree, context, created: new Date().toISOString(), pos: { item: 0, line: 0 }, doc: fit(blank(t), files) };
   if (same) {
     // The conversations are about blocks and findings of this head, so they carry over only while it is the same.
     Object.assign(r, { pos: prior.pos, ...(prior.filter ? { filter: prior.filter } : {}), ai: prior.ai, doc: fit(prior.doc, files), ...(prior.suggested ? { suggested: prior.suggested } : {}), ...(prior.asks ? { asks: prior.asks } : {}), ...(prior.carried ? { carried: prior.carried } : {}) });
+    // Comments carried over before the chapter existed, which that submit already posted, now live only in the chapter.
+    if (pre && r.carried) r.doc.human.comments = r.doc.human.comments.filter((x) => !(pre.keys.has(postKey(x)) && r.carried![postKey(x)]));
     say(`reusing the review document from ${prior.ai?.at.slice(0, 16).replace("T", " ") ?? "before"} (--fresh redoes it)`);
   } else {
     if (prior) {
       const c = carry({ human: prior.doc.human, head: prior.doc.target.head, ...(prior.carried ? { carried: prior.carried } : {}) }, files);
+      // What the last submit posted lives in the previous-comments chapter, not in the layer: it cannot post again.
+      if (pre) c.comments = c.comments.filter((x) => !pre.keys.has(postKey(x)));
       r.doc.human.comments = c.comments;
       if (c.comments.length) r.carried = c.carried;
       if (prior.doc.submissions?.length) r.doc.submissions = prior.doc.submissions;
@@ -320,6 +329,12 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   // on while the head does, like the filter.
   const since = rereviewOf(repo, slug, t, files, say);
   if (since) { r.since = since; if (same && prior.sinceOnly && since.files) r.sinceOnly = true; }
+  // Its previous comments: where each is now follows the same old→new diff when the layer is of the same head.
+  if (pre) {
+    try { r.previous = previousOf(repo, t, pre, since?.files && since.head === pre.head ? since : undefined); } catch {}
+    const n = pre.items.length;
+    say(`re-review: your last submit (${pre.at.slice(0, 10)}, at ${pre.head.slice(0, 7)}) posted ${n} item${n === 1 ? "" : "s"}; ${keyOf("go.previous")} shows them, with where each is now and the replies`);
+  }
   save(r);
   return r;
 }

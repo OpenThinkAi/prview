@@ -149,6 +149,7 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "go.top", states: READING, prefix: "g", key: "g", label: "top of file", description: "Go to the first line of this file's first block." },
   { id: "go.end", states: READING, prefix: "g", key: "e", label: "end of file", description: "Go to the last line of this file's last block." },
   { id: "go.line", states: READING, prefix: "g", key: "<n>", label: "line", description: "Type a line number, then close it with the go prefix key again or Enter, to go to that line of this file, or the nearest line shown.", fixed: true },
+  { id: "go.previous", states: READING, prefix: "g", key: "p", label: "previous comments", description: "In a re-review, go to the chapter of your previous comments: what your last submit posted, where each line is now, and the author's replies." },
   { id: "go.chapter", states: READING, prefix: "g", key: "c", label: "chapter", description: "Type a chapter number, then close it with the go prefix key again or Enter, to go to that chapter's first block." },
 
   // ---- a line being typed

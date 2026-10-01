@@ -85,7 +85,7 @@ function poster(head: () => string) {
 
 const ROUND1 = ["one is off", "two is off", "three is off", "four is off", "five is off", "six is off", "seven is off", "eight is off"];
 
-test("moved head: round-1 comments are listed unticked as posted, post nothing by default, and a ticked one posts alone (GitHub)", async () => {
+test("moved head: round-1 comments live in the previous-comments chapter, not the layer; only the never-posted one is listed, ticked (GitHub)", async () => {
   const { clone, push, lines } = prRepo();
   // Head A changes eight lines; the reader writes a finding with a comment on each and submits.
   const A = push(() => writeFileSync(join(clone, "a.ts"), lines.map((l, i) => i >= 4 && i < 12 ? `${l} changed` : l).join("\n") + "\n"), "round 1");
@@ -107,53 +107,43 @@ test("moved head: round-1 comments are listed unticked as posted, post nothing b
   const { save } = await import("../src/build.ts");
   save(r1);
 
-  // A coworker pushes: head B adds a file. Reopening rebuilds at B and carries the reader's comments over.
+  // A coworker pushes: head B adds a file. Reopening rebuilds at B: what round 1 posted is the previous-comments
+  // chapter (with the ids the post recorded), and only the comment that never posted carries over as the reader's.
   const B = push(() => writeFileSync(join(clone, "b.ts"), "export const b = 1;\n"), "round 2");
   const r2 = await build(clone, PR, { ai: null });
   expect(r2.doc.target.head).toBe(B);
   expect(r2.doc.findings).toEqual([]);
-  expect(r2.doc.human.comments.map((c) => c.text)).toEqual([...ROUND1, "never sent"]);
+  expect(r2.previous?.head).toBe(A);
+  expect(r2.previous?.items.map((i) => [i.text, i.status, i.comment_id !== undefined])).toEqual(ROUND1.map((t) => [t, "unchanged", true]));
+  expect(r2.doc.human.comments.map((c) => c.text)).toEqual(["never sent"]);
   expect(r2.carried && Object.values(r2.carried).every((h) => h === A)).toBe(true);
   expect(r2.doc.submissions?.length).toBe(1);
 
-  // The checklist lists every one of them: the eight posted ones unticked and labelled, the late one ticked as carried over.
+  // The checklist lists only the reader's comment that never posted, ticked as carried over.
   const earlier = postedBefore(r2.slug, r2.doc);
   const own = ownComments(r2.doc.human, [], earlier, r2.carried);
-  expect(own).toHaveLength(9);
-  expect(own.filter((o) => o.posted).map((o) => o.comment.text)).toEqual(ROUND1);
-  expect(own.filter((o) => o.posted).every((o) => o.posted!.round === 1 && o.posted!.head === A)).toBe(true);
+  expect(own.map((o) => [o.comment.text, !!o.posted])).toEqual([["never sent", false]]);
   const fl = startFlow([], r2.doc.human, ["approve", "request_changes", "comment"], undefined, undefined, { own, postedSummaries: postedSummaries(r2.doc.human, earlier) });
-  expect(fl.listed).toHaveLength(9);
-  expect(fl.ticked).toEqual([own[8]!.key]);
+  expect(fl.ticked).toEqual([own[0]!.key]);
   const shown = stepLines(fl, { findings: [], h: r2.doc.human, place: () => "", label: String, keys: { tick: "Space", all: "a", editor: "v e", next: "Tab", back: "⇧Tab" } }).map((l) => l.text);
-  expect(shown).toContain("[ ] yours · posted 2026-09-30 (round 1) · a.ts:5 · one is off");
   expect(shown).toContain(`[x] yours · carried over from ${A.slice(0, 7)} · a.ts:13 · never sent`);
 
-  // Submit with the defaults: none of the round-1 comments posts again; the preview says so.
+  // Submit with the defaults: none of the round-1 comments posts again, in the post or the dry run.
   const files2 = filesOf(r2);
   const plan = planOf(r2, files2, { selection: { ...selectionOf(fl), verdict: "comment" } });
   expect(plan.posting!.comments.map((c) => c.text)).toEqual(["never sent"]);
-  const preview = postPreview(plan, String, { tag: () => undefined, left: 8 });
-  expect(preview).toContain("Line comments (1):");
-  expect(preview).toContain("Left out: 8 of your comments an earlier submit already posted");
-  // The dry run is the same set.
   const dry = await submit(structuredClone(r2), files2, { allowHook: false, selection: { ...selectionOf(fl), verdict: "comment" }, dryRun: true });
   for (const t of ROUND1) expect(dry.summary).not.toContain(t);
   expect(dry.summary).toContain("never sent");
-
-  // Ticking one posted comment (and unticking the late one) posts exactly that one.
-  let picked: Flow = toggle(fl); // the cursor starts on the first: "one is off"
-  for (let i = 0; i < 8; i++) picked = move(picked, 1);
-  picked = toggle(picked); // the late one, off
-  expect(picked.ticked).toEqual([own[0]!.key]);
   const gh2 = poster(() => B);
-  const res2 = await submit(r2, files2, { allowHook: false, selection: { ...selectionOf(picked), verdict: "comment" }, run: gh2.run, now: () => new Date("2026-10-01T09:00:00.000Z") });
+  const res2 = await submit(r2, files2, { allowHook: false, selection: { ...selectionOf(fl), verdict: "comment" }, run: gh2.run, now: () => new Date("2026-10-01T09:00:00.000Z") });
   expect(res2.ok).toBe(true);
-  expect(gh2.created).toHaveLength(1);
-  expect(gh2.created[0].commit_id).toBe(B);
-  expect(gh2.created[0].comments.map((c: any) => c.body)).toEqual(["one is off"]);
-  // The document records exactly what went out: the comments left out are gone from the reader's layer.
-  expect(r2.doc.human.comments.map((c) => c.text)).toEqual(["one is off"]);
+  expect(gh2.created[0].comments.map((c: any) => c.body)).toEqual(["never sent"]);
+
+  // Opened again at the same head: the chapter is the latest submit that reached the PR (round 2, at B), and since
+  // that was this head, it is no re-review any more.
+  const r3 = await build(clone, PR, { ai: null });
+  expect(r3.previous).toBeUndefined();
 });
 
 // ---------------------------------------------------------------- pure parts
