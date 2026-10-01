@@ -1,5 +1,5 @@
-// The settings view (`\`): the keys, the default action per severity, the model per role, the editor command and the
-// display defaults, edited on one screen and saved to config.toml. Pure apart from `saveSettings`, so every edit, refusal
+// The settings view (`\`): the keys, the default action per severity, the model per role, the editor command, the
+// display defaults and auto-update, edited on one screen and saved to config.toml. Pure apart from `saveSettings`, so every edit, refusal
 // and save is tested without a terminal.
 //
 // Nothing here has rules of its own: a key is checked by `effectiveKeys` (the same check that refuses a bad [keys] at
@@ -8,7 +8,7 @@
 //
 // What a save rewrites: only the lines for the settings changed in the view. A changed line keeps its indentation and
 // its trailing comment; a setting with no line yet is added at the end of its table (`[keys]`, `[defaults]`, `[roles]`),
-// or among the top-level keys before the first table for `editor`, `wrap` and `blind`, and a table that does not exist
+// or among the top-level keys before the first table for `editor`, `wrap`, `blind` and `auto_update`, and a table that does not exist
 // yet is appended at the end of the file. A key put back to its default has its `[keys]` line removed, and so does a
 // role put back to the default model and an emptied editor. Every other line (comments, blank lines, models, tables
 // prview does not know) is left exactly as it was.
@@ -26,9 +26,10 @@ export type Field =
   | { kind: "role"; role: Role }
   | { kind: "editor" }
   | { kind: "wrap" }
-  | { kind: "blind" };
+  | { kind: "blind" }
+  | { kind: "auto_update" };
 
-export const SECTIONS = { key: "Keys", default: "Default actions by severity", role: "Models per role", editor: "Editor command", wrap: "Display", blind: "Display" } as const;
+export const SECTIONS = { key: "Keys", default: "Default actions by severity", role: "Models per role", editor: "Editor command", wrap: "Display", blind: "Display", auto_update: "Updates" } as const;
 export const sectionOf = (f: Field): string => SECTIONS[f.kind];
 
 /** What the view edits, with every value spelled out: an unset role or editor is "". */
@@ -39,6 +40,7 @@ export type Values = {
   editor: string;
   wrap: boolean;
   blind: boolean;
+  autoUpdate: boolean;
 };
 
 /** A line being captured or typed, or the question on the way out. */
@@ -69,7 +71,7 @@ export function fieldsOf(): Field[] {
     ...DEFAULT_ACTIONS.map((a): Field => ({ kind: "key", id: a.id })),
     ...SEVERITIES.map((severity): Field => ({ kind: "default", severity })),
     ...ROLES.map((role): Field => ({ kind: "role", role })),
-    { kind: "editor" }, { kind: "wrap" }, { kind: "blind" },
+    { kind: "editor" }, { kind: "wrap" }, { kind: "blind" }, { kind: "auto_update" },
   ];
 }
 
@@ -79,7 +81,7 @@ export function valuesOf(cfg: Config): Values {
   for (const r of ROLES) if (cfg.roles[r] && cfg.roles[r] !== DEFAULT_MODEL) roles[r] = cfg.roles[r];
   return {
     keys: Object.fromEntries(cfg.keymap.actions.map((a) => [a.id, { primary: a.key, secondary: a.secondary ?? "" }])),
-    defaults: { ...cfg.defaults }, roles, editor: cfg.editor ?? "", wrap: cfg.wrap, blind: cfg.blind,
+    defaults: { ...cfg.defaults }, roles, editor: cfg.editor ?? "", wrap: cfg.wrap, blind: cfg.blind, autoUpdate: cfg.autoUpdate,
   };
 }
 
@@ -94,7 +96,7 @@ export function flat(v: Values): Record<string, string> {
   for (const [id, b] of Object.entries(v.keys)) { out[`keys.${id}.primary`] = b.primary; out[`keys.${id}.secondary`] = b.secondary; }
   for (const s of SEVERITIES) out[`defaults.${s}`] = v.defaults[s];
   for (const r of ROLES) out[`roles.${r}`] = v.roles[r] ?? "";
-  out.editor = v.editor; out.wrap = String(v.wrap); out.blind = String(v.blind);
+  out.editor = v.editor; out.wrap = String(v.wrap); out.blind = String(v.blind); out.auto_update = String(v.autoUpdate);
   return out;
 }
 
@@ -180,6 +182,7 @@ export function settingsAct(s0: Settings, id: string): Out {
         case "editor": return { s: { ...s, sub: { kind: "typing", text: v.editor } } };
         case "wrap": return { s: { ...s, values: { ...v, wrap: !v.wrap } } };
         case "blind": return { s: { ...s, values: { ...v, blind: !v.blind } } };
+        case "auto_update": return { s: { ...s, values: { ...v, autoUpdate: !v.autoUpdate } } };
       }
     }
   }
@@ -242,6 +245,7 @@ export function describeField(s: Settings, f: Field): { label: string; value: st
     case "editor": return { label: "editor", value: s.values.editor || "(from $PRVIEW_EDITOR or $EDITOR, else hx)", changed: ch("editor"), description: "The command v e runs, with the file and line added; $PRVIEW_EDITOR still wins when it is set. Empty: $EDITOR, else hx." };
     case "wrap": return { label: "wrap", value: s.values.wrap ? "on" : "off", changed: ch("wrap"), description: "Whether long lines wrap when a review opens (v w still toggles it)." };
     case "blind": return { label: "blind", value: s.values.blind ? "on" : "off", changed: ch("blind"), description: "Blind first pass: a chapter's findings stay hidden until you have read it (--blind / --no-blind still win for a run)." };
+    case "auto_update": return { label: "auto_update", value: s.values.autoUpdate ? "on" : "off", changed: ch("auto_update"), description: "Once a day an installed prview asks npm for a newer release. On: it installs it in the background (bun or npm, whichever installed prview) and says to restart. Off: it only says one is out. prview update installs at once either way; a source checkout never updates itself." };
   }
 }
 
@@ -267,6 +271,7 @@ export function editsOf(initial: Values, values: Values): Edit[] {
   if (paths.includes("editor")) out.push({ table: null, key: "editor", value: values.editor ? q(values.editor) : null });
   if (paths.includes("wrap")) out.push({ table: null, key: "wrap", value: String(values.wrap) });
   if (paths.includes("blind")) out.push({ table: null, key: "blind", value: String(values.blind) });
+  if (paths.includes("auto_update")) out.push({ table: null, key: "auto_update", value: String(values.autoUpdate) });
   return out;
 }
 

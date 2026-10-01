@@ -107,6 +107,8 @@ export type AppProps = {
   draft?: Draft;
   /** How `a ?` reaches a model: the config, the agent runner, the one-call path. Tests pass stubs; unset, the real ones. */
   askDeps?: AskDeps;
+  /** The background update check (update.ts): the footer shows what it ends with, once it does. */
+  update?: Promise<string | null>;
 };
 
 /** What the content area opens on: the summary, the suggested verdicts and who prepared it. `a i` shows exactly this again; null when a review has neither. */
@@ -120,7 +122,7 @@ export function summaryContent(review: Review): Content | null {
   return { title: "Summary of this change · not a finding", color: "magenta", copy: d.plan.summary || suggested, body: [d.plan.summary, suggested, preparedBy(review.ai?.runs), hint].filter(Boolean).join("\n\n") };
 }
 
-export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig, resume, draft: draftAtStart, askDeps }: AppProps) {
+export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig, resume, draft: draftAtStart, askDeps, update }: AppProps) {
   const { exit } = useApp();
   const term = useTerminalSize(size);
   const cols = term.cols, rows = term.rows - 1;
@@ -146,6 +148,9 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const [zen, setZen] = useState(false);
   // What `y` just did, or why a key did nothing, shown in the footer until the next key.
   const [note, setNote] = useState<string | null>(null);
+  // What the background update check ended with (a newer release, or the install's outcome): footer text while nothing else is there.
+  const [updateNote, setUpdateNote] = useState<string | null>(null);
+  useEffect(() => { let on = true; update?.then((t) => { if (on && t) setUpdateNote(t); }, () => {}); return () => { on = false; }; }, [update]);
   // Something new in the content area leaves it unfocused: a finding opens with its own keys, and Tab focuses its detail.
   const setContent = (f: Content | null) => { setScroll(0); setContentRaw(f); setFocus("code"); if (!f) setFull(false); };
   const [mode, setMode] = useState<Mode>(resume ? { kind: "submit", flow: resume } : { kind: "nav" });
@@ -778,6 +783,8 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
 
   const footer = note
     ? <Text wrap="truncate" color="green"> {note}</Text>
+    : !busy && !pending && updateNote && !(full && view && mode.kind !== "submit")
+    ? <Text wrap="truncate" color="yellow"> {updateNote}</Text>
     : <Text wrap="truncate" dimColor> {busy ? `${busy} keys wait until it answers${abortRef.current ? "; Esc cancels" : ""}` : full && view && mode.kind !== "submit" ? `${keyOf("view.fullscreen")} or Esc restores the layout` : ""}{pending ? <Text color="cyan">   {pendingText(pending)}</Text> : null}</Text>;
 
   if (tooSmall(term)) return <Text wrap="truncate">terminal too small, need {MIN_COLS}x{MIN_ROWS}</Text>;
@@ -888,11 +895,11 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
 }
 
 /** Run the app once; resolves with what the reader wants next. State lives on the review object and is saved as it changes. */
-export function show(review: Review, files: FileDiff[], beside?: Beside, blind = false, dryRun = false, defaults: Defaults = DEFAULTS, config?: Config, onConfig?: (cfg: Config) => void, resume?: Flow, askDeps?: AskDeps): Promise<Outcome> {
+export function show(review: Review, files: FileDiff[], beside?: Beside, blind = false, dryRun = false, defaults: Defaults = DEFAULTS, config?: Config, onConfig?: (cfg: Config) => void, resume?: Flow, askDeps?: AskDeps, update?: Promise<string | null>): Promise<Outcome> {
   return new Promise((resolve) => {
     let outcome: Outcome = { kind: "quit" };
     process.stdout.write("\x1b[?1049h\x1b[H");
-    const app = render(<App review={review} files={files} beside={beside} blind={blind} dryRun={dryRun} defaults={defaults} config={config} onConfig={onConfig} resume={resume} askDeps={askDeps} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
+    const app = render(<App review={review} files={files} beside={beside} blind={blind} dryRun={dryRun} defaults={defaults} config={config} onConfig={onConfig} resume={resume} askDeps={askDeps} update={update} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
     app.waitUntilExit().then(() => { app.clear(); process.stdout.write("\x1b[?1049l"); save(review); resolve(outcome); });
   });
 }

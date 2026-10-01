@@ -25,7 +25,8 @@ export type ModelDef = { name: string; kind: Kind; endpoint?: string; model?: st
 export type Config = { models: Record<string, ModelDef>; roles: Partial<Record<Role, string>>; /** Blind first pass: findings stay hidden in a chapter until it has been read. */ blind: boolean; /** The default bindings with the [keys] table laid over them, already validated. */ keymap: Keymap;
   /** The action each finding starts with, by severity: DEFAULTS with the [defaults] table laid over it. */ defaults: Defaults;
   /** The editor command `v e` runs (after $PRVIEW_EDITOR, before $EDITOR). */ editor?: string; /** Long lines wrap from the start (`v w` still toggles). */ wrap: boolean;
-  /** The `a ?` agent's step cap and timeout: DEEP_LIMITS with the [deep] table laid over it. */ deep: DeepLimits; path: string | null };
+  /** The `a ?` agent's step cap and timeout: DEEP_LIMITS with the [deep] table laid over it. */ deep: DeepLimits;
+  /** Install a newer release in the background when the daily check finds one (update.ts); off, it is only noticed. */ autoUpdate: boolean; path: string | null };
 /** A model whose credential has been looked up and is ready to call. */
 export type Resolved = { def: ModelDef; key?: string };
 export type Lookups = { env: Record<string, string | undefined>; keychain: (service: string) => string | undefined };
@@ -187,6 +188,7 @@ export function parseConfig(text: string, path: string | null = null): Config {
   }
   if (t.blind !== undefined && typeof t.blind !== "boolean") throw new ConfigError("blind must be true or false");
   if (t.wrap !== undefined && typeof t.wrap !== "boolean") throw new ConfigError("wrap must be true or false");
+  if (t.auto_update !== undefined && typeof t.auto_update !== "boolean") throw new ConfigError("auto_update must be true or false");
   const editor = str(t, "editor", "editor");
   // [keys]: "<action>" = "k" sets the primary; { primary = "k", secondary = "j" } either or both; secondary = "" removes it.
   const overrides: Record<string, Binding> = {};
@@ -215,7 +217,7 @@ export function parseConfig(text: string, path: string | null = null): Config {
     if (typeof v !== "number" || v < 1 || v > (k === "max_steps" ? 200 : 3600)) throw new ConfigError(`[deep]: ${k} must be a whole number from 1 to ${k === "max_steps" ? 200 : 3600}`);
     if (k === "max_steps") deep.steps = v; else deep.timeoutMs = v * 1000;
   }
-  return { models, roles, blind: t.blind === true, keymap, defaults, editor, wrap: t.wrap === true, deep, path };
+  return { models, roles, blind: t.blind === true, keymap, defaults, editor, wrap: t.wrap === true, deep, autoUpdate: t.auto_update === true, path };
 }
 
 /** The user's config, or the built-in (claude -p for everything) when there is no file. */

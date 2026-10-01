@@ -177,6 +177,6 @@ test("release: a dispatch publishes only from main; tag runs are unchanged; the 
   expect(RELEASE.slice(0, RELEASE.indexOf("\non:"))).toContain("A dispatch publishes only when run on main");
 });
 
-test("version: this release is 0.1.2", () => {
-  expect(JSON.parse(readFileSync(join(import.meta.dir, "../package.json"), "utf8")).version).toBe("0.1.2");
+test("version: this release is 0.1.3", () => {
+  expect(JSON.parse(readFileSync(join(import.meta.dir, "../package.json"), "utf8")).version).toBe("0.1.3");
 });
