@@ -22,10 +22,13 @@ export type DeepLimits = { steps: number; timeoutMs: number };
 export const DEEP_LIMITS: DeepLimits = { steps: 24, timeoutMs: 180_000 };
 
 export type ModelDef = { name: string; kind: Kind; endpoint?: string; model?: string; keyEnv?: string; keyKeychain?: string };
+/** `[azure]`: how prview signs in to Azure DevOps. `az` (default) mints an Entra token with the az CLI; `pat` reads an org-scoped PAT from pat_env, then pat_keychain. */
+export type AzureConfig = { auth: "az" | "pat"; tenant?: string; patEnv?: string; patKeychain?: string };
 export type Config = { models: Record<string, ModelDef>; roles: Partial<Record<Role, string>>; /** Blind first pass: findings stay hidden in a chapter until it has been read. */ blind: boolean; /** The default bindings with the [keys] table laid over them, already validated. */ keymap: Keymap;
   /** The action each finding starts with, by severity: DEFAULTS with the [defaults] table laid over it. */ defaults: Defaults;
   /** The editor command `v e` runs (after $PRVIEW_EDITOR, before $EDITOR). */ editor?: string; /** Long lines wrap from the start (`v w` still toggles). */ wrap: boolean;
   /** The `a ?` agent's step cap and timeout: DEEP_LIMITS with the [deep] table laid over it. */ deep: DeepLimits;
+  /** How Azure DevOps credentials resolve ([azure]). */ azure: AzureConfig;
   /** Install a newer release in the background when the daily check finds one (update.ts); off, it is only noticed. */ autoUpdate: boolean; path: string | null };
 /** A model whose credential has been looked up and is ready to call. */
 export type Resolved = { def: ModelDef; key?: string };
@@ -217,7 +220,13 @@ export function parseConfig(text: string, path: string | null = null): Config {
     if (typeof v !== "number" || v < 1 || v > (k === "max_steps" ? 200 : 3600)) throw new ConfigError(`[deep]: ${k} must be a whole number from 1 to ${k === "max_steps" ? 200 : 3600}`);
     if (k === "max_steps") deep.steps = v; else deep.timeoutMs = v * 1000;
   }
-  return { models, roles, blind: t.blind === true, keymap, defaults, editor, wrap: t.wrap === true, deep, autoUpdate: t.auto_update === true, path };
+  // [azure]: auth = "az" | "pat", tenant = "<id>", pat_env = "AZURE_DEVOPS_PAT", pat_keychain = "prview-azure".
+  const at = table("azure");
+  const auth = str(at, "auth", "[azure]") ?? "az";
+  if (auth !== "az" && auth !== "pat") throw new ConfigError('[azure]: auth must be "az" or "pat"');
+  const azure: AzureConfig = { auth, tenant: str(at, "tenant", "[azure]"), patEnv: str(at, "pat_env", "[azure]"), patKeychain: str(at, "pat_keychain", "[azure]") };
+  if (auth === "pat" && !azure.patEnv && !azure.patKeychain) throw new ConfigError('[azure]: auth = "pat" needs pat_env or pat_keychain');
+  return { models, roles, blind: t.blind === true, azure, keymap, defaults, editor, wrap: t.wrap === true, deep, autoUpdate: t.auto_update === true, path };
 }
 
 /** The user's config, or the built-in (claude -p for everything) when there is no file. */
