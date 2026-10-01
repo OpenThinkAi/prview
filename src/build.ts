@@ -333,7 +333,7 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   if (pre) {
     try { r.previous = previousOf(repo, t, pre, since?.files && since.head === pre.head ? since : undefined); } catch {}
     const n = pre.items.length;
-    say(`re-review: your last submit (${pre.at.slice(0, 10)}, at ${pre.head.slice(0, 7)}) posted ${n} item${n === 1 ? "" : "s"}; ${keyOf("go.previous")} shows them, with where each is now and the replies`);
+    say(`re-review: your last submit (${pre.at.slice(0, 10)}, at ${pre.head.slice(0, 7)}) ${pre.posted ? "posted" : "recorded"} ${n} item${n === 1 ? "" : "s"}; ${keyOf("go.previous")} shows them, with where each is now and the replies`);
   }
   save(r);
   return r;

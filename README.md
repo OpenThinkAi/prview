@@ -164,20 +164,7 @@ What you get is a full-screen review, not a diff dump:
   review is refused), a pending review gets the line comments (right side for lines in the new file, left for
   the old), whole-file comments follow one by one, then it is submitted with your verdict and comment. A failed post or command is reported, and the
   file is kept. `--dry-run` prints the API calls a submit would make and does nothing else.
-- **Re-review: your previous comments.** Reopen a PR you already submitted on after its head moved and the table of
-  contents starts with a chapter, **Your previous comments**: every item your last submit posted (line comments,
-  whole-file comments, the summary), from its kept record (a record from before ids were kept falls back to its
-  document's comments). Each has a status worked out on your machine, `unchanged`, `line changed`, `moved to L<n>`
-  (its old line followed through the diff from the head you reviewed to the new one) or `file removed`, and, once
-  the platform has been read in the background (opening never waits for it), the author's replies and whether the
-  thread is resolved: `2 replies · resolved`, or `replies unavailable (<reason>)` when the read fails. GitHub reads
-  the PR's review comments with `gh api` (replies are the comments answering yours; resolved is the review
-  thread's, through GraphQL); Azure DevOps reads the PR's threads (replies are the thread's later comments; resolved
-  is a status of fixed, closed, won't fix or by design). Moving onto an item shows your text, the code then and
-  now, and the replies (the author's text, cleaned of control characters) in the content area, and the code shows
-  where it is now; `→` goes into the code there, `y` copies the item, and `g p` comes back to the chapter. These
-  items are not carried into the new head's review as comments of yours, so nothing already posted posts again;
-  a carried comment that never posted is still yours, ticked at submit.
+- **Re-review.** Reopening a PR you already submitted on, after its head moved, adds a layer of what changed and what you said last time: see [Re-review](#re-review).
 - **Blind first pass.** With `blind = true` in the config (or `--blind` for a run, `--no-blind` to turn
   it off) findings stay hidden in a chapter until you have visited every hunk in it, so you read the
   code before you read the critic. The gutter shows no `▲`, `→` and `g f` find nothing there, and the
@@ -201,12 +188,6 @@ tables with your own bindings.
   that line of the file (the nearest line shown); `g c 3 g` to that chapter's first block. `g f`, `g h` and the
   line jumps land in the code; `g c` and `g p` (a re-review's previous comments) land in the table of contents. The filter (`f h`, `f m`, `f a`) is for reading:
   it shows in the status area and is kept with the review, and the submit checklist still lists every finding.
-- **Re-review.** Opening a PR you already submitted on, at a newer head, is a re-review: the status area shows
-  `re-review · since <sha> <date>` (the head you last submitted at) and the blocks changed since then are marked `●`
-  in the table of contents and the gutter. `v s` shows only those blocks, or the whole PR again (`view since review`
-  / `whole PR` in the status area; kept with the review like the filter). The document is still the whole PR. If
-  the head you reviewed was rebased away, the changes are still diffed old head to new head, with a note that
-  upstream changes may show as new; if it can no longer be fetched, the whole PR is shown with a note.
 - **No** undo, counts, hunk-to-hunk keys, horizontal panning, separate "withdrawn" view or note key: pressing
   `b`, `c` or `i` again changes a finding's action, the submit flow's comment step is the review's summary comment,
   and a finding the second look dropped is shown as ignored.
@@ -317,6 +298,61 @@ tables with your own bindings.
 | `g c <n> g` | `g c <n> Enter` | `go.chapter` | Type a chapter number, then close it with the go prefix key again or Enter, to go to that chapter's first block. |
 
 <!-- keys:end -->
+
+## Re-review
+
+You left comments, the author pushed, and you open the PR again. That is a re-review, and prview works it out for
+you; nothing to turn on.
+
+**What triggers it.** A kept submission for this PR (see "History" below) that reached the PR, whose reviewed head
+differs from the head you are opening. A PR with no submission, or one whose head has not moved since, is an
+ordinary review. The status area then reads `re-review · since <sha> <date>`, and the startup line says how many of
+the PR's files changed since your review. The document is still the whole PR (base to the new head), so findings,
+submit and every other flow are unchanged; re-review is a layer on top, and the `prview-review/1` schema is the same.
+
+**Since your review (`v s`).** The lines that are new or changed between the head you reviewed and the new one are
+worked out with `git diff`, for the files the PR touches. Blocks that overlap them are marked `●` in the table of
+contents and in the code gutter. `v s` shows only those blocks, or the whole PR again (`view since review` /
+`whole PR` in the status area); the choice is kept with the review, like the filter, for as long as the head stays.
+
+**Rebases and force-pushes.** If the head you reviewed is not an ancestor of the new head, the diff is still old
+head to new head, with a note that upstream changes in those files may show as new. If the head you reviewed is not in
+your clone it is fetched through the PR's platform by commit id; if that fails the whole PR is shown, with a note
+that it is not possible to tell what changed. Neither case is an error.
+
+**Your previous comments (`g p`).** The table of contents starts with a chapter, **Your previous comments**: every
+item your last submit posted (line comments, whole-file comments and the summary). `g p` goes to it. Each item has a
+status worked out on your machine from the old head to the new one: `unchanged`, `line changed`, `moved to L<n>`
+(its old line followed through the diff), `file changed` (a whole-file comment), `file removed`, or `unknown` when the
+head you reviewed is not in the clone. Moving onto an item shows your text, a few lines of the code then and now,
+and the replies, in the content area; the code shows where the comment is now. `→` goes into the code there, `y`
+copies the item.
+
+**Replies and resolved.** Once the screen is up (opening never waits for it) prview reads the PR's conversation in
+the background, and each item gets the author's replies and whether its thread is resolved: `2 replies · resolved`,
+`no replies · open`. GitHub: the PR's review comments through `gh api` (replies are the comments answering yours),
+and resolved from the review thread (GraphQL). Azure DevOps: the PR's threads (replies are the thread's later
+comments; resolved is a status of fixed, closed, won't fix or by design). Replies are the author's text, cleaned of
+control characters. When it cannot be read, the item says `replies unavailable (<reason>)` and the local status
+still shows: you are offline, `gh` or your Azure credential fails, the submit was a local range with no platform
+(`not on this platform yet`), or the PR's URL is not one prview reads. A submission made before platform ids were
+kept is matched to the thread by path, line and text. Replying and resolving from prview are not built yet.
+
+**What carries over.**
+- What your last submit posted lives in the chapter, and is not a comment of yours at the new head: nothing already
+  posted posts again by default.
+- A comment of yours that never posted (a draft, or a submit that failed) stays your own comment at the new head,
+  re-anchored on the hunk that now holds its line. It starts ticked in the submit checklist, labelled `carried over
+  from <old head>`, and shows on its line with the same label. One an earlier submit did post starts unticked,
+  labelled `posted <date> (round n)`, so you can post it again on purpose. `x` on its line deletes it.
+- Findings, their actions, coverage and the model's conversations are for one head: a new head gets a new guide
+  and critic run. Decisions on old findings drop.
+
+**History.** Every submit is kept under `$PRVIEW_HOME/submitted/<name>/<UTC time>.json` (and `.md`), recording the
+head it reviewed and the platform ids of what it posted; none is overwritten, and an older flat
+`submitted/<name>.json` is still read. `prview done <name>` removes the worktree and review state but leaves the
+history, since a later re-review reads it; `prview done --purge <name>` removes it too. A submit with no platform (a
+local range) is recorded the same way, and a re-review of it says "recorded" where a posted one says "posted".
 
 ## Models and configuration
 
