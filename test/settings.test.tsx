@@ -38,7 +38,7 @@ const open = (text = "", path = "/nowhere/config.toml") => openSettings(parseCon
 test("fields: every action (fixed ones too), then the defaults by severity, the model per role, the editor and the display", () => {
   const f = fieldsOf();
   expect(f.filter((x) => x.kind === "key").map((x) => (x as { id: string }).id)).toEqual(DEFAULT_ACTIONS.map((a) => a.id));
-  expect(f.slice(DEFAULT_ACTIONS.length).map((x) => x.kind)).toEqual(["default", "default", "default", "role", "role", "role", "role", "editor", "wrap", "blind"]);
+  expect(f.slice(DEFAULT_ACTIONS.length).map((x) => x.kind)).toEqual(["default", "default", "default", "role", "role", "role", "role", "role", "editor", "wrap", "blind"]);
   const s = open(`editor = "nvim"\nwrap = true\n[keys]\n"code.down" = { primary = "down", secondary = "n" }\n[defaults]\nlow = "ignore"`);
   expect(s.values.keys["code.down"]).toEqual({ primary: "down", secondary: "n" });
   expect(s.values.defaults).toEqual({ high: "block", medium: "comment", low: "ignore" });
@@ -270,7 +270,7 @@ test("screen: \\ opens the settings full-screen with every section, the cursor's
   for (let i = 0; i < DEFAULT_ACTIONS.length; i++) await t.press(DOWN);
   expect(t.frame()).toContain("Default actions by severity");
   expect(t.frame()).toMatch(/high\s+ block /);
-  for (let i = 0; i < 9; i++) await t.press(DOWN);
+  for (let i = 0; i < 10; i++) await t.press(DOWN);
   for (const s of ["Models per role", "Editor command", "Display"]) expect(t.frame()).toContain(s);
   expect(t.frame()).toMatch(/blind\s+ off /);
 });
@@ -321,7 +321,7 @@ test("screen: saved defaults and display settings apply without restarting", asy
   await t.press("\\");
   for (let i = 0; i < DEFAULT_ACTIONS.length; i++) await t.press(DOWN);
   await t.press("\r"); // high: block → comment
-  for (let i = 0; i < 8; i++) await t.press(DOWN);
+  for (let i = 0; i < 9; i++) await t.press(DOWN);
   await t.press("\r"); // wrap on
   await t.press(ESC + "y");
   expect(t.saved[0]!.defaults.high).toBe("comment");
@@ -336,7 +336,7 @@ test("screen: a paste into the editor line keeps every character", async () => {
   const path = freshConfig();
   const t = await screen(loadConfig());
   await t.press("\\");
-  for (let i = 0; i < DEFAULT_ACTIONS.length + 7; i++) await t.press(DOWN);
+  for (let i = 0; i < DEFAULT_ACTIONS.length + 8; i++) await t.press(DOWN);
   await t.press("\r");
   t.app.stdin.write("zed -w"); // one chunk, as a paste arrives
   await settle();

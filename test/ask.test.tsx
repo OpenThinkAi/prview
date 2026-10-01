@@ -15,7 +15,7 @@ import type { Doc } from "../src/document.ts";
 import { parseConfig, roleModel, type Config } from "../src/config.ts";
 import {
   acceptAnswer, AGENT_TOOLS, agentArgs, askAbout, askPrompt, ASK_SYSTEM, conversationText, DEEP_SYSTEM, discardAnswer, pendingTurn, readAnswer,
-  readStreamLine, reviveAsks, revisedNote, stepText, subjectData, subjectKey, type AgentRun, type AgentResult, type Runner,
+  deepModel, readStreamLine, reviveAsks, revisedNote, stepText, subjectData, subjectKey, type AgentRun, type AgentResult, type Runner,
 } from "../src/deep.ts";
 import { actionOf } from "../src/triage.ts";
 import { App } from "../src/tui.tsx";
@@ -160,6 +160,11 @@ test("config: [deep] sets the step cap and timeout; the deep role falls back to 
   expect(roleModel(parseConfig(`${models}[roles]\nask = "qwen"`), "deep")).toBe("qwen");
   expect(roleModel(parseConfig(`${models}[roles]\nask = "qwen"\ndeep = "claude"`), "deep")).toBe("claude");
   expect(roleModel(parseConfig(""), "deep")).toBe("claude");
+  // Read when asked: a role set in the config (the settings view writes it) wins over the one the review recorded.
+  const two = parseConfig(`${models}[models.opus]\nkind = "claude-cli"\nmodel = "opus"\n`);
+  expect(deepModel({ ai: { models: { deep: "opus" }, at: "", errors: [] } }, two, LOOKUPS).def.name).toBe("opus");
+  expect(deepModel({ ai: { models: { deep: "gone" }, at: "", errors: [] } }, two, LOOKUPS).def.name).toBe("claude");
+  expect(deepModel({ ai: { models: { deep: "opus" }, at: "", errors: [] } }, parseConfig(`${models}[models.opus]\nkind = "claude-cli"\n[roles]\ndeep = "qwen"`), LOOKUPS).def.name).toBe("qwen");
 });
 
 // ---------------------------------------------------------------- asking, with a stub agent

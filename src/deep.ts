@@ -322,11 +322,14 @@ export const claudeAgent: Runner = async ({ cwd, system, prompt, model, limits, 
 /** What asking needs from outside: the config, credentials, the runner and the one-call path; each has a real default. */
 export type AskDeps = { cfg?: Config; lookups?: Lookups; runner?: Runner; call?: typeof complete; onStep?: (s: string) => void; signal?: AbortSignal; now?: () => string };
 
-/** The model `a ?` uses: the one this review recorded for `deep` while the config still has it, else the config's. */
+/**
+ * The model `a ?` uses, read when it is asked so a settings change applies at once: the config's deep (or ask) role,
+ * else the one this review recorded for deep while the config still has it, else the default.
+ */
 export function deepModel(r: Pick<Review, "ai">, cfg: Config, lookups: Lookups): Resolved {
   const recorded = r.ai?.models?.deep;
-  const name = recorded && cfg.models[recorded] ? recorded : roleModel(cfg, "deep");
-  return resolveModel(cfg, name, lookups);
+  const named = cfg.roles.deep ?? cfg.roles.ask;
+  return resolveModel(cfg, named ?? (recorded && cfg.models[recorded] ? recorded : roleModel(cfg, "deep")), lookups);
 }
 
 const readAround = (worktree: string) => (path: string, from: number, to: number): string => {
