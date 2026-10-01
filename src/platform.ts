@@ -1,6 +1,7 @@
 // Posting a submitted review to where the pull request lives. One adapter per platform, chosen by
 // the document's `target.platform` and nothing else; a platform with no adapter (or no platform at
-// all) is not an error, the written document is then the review.
+// all) is not an error, the written document is then the review. GitHub is here; Azure DevOps is
+// src/platforms/azure.ts, registered below.
 //
 // What is posted is the human's own words and nothing more: the verdict, their summary comments as
 // the body, their line comments on their lines. A finding reaches here only as a line comment in the human's layer:
@@ -8,6 +9,7 @@
 // (submit-flow.ts applySelection). Never the write-up, never a finding's source, never a word about prview or any model. Commands run through an injected runner so tests never touch a network.
 
 import type { Comment, Target, Verdict } from "./document.ts";
+import { azure } from "./platforms/azure.ts";
 
 /** Runs one argv (no shell) and hands back what happened; the real one is `spawn` below. */
 export type Runner = (argv: string[], opts: { cwd: string; stdin?: string }) => { exit: number | null; stdout: string; stderr: string };
@@ -155,7 +157,7 @@ export const github: Adapter = {
   },
 };
 
-const ADAPTERS: Record<string, Adapter> = { github };
+const ADAPTERS: Record<string, Adapter> = { github, "azure-devops": azure };
 
 /** The adapter for a platform, if prview has one: keyed by the same id as its read side in registry.ts. More platforms are more entries here. */
 export const adapterFor = (platform: string | undefined): Adapter | undefined => platform ? ADAPTERS[platform.toLowerCase()] : undefined;
