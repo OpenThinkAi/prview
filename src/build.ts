@@ -25,7 +25,7 @@ import {
 import { loadConfig, realLookups, resolveRoles, type Resolved, type Role } from "./config.ts";
 import { complete, modelLabel, pool, type Usage } from "./llm.ts";
 import { reviveAsks, type Asks } from "./deep.ts";
-import { git, prSlug, remoteFor, run, type ResolveCtx, type Source } from "./pr.ts";
+import { git, hasCommit, prSlug, remoteFor, run, type ResolveCtx, type Source } from "./pr.ts";
 import type { Http } from "./azure-auth.ts";
 import { isPR, parseRef, prIn, sourceOf } from "./registry.ts";
 import { carry, type Carried } from "./carryover.ts";
@@ -338,7 +338,7 @@ export async function reopen(slug: string, opts: BuildOpts): Promise<Review> {
  * so fetching the head brings it too (in any clone that is not shallow).
  */
 function haveCommits(repo: string, t: Target): void {
-  const has = (c: string) => Bun.spawnSync(["git", "cat-file", "-e", `${c}^{commit}`], { cwd: repo }).exitCode === 0;
+  const has = (c: string) => hasCommit(repo, c);
   const pr = parseRef(t.url);
   if (!has(t.head) && pr) sourceOf(pr.platform)!.fetch(repo, pr, true, t.head);
   for (const c of [t.base, t.head]) if (!has(c)) throw new Fail(`commit ${c.slice(0, 8)} is not in ${repo}: fetch it, then import again`);

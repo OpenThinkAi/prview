@@ -52,6 +52,8 @@ export function run(cmd: string[], cwd: string): string {
   return r.stdout.toString();
 }
 export const git = (args: string[], cwd: string) => run(["git", ...args], cwd).trim();
+/** Whether the clone has commit `c`. */
+export const hasCommit = (repo: string, c: string): boolean => Bun.spawnSync(["git", "cat-file", "-e", `${c}^{commit}`], { cwd: repo, stdin: "ignore", env: process.env }).exitCode === 0;
 
 /** The store's name for a PR review: the clone's directory and the number, whatever the platform. */
 export const prSlug = (repo: string, n: string | number) => `${basename(repo)}-pr-${n}`;

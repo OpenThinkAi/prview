@@ -49,7 +49,7 @@ import { fitFields, GAP, statusFields } from "./status.ts";
 import { visible as printable } from "./sanitize.ts";
 import { MIN_COLS, MIN_ROWS, tooSmall, useTerminalSize } from "./resize.ts";
 import { configPath, parseConfig, type Config } from "./config.ts";
-import { changedBlocks, GONE_NOTE, lineChanged, REBASED_NOTE, sinceFile, sinceLabel } from "./since.ts";
+import { changedBlocks, GONE_NOTE, lineChanged, REBASED_NOTE, sentence, sinceFile, sinceLabel } from "./since.ts";
 import { openSettings, saveSettings, settingsAct, settingsKey, type Out as SettingsOut, type Settings } from "./settings.ts";
 import { SettingsScreen } from "./settings-view.tsx";
 
@@ -130,9 +130,9 @@ function rereviewText(review: Review, n: number): string {
   const s = review.since;
   if (!s) return "";
   const head = `Re-review: you last submitted on this at ${sinceLabel(s)}.`;
-  if (!s.files) return `${head} ${GONE_NOTE[0]!.toUpperCase()}${GONE_NOTE.slice(1)}.`;
+  if (!s.files) return `${head} ${sentence(GONE_NOTE)}`;
   const what = n ? `${n} block${n === 1 ? "" : "s"} changed since then, marked ● in the table of contents and the gutter; ${keyOf("view.since")} shows only those.` : "No block of the PR changed since then.";
-  return `${head} ${what}${s.rebased ? ` ${REBASED_NOTE[0]!.toUpperCase()}${REBASED_NOTE.slice(1)}.` : ""}`;
+  return `${head} ${what}${s.rebased ? ` ${sentence(REBASED_NOTE)}` : ""}`;
 }
 
 export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig, resume, draft: draftAtStart, askDeps, update }: AppProps) {

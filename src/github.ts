@@ -2,10 +2,8 @@
 // the remote that points at its repository (a stamp-server origin still finds the PR refs through it).
 
 import { Fail } from "./document.ts";
-import { git, prSlug, remoteFor, run, type PrRef, type PrSource } from "./pr.ts";
+import { git, hasCommit, prSlug, remoteFor, run, type PrRef, type PrSource } from "./pr.ts";
 import { clean } from "./sanitize.ts";
-
-const has = (repo: string, c: string) => Bun.spawnSync(["git", "cat-file", "-e", `${c}^{commit}`], { cwd: repo, stdin: "ignore", env: process.env }).exitCode === 0;
 
 const PR_URL = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/;
 
@@ -46,7 +44,7 @@ export const github: PrSource = {
   // serves a commit of the repository by id, so it is fetched by id into …/reviewed when the head ref did not bring it.
   fetch(repo, ref, known, head) {
     fetchHead(repo, ref, undefined, known);
-    if (!head || has(repo, head)) return;
+    if (!head || hasCommit(repo, head)) return;
     git(["fetch", "-q", remoteFor(repo, github, ref) ?? `https://github.com/${ref.repoKey}.git`, `+${head}:refs/prview/pr-${ref.number}/reviewed`], repo);
   },
 };

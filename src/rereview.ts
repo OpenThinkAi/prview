@@ -6,20 +6,19 @@
 
 import { submissionsFor, type Submitted } from "./history.ts";
 import { parseDiff, type FileDiff } from "./diff.ts";
-import { git, type PrRef } from "./pr.ts";
+import { git, hasCommit, type PrRef } from "./pr.ts";
 import { parseRef, sourceOf } from "./registry.ts";
 import { GONE_NOTE, parseNameStatus, pathsToDiff, REBASED_NOTE, sinceFiles, sinceLabel, type Since } from "./since.ts";
 import type { Target } from "./document.ts";
 import { keyOf } from "./keys.ts";
 
 const ok = (args: string[], repo: string) => Bun.spawnSync(["git", ...args], { cwd: repo, stdin: "ignore", env: process.env }).exitCode === 0;
-const has = (repo: string, c: string) => ok(["cat-file", "-e", `${c}^{commit}`], repo);
 
 /** The ref that keeps the reviewed head in the clone once fetched (removed with the review's other refs by `prview done`). */
 export const reviewedRef = (n: number) => `refs/prview/pr-${n}/reviewed`;
 
 /** The paths your submission put comments on (its posted items, and its document's comments): where the next chapter looks. */
-export function commentedPaths(s: Submitted): string[] {
+function commentedPaths(s: Submitted): string[] {
   const out = new Set<string>();
   for (const it of s.submission?.posted?.items ?? []) if (it.path) out.add(it.path);
   for (const c of s.doc.human.comments) if (c.hunk) out.add(c.hunk.replace(/@[^@]*$/, ""));
@@ -34,8 +33,8 @@ export function latestSubmission(t: Target, slug: string): Submitted | undefined
 /** Make sure the reviewed head is in the clone, fetched through the PR's platform (by commit id) when it is not, and kept there by a ref. */
 function haveHead(repo: string, pr: PrRef | undefined, head: string): boolean {
   const src = pr && sourceOf(pr.platform);
-  if (!has(repo, head) && src) { try { src.fetch(repo, pr, true, head); } catch {} }
-  if (!has(repo, head)) return false;
+  if (!hasCommit(repo, head) && src) { try { src.fetch(repo, pr, true, head); } catch {} }
+  if (!hasCommit(repo, head)) return false;
   if (pr) ok(["update-ref", reviewedRef(pr.number), head], repo);
   return true;
 }

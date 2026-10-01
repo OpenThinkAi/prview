@@ -24,6 +24,8 @@ export type Since = { head: string; at: string; rebased?: true; gone?: true; fil
 
 export const REBASED_NOTE = "rebased since your review: upstream changes in these files may show as new";
 export const GONE_NOTE = "your earlier head is gone; showing the whole PR";
+/** A note as a sentence of its own: `rebased since…` → `Rebased since….` */
+export const sentence = (note: string): string => `${note.charAt(0).toUpperCase()}${note.slice(1)}.`;
 
 /** `abc1234 2026-09-30`: the reviewed head and the day you submitted it. */
 export const sinceLabel = (s: Pick<Since, "head" | "at">): string => `${s.head.slice(0, 7)}${s.at ? ` ${s.at.slice(0, 10)}` : ""}`;
