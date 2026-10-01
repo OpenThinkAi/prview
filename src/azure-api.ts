@@ -21,7 +21,8 @@ export function repoOf(ref: Pick<PrRef, "repoKey">): { org: string; project: str
  */
 export function prApi(ref: Pick<PrRef, "repoKey" | "number">, path = "", query: Record<string, string | number> = {}): string {
   const { org, project, repo } = repoOf(ref);
-  const q = new URLSearchParams({ ...Object.fromEntries(Object.entries(query).map(([k, v]) => [k, String(v)])), "api-version": API_VERSION });
+  // Keys are Azure's own literals ($top, $skip) and go in as written; values are encoded.
+  const q = [...Object.entries(query), ["api-version", API_VERSION] as const].map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`).join("&");
   return `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repo)}/pullRequests/${ref.number}${path ? `/${path}` : ""}?${q}`;
 }
 

@@ -97,7 +97,7 @@ afterAll(() => {
 
 test("the REST URL is the repo route, names encoded, api-version 7.1", () => {
   expect(prApi({ repoKey: "org/Proj/Repo", number: 7 })).toBe("https://dev.azure.com/org/Proj/_apis/git/repositories/Repo/pullRequests/7?api-version=7.1");
-  expect(prApi({ repoKey: "my org/My Project/My Repo", number: 3 }, "iterations", { $top: 2000 })).toBe("https://dev.azure.com/my%20org/My%20Project/_apis/git/repositories/My%20Repo/pullRequests/3/iterations?%24top=2000&api-version=7.1");
+  expect(prApi({ repoKey: "my org/My Project/My Repo", number: 3 }, "iterations", { $top: 2000 })).toBe("https://dev.azure.com/my%20org/My%20Project/_apis/git/repositories/My%20Repo/pullRequests/3/iterations?$top=2000&api-version=7.1");
   // The latest iteration is the head; the last merge's source commit only when there are none.
   expect(headOf({ lastMergeSourceCommit: { commitId: "a".repeat(40) } }, [{ id: 2, sourceRefCommit: { commitId: "C".repeat(40) } }, { id: 1, sourceRefCommit: { commitId: "b".repeat(40) } }])).toBe("c".repeat(40));
   expect(headOf({ lastMergeSourceCommit: { commitId: "a".repeat(40) } }, [])).toBe("a".repeat(40));
