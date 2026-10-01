@@ -37,11 +37,11 @@ function latest(t: Target, slug: string) {
 }
 
 /** The chapter's items for a review being opened at `t.head`, before anything is read from git: undefined unless it is a re-review. */
-export function previousItems(t: Target, slug: string): { items: PrevItem[]; keys: Set<string>; head: string; at: string; round: number } | undefined {
+export function previousItems(t: Target, slug: string): { items: PrevItem[]; keys: Set<string>; head: string; at: string; round: number; /** false when the submit had no platform to post to: it was only recorded. */ posted: boolean } | undefined {
   const l = latest(t, slug);
   if (!l || !l.sub.head || l.sub.head === t.head) return undefined;
   const items = itemsOf(l.sub);
-  return { items, keys: new Set(items.map(itemKey)), head: l.sub.head, at: l.sub.at, round: l.round };
+  return { items, keys: new Set(items.map(itemKey)), head: l.sub.head, at: l.sub.at, round: l.round, posted: !l.sub.submission || !!l.sub.submission.posted };
 }
 
 /** How the reviewed head's files moved to the new one, through git (since.ts reads the diff); undefined when the old head is not in the clone. */

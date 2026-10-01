@@ -309,7 +309,7 @@ test("a range submitted at one head and reopened at another: the chapter's statu
   expect(r2.previous?.items.map((i) => [i.text, statusText(i)])).toEqual([["on five", "moved to L7"], ["on ten", "line changed"], ["on fifteen", "moved to L17"], ["on b", "file removed"]]);
   expect(r2.previous?.items[0]?.old?.lines).toContain("a5 changed");
   expect(r2.previous?.items[0]?.now).toEqual({ start: 4, lines: ["a2", "a3", "a4", "a5 changed", "a6", "a7", "a8"], mark: 7 });
-  expect(said.some((s) => s.startsWith("re-review: your last submit") && s.includes("4 items") && s.includes("g p"))).toBe(true);
+  expect(said.some((s) => s.startsWith("re-review: your last submit") && s.includes("recorded 4 items") && !s.includes("posted") && s.includes("g p"))).toBe(true);
   // What that submit posted is the chapter, not comments of the reader's at the new head: nothing of it can post again.
   expect(r2.doc.human.comments).toEqual([]);
 });

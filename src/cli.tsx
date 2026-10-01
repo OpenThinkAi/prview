@@ -83,7 +83,9 @@ const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head
       comments": what your last submit posted, each with its status (unchanged, line changed, moved to L<n>, file
       removed) and, read from GitHub or Azure DevOps in the background, the replies and whether it is resolved.
       Moving onto one shows your text, the code then and now and the replies; → goes into the code where it is now;
-      y copies it. They are not carried over as your comments, so they never post again.
+      y copies it. They are not carried over as your comments, so they never post again. A comment of yours that never
+      posted does carry over (ticked, labelled); x deletes it. Rebased away? The diff is still old head to new head.
+      Replies are unavailable (with the reason shown) when the platform cannot be read. README: Re-review.
     Findings are high, medium or low severity, and each has an action: block, comment or ignore. Until you pick
     one it is its severity's default ([defaults] in the config: high = "block", medium and low = "comment"), shown
     as "(default)"; a finding the second look (refute) dropped is shown too, ignored by default, with its reason.
