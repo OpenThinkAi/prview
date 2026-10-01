@@ -295,8 +295,8 @@ tables with your own bindings.
 
 Models: named in `~/.config/prview/config.toml` (or `$PRVIEW_CONFIG`) and assigned per role. With no
 config every role is `claude -p` on your subscription. `--ai NAME` uses one named model for all four
-roles for a run; `--no-ai` skips the guide and critic. `prview models` lists them and checks each is
-reachable. A missing credential fails before anything is fetched. The guide and findings are redone
+roles for a run; `--no-ai` skips the guide and critic. `prview models` lists them, with where each
+one's credential comes from, and checks each is reachable. A missing credential fails before anything is fetched. The guide and findings are redone
 only when the PR head moves, or with `--fresh`. The critic reads each chapter `--samples N` times
 (default 2) and merges the runs: a finding shows how many runs raised it (`2/3`), and the gutter marks
 the worst by severity, then votes. Each run's time and cost are kept in the review's JSON.
@@ -325,6 +325,33 @@ timeout = 180                # seconds (default 180)
 A credential is read only from the env var or Keychain service the model itself names, never from
 some ambient key, so a local server never gets a cloud key.
 
+### Bill a specific token
+
+A `claude-cli` model runs `claude -p` on your claude login. To bill a particular Anthropic token instead
+(say your machine's claude is logged in to one account, but reviews belong on another budget), give it a key.
+Redefining the built-in `claude` model covers every role, no `[roles]` needed:
+
+```toml
+[models.claude]
+kind = "claude-cli"
+key_keychain = "prview-anthropic"   # or key_env = "NAME"
+```
+
+Store the token once (macOS Keychain; it prompts for the value, so it stays out of your shell history):
+
+```sh
+security add-generic-password -a "$USER" -s prview-anthropic -w
+```
+
+An API key (`sk-ant-api…`) is passed to claude as `ANTHROPIC_API_KEY`; an OAuth token from `claude setup-token`
+(`sk-ant-oat…`) as `CLAUDE_CODE_OAUTH_TOKEN`. That applies to every `claude` prview starts for the model: the
+guide, critic, refute and ask calls, the `a ?` agent, and the `prview models` check. Every other Anthropic
+credential or routing variable in your environment (`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
+`CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY`, the other of the two above, …) is left out of that process, so
+none of them outranks the key. What prview cannot reach is claude's own settings: an `apiKeyHelper` setting
+outranks an OAuth token (not an API key), and a settings file's `env` block or managed settings apply as usual.
+`prview models` and the settings view name the source (`key from keychain prview-anthropic`), never the key.
+
 ### Key bindings
 
 Every key in this README is a default. The key panel shows the bindings for where you are,
@@ -346,7 +373,7 @@ The panel, the hints in the content area, docs search and `prview keys` all show
 
 `\` opens the settings full-screen: every action (its states, description, primary and secondary
 key), the default action per severity, the model per role, the editor command, the display defaults (`wrap`,
-`blind`) and updates (`auto_update`). `↓`/`↑` move, `→`/`←` pick a key's primary or secondary, `Enter` edits: on a key the next keypress becomes
+`blind`), updates (`auto_update`) and, read-only, each model with where its credential comes from. `↓`/`↑` move, `→`/`←` pick a key's primary or secondary, `Enter` edits: on a key the next keypress becomes
 the binding (Backspace clears a secondary; Esc and Tab cannot be bound, and a key another action already has in the
 same state is refused, naming it), a choice steps to its next value, the editor takes a line. `Esc` leaves, asking
 "Save changes? y / n / Esc to keep editing" when something changed. `y` writes the config file (`$PRVIEW_CONFIG`)

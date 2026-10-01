@@ -7,6 +7,7 @@ import { all, build, preparedBy, checkHead, exportDocument, Fail, filesOf, home,
 import { ConfigError, configPath, loadConfig, realLookups, resolveModel, roleModel, ROLES, type Config } from "./config.ts";
 import { describeKeymap, installKeymap } from "./keys.ts";
 import { probe } from "./llm.ts";
+import { credentialSource } from "./claude-env.ts";
 import { besideIn, editor, editorArgs } from "./editor.ts";
 import { show } from "./tui.tsx";
 import { submit } from "./submit.ts";
@@ -171,9 +172,9 @@ async function models(): Promise<void> {
     // A missing credential is reported per model here rather than aborting the list.
     let status: string;
     try { status = await probe(resolveModel(cfg, def.name, realLookups())); } catch (e) { status = (e as Error).message.replace(/^model \S+: /, ""); }
-    return [def.name, def.kind, def.endpoint ?? "-", def.model ?? "-", status];
+    return [def.name, def.kind, def.endpoint ?? "-", def.model ?? "-", credentialSource(def), status];
   }));
-  for (const r of [["name", "kind", "endpoint", "model", "status"], ...rows]) console.log(r.join("\t"));
+  for (const r of [["name", "kind", "endpoint", "model", "credential", "status"], ...rows]) console.log(r.join("\t"));
   console.log(`roles: ${ROLES.map((r) => `${r}=${roleModel(cfg, r)}`).join(" ")}`);
 }
 

@@ -16,6 +16,7 @@ import { clip, DATA_RULE, fence, fitLine, hunksOf, numbered, SEVERITIES, titleOf
 import { decide } from "./triage.ts";
 import { loadConfig, realLookups, resolveModel, roleModel, type Config, type DeepLimits, type Lookups, type Resolved } from "./config.ts";
 import { claudeModelId, complete } from "./llm.ts";
+import { claudeEnv, type Env } from "./claude-env.ts";
 import { clean, visible } from "./sanitize.ts";
 import type { Review, Run } from "./build.ts";
 import { linksIn, readInTree } from "./intree.ts";
@@ -229,7 +230,8 @@ export function reviveAsks(j: unknown): Asks | undefined {
 
 /** What a finished agent run reports. `stopped`: it hit the step cap or the timeout before it answered. */
 export type AgentResult = { text: string; cost?: number; model?: string; steps: number; stopped?: "steps" | "timeout" };
-export type AgentRun = { cwd: string; system: string; prompt: string; model?: string; limits: DeepLimits; onStep: (s: string) => void; signal?: AbortSignal };
+/** `env`: the child's environment (claudeEnv), so a model with a key bills that key; absent, process.env. */
+export type AgentRun = { cwd: string; system: string; prompt: string; model?: string; env?: Env; limits: DeepLimits; onStep: (s: string) => void; signal?: AbortSignal };
 /** How an agent is run: `claudeAgent` in use, a stub in tests. */
 export type Runner = (o: AgentRun) => Promise<AgentResult>;
 
@@ -324,9 +326,9 @@ export function readStreamLine(line: string, cwd: string): { steps: string[]; re
 }
 
 /** The agent as `claude -p` runs it, in the worktree. The step cap and the timeout each end it, as does `signal`. */
-export const claudeAgent: Runner = async ({ cwd, system, prompt, model, limits, onStep, signal }) => {
+export const claudeAgent: Runner = async ({ cwd, system, prompt, model, env, limits, onStep, signal }) => {
   if (signal?.aborted) throw new Error("cancelled"); // an abort before the start would never reach the process
-  const p = Bun.spawn(agentArgs(model, system, limits.steps, [...outsideRules(cwd), ...linkRules(cwd, linksIn(cwd))]), { stdin: Buffer.from(prompt), env: process.env, cwd, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(agentArgs(model, system, limits.steps, [...outsideRules(cwd), ...linkRules(cwd, linksIn(cwd))]), { stdin: Buffer.from(prompt), env: env ?? process.env, cwd, stdout: "pipe", stderr: "pipe" });
   let steps = 0, stopped: AgentResult["stopped"];
   const stop = (why: AgentResult["stopped"]) => { stopped ??= why; p.kill(); };
   const timer = setTimeout(() => stop("timeout"), limits.timeoutMs);
@@ -404,7 +406,7 @@ export async function askAbout(r: Review, files: FileDiff[], subject: Subject, q
   if (tools) {
     const links = linksIn(r.worktree);
     const prompt = askPrompt(subjectData(r.doc, files, subject), history, question);
-    const run = await (deps.runner ?? claudeAgent)({ cwd: r.worktree, system: DEEP_SYSTEM, prompt, model: m.def.model, limits: cfg.deep, onStep: deps.onStep ?? (() => {}), signal: deps.signal });
+    const run = await (deps.runner ?? claudeAgent)({ cwd: r.worktree, system: DEEP_SYSTEM, prompt, model: m.def.model, env: claudeEnv(m), limits: cfg.deep, onStep: deps.onStep ?? (() => {}), signal: deps.signal });
     ({ cost, model } = run);
     text = clean(run.text);
     if (run.stopped) note = `\n\n(stopped: ${run.stopped === "steps" ? `the step cap of ${cfg.deep.steps} was reached` : `the ${Math.round(cfg.deep.timeoutMs / 1000)}s timeout ran out`}${text.trim() ? "; the answer may be unfinished" : ""})`;

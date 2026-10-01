@@ -5,6 +5,7 @@
 
 import { tmpdir } from "node:os";
 import type { Resolved } from "./config.ts";
+import { claudeEnv, type Env } from "./claude-env.ts";
 import { clean } from "./sanitize.ts";
 
 async function firstModel(url: string, key: string | undefined): Promise<string> {
@@ -59,8 +60,9 @@ export function claudeArgs(model: string | undefined, system: string): string[] 
   return args;
 }
 
-async function claude(model: string | undefined, system: string, prompt: string, note: Note): Promise<string> {
-  const p = Bun.spawn(claudeArgs(model, system), { stdin: Buffer.from(prompt), env: process.env, cwd: tmpdir(), stdout: "pipe", stderr: "pipe" });
+/** `env`: from claudeEnv, so a model with a key bills that key (the key goes in the env, never in argv). */
+async function claude(model: string | undefined, system: string, prompt: string, note: Note, env: Env): Promise<string> {
+  const p = Bun.spawn(claudeArgs(model, system), { stdin: Buffer.from(prompt), env, cwd: tmpdir(), stdout: "pipe", stderr: "pipe" });
   const [raw, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
   let j: any;
   try { j = JSON.parse(raw); } catch { throw new Error(`claude -p returned no JSON: ${(raw || err).slice(0, 300)}`); }
@@ -100,7 +102,7 @@ export async function complete(m: Resolved, system: string, prompt: string, usag
 async function route(m: Resolved, system: string, prompt: string, note: Note): Promise<string> {
   const { def, key } = m;
   switch (def.kind) {
-    case "claude-cli": return claude(def.model, system, prompt, note);
+    case "claude-cli": return claude(def.model, system, prompt, note, claudeEnv(m));
     case "anthropic": return anthropic(def.endpoint ?? "https://api.anthropic.com", key!, def.model!, system, prompt, note);
     case "openai-compatible": return openai(trimSlash(def.endpoint!), key, def.model, system, prompt, note);
   }
@@ -111,7 +113,7 @@ export async function probe(m: Resolved): Promise<string> {
   const { def, key } = m;
   try {
     if (def.kind === "claude-cli") {
-      const p = Bun.spawn(["claude", "--version"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+      const p = Bun.spawn(["claude", "--version"], { stdin: "ignore", env: claudeEnv(m), stdout: "pipe", stderr: "ignore" });
       const out = (await new Response(p.stdout).text()).trim();
       return (await p.exited) === 0 ? `ok (claude ${out})` : "claude exited with an error";
     }
