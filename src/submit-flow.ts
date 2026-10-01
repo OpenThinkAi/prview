@@ -10,7 +10,8 @@
 // layer as it will be written and posted: a ticked finding left on its default block or comment gets the comment it
 // posts (the finding's own text), a ticked ignore becomes a comment the same way, and an unticked block or comment
 // becomes ignore, so the document says exactly what went out. Posting then reads only the reader's comments, through
-// the same path as always (platform.ts), so githubProblem stays the one check on posted text.
+// the same path as always (platform.ts), so each platform adapter's own check (githubProblem for GitHub) stays the
+// one check on posted text.
 
 import { titleOf, type Finding } from "./guide.ts";
 import type { Human, Verdict } from "./document.ts";

@@ -363,16 +363,16 @@ test("import without --mine: their comments become findings to triage, their ver
 
     // No decisions: nothing is pre-set, and once you pick a verdict the calls carry none of their words.
     const files = filesOf(r);
-    expect(() => submit(r, files, { allowHook: false, dryRun: true })).toThrow("pick a verdict");
+    await expect(submit(r, files, { allowHook: false, dryRun: true })).rejects.toThrow("pick a verdict");
     r.doc.human.verdict = "approve";
-    const dry = submit(r, files, { allowHook: false, dryRun: true }).summary;
+    const dry = (await submit(r, files, { allowHook: false, dryRun: true })).summary;
     expect(dry).toContain("APPROVE");
     expect(dry).not.toContain("THEIRS");
     expect(dry).not.toContain("REQUEST_CHANGES");
 
     // Adopting one with c makes it your comment, in the words you saved; only those are posted.
     r.doc.human = { ...decide(r.doc.human, suggested[0]!, "comment", { text: "Please rename this.", at: "now" }), verdict: "comment" };
-    const adopted = submit(r, files, { allowHook: false, dryRun: true }).summary;
+    const adopted = (await submit(r, files, { allowHook: false, dryRun: true })).summary;
     expect(adopted).toContain("Please rename this.");
     expect(adopted).not.toContain("THEIRS");
   } finally { process.env.PRVIEW_HOME = join(tmp, "store"); }
