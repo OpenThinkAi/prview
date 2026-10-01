@@ -53,7 +53,7 @@ What you get is a full-screen review, not a diff dump:
   like are read; `J`/`K` always work), `→` opens the finding on the cursor line, `←` closes an open finding or,
   with none open, goes back to the table of contents at that block, and `Enter` writes your own finding on the
   line. Everything else sits
-  behind a letter prefix: `a` AI (`a i` the summary, `a ?` ask the model about this block), `v` view (`v z` zen,
+  behind a letter prefix: `a` AI (`a i` the summary, `a ?` ask the agent about this block, chapter or finding), `v` view (`v z` zen,
   hiding the table of contents; `v c` the content area full-screen; `v e` your editor; `v w` wrap), `g` go to (`g f`/`g F` next/previous finding, wrapping; `g h`/`g H` by severity, every
   high one first; `g g`/`g e` top/end of the file; `g 120 Enter` that line; `g c 3 Enter` that chapter) and
   `f` filter (`f h` high only, `f m` high and medium, `f a` all: the level shows in the status area and is kept with the review; it is for reading, so the submit checklist still lists every finding). `s` submits, `y` copies, `?` searches the docs, `q` quits. `Esc` backs out of anything: a pending
@@ -102,6 +102,19 @@ What you get is a full-screen review, not a diff dump:
   now, where it works and a line on how it works. `j`/`k` select, `y` copies the selected answer as plain text,
   Esc or Tab closes. It searches a small index committed with prview, so it is offline, calls no model and needs
   no config or models; a remapped key shows as you mapped it. (`a ?` is different: it asks a model.)
+- **Ask the agent.** `a ?` opens a question in the content area about what the cursor is on: the block (in the code),
+  the chapter (in the table of contents) or the open finding. Enter runs an agent in the review's head worktree with
+  read-only tools only (Read, Grep, Glob: no edits, no shell, no network, no MCP), so it can follow callers, open the
+  tests and check whether a claim holds elsewhere. Each step it takes (`read src/a.ts`, `grep "parse" in src`) shows
+  in the content area as it happens, then the answer lands there with `path:line` references; Esc cancels a run.
+  Press `a ?` again on the same subject and it is a follow-up: the conversation is kept per block, chapter and
+  finding, stored with the review on this machine (never in the document, never posted). About a finding, the
+  answer may propose a change to it (a new severity, title or claim, or that it does not hold); the finding stays
+  open with the proposal under it, and only then `a a` accepts it (the finding is revised and says "Revised after a
+  follow-up question", an ignore is set as its action) and `a x` discards it, leaving the finding as it was. The agent
+  is the `deep` model role: only a `claude-cli` model can run the tools; a model of another kind answers in one call
+  from the subject and the lines around it, and says so. A step cap and a timeout bound each run (`[deep]`
+  below), and its time, cost and model id are recorded with the review's model runs.
 - **The content area** shows one thing at a time, with a title: the summary, the chapter's intent and why (in the table of contents), an
   open finding's detail, docs search results, an `a ?` answer, a prompt (your own finding, a block or comment, an
   ignore note, a question) and the submit steps. A review with a summary opens on it ("Summary of this change · not a
@@ -175,9 +188,13 @@ key_keychain = "ANTHROPIC_API_KEY"       # or key_env = "NAME"; each model names
 kind = "openai-compatible"
 endpoint = "http://localhost:8000/v1"
 model = "mlx-community/Qwen3.8-27B-4bit"  # optional: defaults to the server's first model
-[roles]                      # guide, critic, refute, ask; unnamed roles use "claude"
+[roles]                      # guide, critic, refute, ask, deep; unnamed roles use "claude"
 critic = "sonnet"
-ask = "qwen"
+ask = "qwen"                 # deep (a ?) uses ask's model when deep is not set
+deep = "claude"              # a ? runs tools only on a claude-cli model
+[deep]                       # bounds on one a ? run
+max_steps = 24               # tool calls (default 24)
+timeout = 180                # seconds (default 180)
 ```
 
 A credential is read only from the env var or Keychain service the model itself names, never from
@@ -267,11 +284,20 @@ paths and symlinks that leave it are refused). The copy of the document it recei
 private ignore notes. `prview import` fetches a PR head only from a remote already configured in
 your clone for that repo; if there is none it refuses instead of fetching from the repo a document names.
 Model prompts go to `claude -p` on stdin, not on its command line, so they are not in the process list.
+(The system prompts, prview's own fixed text, are on the command line.)
+The `a ?` agent is `claude -p` in safe mode (no CLAUDE.md, hooks, plugins or skills load from the worktree, no MCP)
+with Read, Grep and Glob as its only tools and every other tool denied. Those tools take absolute paths, so prview
+also passes `Read(...)` deny rules (claude applies them to Grep and Glob as well) for every entry beside the path
+from `/` down to the review's worktree: your home directory,
+other reviews and the clone's own `.git` are refused, and only the worktree can be read (entries created after the
+agent starts are not covered). What it reads is part of the change and its prompt says so, the PR's own text
+reaches it only inside the data fences, and a change it proposes to a finding does nothing until you press `a a`.
 
 ### What leaves your machine
 
 Only what the model roles need: the diff hunks, the PR title and body, and nearby source lines from the
-worktree go to the model configured for each role (guide, critic, refute, ask); with a local endpoint
+worktree go to the model configured for each role (guide, critic, refute, ask, deep; the `a ?` agent reads files
+in the head worktree and sends what it reads to its model); with a local endpoint
 that is your machine. Nothing else is sent: no telemetry, no analytics. The only other network use is
 `gh` and `git`, for the PR you asked for and the review you submit. State stays under `~/.cache/prview`
 (`$PRVIEW_HOME`) until `prview done` removes it.

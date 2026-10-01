@@ -18,15 +18,16 @@ import { actionOf, actionText, DEFAULTS, IN_HOUSE, suggestVerdict, type Defaults
 import { parseDiff, type FileDiff } from "./diff.ts";
 import { blank, Fail, fit, merge, parseDocument, SCHEMA, suggestions, type Comment, type Doc, type Suggested, type Target } from "./document.ts";
 import {
-  applyReask, applyRefute, classify, CRITIC_SYSTEM, criticPrompt, DATA_RULE, fence, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, numbered, refutable,
+  applyReask, applyRefute, classify, CRITIC_SYSTEM, criticPrompt, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, refutable,
   mergeFindings, readCritic, readGuide, applyTitleReask, TITLE_REASK_SYSTEM, titleReaskPrompt, titleOf, REASK_SYSTEM, reaskPrompt, REFUTE_SYSTEM, refutePrompt, type Chapter, type Finding, type HunkAt, type Mechanical, type Plan,
 } from "./guide.ts";
-import { DEFAULT_MODEL, loadConfig, realLookups, resolveModel, resolveRoles, type Resolved, type Role } from "./config.ts";
+import { loadConfig, realLookups, resolveRoles, type Resolved, type Role } from "./config.ts";
 import { complete, modelLabel, pool, type Usage } from "./llm.ts";
+import { reviveAsks, type Asks } from "./deep.ts";
 
 export { Fail };
 /** One model call: which role, how long, what it cost where the provider reports it. */
-export type Run = { role: "guide" | "critic" | "refute"; /** the configured model's name */ name?: string; /** the concrete id the model reported, or the config's */ model?: string; ms: number; cost?: number };
+export type Run = { role: "guide" | "critic" | "refute" | "deep"; /** the configured model's name */ name?: string; /** the concrete id the model reported, or the config's */ model?: string; ms: number; cost?: number };
 
 /**
  * "Prepared by claude-opus-5-5 (guide), claude-sonnet-5-5 (critic, refute)": one short local line, never part of anything posted.
@@ -45,11 +46,12 @@ export function preparedBy(runs: Run[] | undefined): string | undefined {
   return by.size ? `Prepared by ${[...by].map(([id, roles]) => `${id} (${roles.join(", ")})`).join(", ")}` : undefined;
 }
 /** `models` names what each role used, so `ask` in a reopened review talks to the same model. */
-export type Ai = { models: Record<Role, string>; at: string; errors: string[]; samples?: number; runs?: Run[] };
+export type Ai = { models: Partial<Record<Role, string>>; at: string; errors: string[]; samples?: number; runs?: Run[] };
 export type Pos = { item: number; line: number };
 /** `ref` is what was asked for (a PR number or a range), so the review can be rebuilt at a newer head. */
 /** `suggested`: the verdicts of documents imported at this head, shown in the opening summary as information only. */
-export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; /** The severity filter (`f h`/`f m`/`f a`), kept here with the reader's place, never in the document; absent means all. */ filter?: Filter; ai?: Ai; doc: Doc; suggested?: Suggested[] };
+/** `asks`: the `a ?` conversations, by subject, kept on this machine only (never in the document). */
+export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; /** The severity filter (`f h`/`f m`/`f a`), kept here with the reader's place, never in the document; absent means all. */ filter?: Filter; ai?: Ai; doc: Doc; suggested?: Suggested[]; asks?: Asks };
 
 export const home = () => process.env.PRVIEW_HOME ?? join(homedir(), ".cache", "prview");
 const metaOf = (slug: string) => join(home(), `${slug}.json`);
@@ -153,13 +155,13 @@ export async function runCritic(model: Resolved, prompt: string, chapter: Chapte
 }
 
 /** The default producer: the guide orders the hunks, the critic raises findings, refute re-checks them. Exported for the pipeline tests. */
-export async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, models: Record<Role, Resolved>, samples: number, say: Progress, call: Call = complete): Promise<{ doc: Doc; errors: string[]; runs: Run[] }> {
+export async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, models: Pick<Record<Role, Resolved>, "guide" | "critic" | "refute">, samples: number, say: Progress, call: Call = complete): Promise<{ doc: Doc; errors: string[]; runs: Run[] }> {
   const errors: string[] = [], runs: Run[] = [];
   // The id each role shows: the config's own until a reply says better, `default` if neither is known yet.
   // Keyed by model name, so a role sharing a model another role has already heard from starts with the real id.
   const seen: Record<string, string> = {};
-  const tag = (role: Run["role"]) => `${role} [${modelLabel(models[role].def.name, seen[models[role].def.name] ?? models[role].def.model)}]`;
-  const timed = (role: Run["role"]) => (u: Usage) => {
+  const tag = (role: Exclude<Run["role"], "deep">) => `${role} [${modelLabel(models[role].def.name, seen[models[role].def.name] ?? models[role].def.model)}]`;
+  const timed = (role: Exclude<Run["role"], "deep">) => (u: Usage) => {
     if (u.model) seen[models[role].def.name] = u.model;
     runs.push({ role, name: models[role].def.name, ...u, model: u.model ?? models[role].def.model });
   };
@@ -206,25 +208,6 @@ export async function guideAndCritic(src: Target, files: FileDiff[], worktree: s
   return { doc: { ...blank(src), plan, findings }, errors, runs };
 }
 
-const ASK_SYSTEM = `You help a human reviewer understand one hunk of a code change. You know the change's summary and what the reviewer is meant to verify in this chapter. Answer their question about the hunk; with no question, explain what the hunk does, why it is probably written this way, and what could go wrong. Ground everything in the code shown; say so when you would need to see more. Plain text, short paragraphs, no markdown headers, under 180 words.
-${DATA_RULE} The reviewer's question is the one thing outside the blocks you answer.`;
-
-export async function ask(r: Review, files: FileDiff[], hunkId: string, question: string): Promise<string> {
-  const h = hunksOf(files).find((x) => x.id === hunkId);
-  if (!h?.hunk) throw new Fail("that hunk is not in the diff any more");
-  const d = r.doc;
-  const chapter = d.plan.chapters.find((c) => c.hunks.includes(h.id));
-  const file = join(r.worktree, h.file.path);
-  const around = existsSync(file) ? readFileSync(file, "utf8").split("\n").slice(Math.max(0, h.hunk.newStart - 30), h.hunk.newStart + h.hunk.newCount + 30).join("\n") : "";
-  // Everything but the reviewer's own question came from the change (or a model reading it), so it is fenced.
-  const prompt = `# The change\n${fence("title", d.target.title)}\n${fence("summary", d.plan.summary)}\n\n## The chapter\n${fence("chapter", `${chapter?.title ?? "?"}\n${chapter?.intent ?? ""}. ${chapter?.why ?? ""}`)}\n\n## The hunk\n${fence("hunk", `id: ${h.id}\n${numbered(h.hunk)}`)}\n\n## The file after the change, around it\n${fence("file", around)}\n\n## The reviewer's question\n${question.trim() || "(none: explain the hunk)"}`;
-  // Resolved now, not at build time, so ask works on a review built with --no-ai and picks up a key added since.
-  const cfg = loadConfig();
-  const name = r.ai?.models?.ask && cfg.models[r.ai.models.ask] ? r.ai.models.ask : undefined;
-  // Only the ask model's credential is needed; an unset key for another role must not break asking.
-  return (await complete(resolveModel(cfg, name ?? cfg.roles.ask ?? DEFAULT_MODEL, realLookups()), ASK_SYSTEM, prompt)).trim();
-}
-
 // ---------------------------------------------------------------- the store
 
 export const filesOf = (r: Pick<Review, "repo" | "context" | "doc">) =>
@@ -253,7 +236,8 @@ function revive(j: any): Review | undefined {
   const suggested = (Array.isArray(j.suggested) ? j.suggested : []).flatMap((v: any): Suggested[] =>
     typeof v?.by === "string" && v.by && ["approve", "request_changes", "comment"].includes(v.verdict) ? [{ by: v.by.slice(0, 40), verdict: v.verdict, ...(typeof v.reason === "string" && v.reason.trim() ? { reason: v.reason.trim().slice(0, 240) } : {}) }] : []);
   try {
-    return { slug: j.slug, repo: j.repo, ref: j.ref ?? j.target, worktree: j.worktree, context: j.context ?? 3, created: j.created, pos: j.pos ?? { item: 0, line: 0 }, ...(filterOf(j.filter) !== "all" ? { filter: filterOf(j.filter) } : {}), ai: j.ai, doc: parseDocument(raw), ...(suggested.length ? { suggested } : {}) };
+    const asks = reviveAsks(j.asks);
+    return { slug: j.slug, repo: j.repo, ref: j.ref ?? j.target, worktree: j.worktree, context: j.context ?? 3, created: j.created, pos: j.pos ?? { item: 0, line: 0 }, ...(filterOf(j.filter) !== "all" ? { filter: filterOf(j.filter) } : {}), ai: j.ai, doc: parseDocument(raw), ...(suggested.length ? { suggested } : {}), ...(asks ? { asks } : {}) };
   } catch { return undefined; }
 }
 
@@ -334,7 +318,8 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   const same = !!prior && prior.doc.target.head === t.head && !opts.fresh;
   const r: Review = { slug, repo, ref: isPR(target) ? target!.replace(/^#/, "") : target, worktree, context, created: new Date().toISOString(), pos: { item: 0, line: 0 }, doc: fit(blank(t), files) };
   if (same) {
-    Object.assign(r, { pos: prior.pos, ...(prior.filter ? { filter: prior.filter } : {}), ai: prior.ai, doc: fit(prior.doc, files), ...(prior.suggested ? { suggested: prior.suggested } : {}) });
+    // The conversations are about blocks and findings of this head, so they carry over only while it is the same.
+    Object.assign(r, { pos: prior.pos, ...(prior.filter ? { filter: prior.filter } : {}), ai: prior.ai, doc: fit(prior.doc, files), ...(prior.suggested ? { suggested: prior.suggested } : {}), ...(prior.asks ? { asks: prior.asks } : {}) });
     say(`reusing the review document from ${prior.ai?.at.slice(0, 16).replace("T", " ") ?? "before"} (--fresh redoes it)`);
   } else {
     if (prior) r.doc.human.comments = prior.doc.human.comments;

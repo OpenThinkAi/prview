@@ -11,15 +11,21 @@ import { ACTION_KINDS, DEFAULTS, type Defaults } from "./triage.ts";
 import type { DecisionKind } from "./document.ts";
 import type { Severity } from "./guide.ts";
 
-export const ROLES = ["guide", "critic", "refute", "ask"] as const;
+/** `deep` is the model `a ?` uses; only a claude-cli one runs tools. Unset, it is the `ask` role's model (the name it had before tools). */
+export const ROLES = ["guide", "critic", "refute", "ask", "deep"] as const;
 export type Role = (typeof ROLES)[number];
 export const KINDS = ["claude-cli", "anthropic", "openai-compatible"] as const;
 export type Kind = (typeof KINDS)[number];
 
+/** The step cap and timeout of one `a ?` agent run: `[deep] max_steps` and `timeout` (seconds) in the config. */
+export type DeepLimits = { steps: number; timeoutMs: number };
+export const DEEP_LIMITS: DeepLimits = { steps: 24, timeoutMs: 180_000 };
+
 export type ModelDef = { name: string; kind: Kind; endpoint?: string; model?: string; keyEnv?: string; keyKeychain?: string };
 export type Config = { models: Record<string, ModelDef>; roles: Partial<Record<Role, string>>; /** Blind first pass: findings stay hidden in a chapter until it has been read. */ blind: boolean; /** The default bindings with the [keys] table laid over them, already validated. */ keymap: Keymap;
   /** The action each finding starts with, by severity: DEFAULTS with the [defaults] table laid over it. */ defaults: Defaults;
-  /** The editor command `v e` runs (after $PRVIEW_EDITOR, before $EDITOR). */ editor?: string; /** Long lines wrap from the start (`v w` still toggles). */ wrap: boolean; path: string | null };
+  /** The editor command `v e` runs (after $PRVIEW_EDITOR, before $EDITOR). */ editor?: string; /** Long lines wrap from the start (`v w` still toggles). */ wrap: boolean;
+  /** The `a ?` agent's step cap and timeout: DEEP_LIMITS with the [deep] table laid over it. */ deep: DeepLimits; path: string | null };
 /** A model whose credential has been looked up and is ready to call. */
 export type Resolved = { def: ModelDef; key?: string };
 export type Lookups = { env: Record<string, string | undefined>; keychain: (service: string) => string | undefined };
@@ -201,7 +207,15 @@ export function parseConfig(text: string, path: string | null = null): Config {
     if (typeof v !== "string" || !(ACTION_KINDS as readonly string[]).includes(v)) throw new ConfigError(`[defaults]: ${sev} must be one of ${ACTION_KINDS.map((k) => `"${k}"`).join(", ")}`);
     defaults[sev as Severity] = v as DecisionKind;
   }
-  return { models, roles, blind: t.blind === true, keymap, defaults, editor, wrap: t.wrap === true, path };
+  // [deep]: max_steps = 24, timeout = 180 (seconds): what bounds one `a ?` agent run.
+  const deep: DeepLimits = { ...DEEP_LIMITS };
+  const dt = table("deep");
+  for (const [k, v] of Object.entries(dt)) {
+    if (k !== "max_steps" && k !== "timeout") continue;
+    if (typeof v !== "number" || v < 1 || v > (k === "max_steps" ? 200 : 3600)) throw new ConfigError(`[deep]: ${k} must be a whole number from 1 to ${k === "max_steps" ? 200 : 3600}`);
+    if (k === "max_steps") deep.steps = v; else deep.timeoutMs = v * 1000;
+  }
+  return { models, roles, blind: t.blind === true, keymap, defaults, editor, wrap: t.wrap === true, deep, path };
 }
 
 /** The user's config, or the built-in (claude -p for everything) when there is no file. */
@@ -239,11 +253,14 @@ export function resolveModel(cfg: Config, name: string, l: Lookups): Resolved {
   return { def, key: resolveCredential(def, l) };
 }
 
-/** Which model each role uses: `override` (from --ai) for all four, else [roles], else the default. Fails on any missing credential. */
+/** The model a role names in [roles]: `deep` falls back to `ask`, which it replaced; unset, the default. */
+export const roleModel = (cfg: Pick<Config, "roles">, role: Role): string => cfg.roles[role] ?? (role === "deep" ? cfg.roles.ask : undefined) ?? DEFAULT_MODEL;
+
+/** Which model each role uses: `override` (from --ai) for all of them, else [roles], else the default. Fails on any missing credential. */
 export function resolveRoles(cfg: Config, l: Lookups, override?: string): Record<Role, Resolved> {
   const cache = new Map<string, Resolved>();
   const get = (n: string) => { let r = cache.get(n); if (!r) cache.set(n, (r = resolveModel(cfg, n, l))); return r; };
-  return Object.fromEntries(ROLES.map((role) => [role, get(override ?? cfg.roles[role] ?? DEFAULT_MODEL)])) as Record<Role, Resolved>;
+  return Object.fromEntries(ROLES.map((role) => [role, get(override ?? roleModel(cfg, role))])) as Record<Role, Resolved>;
 }
 
 export const realLookups = (): Lookups => ({ env: process.env, keychain: keychainLookup });

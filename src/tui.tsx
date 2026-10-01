@@ -23,7 +23,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput } from "ink";
 import { where, type DiffLine, type FileDiff } from "./diff.ts";
 import { claimAddsTo, hunksOf, MECHANICAL_INTENT, titleOf, worstFirst, type Finding, type HunkAt, type Severity } from "./guide.ts";
-import { ask, preparedBy, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
+import { preparedBy, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
+import { acceptAnswer, askAbout, conversationText, discardAnswer, pendingTurn, revisedNote, subjectKey, subjectLabel, type AskDeps, type Subject } from "./deep.ts";
 import type { Doc, Human, Verdict } from "./document.ts";
 import { checklistNote, filtered, filterLabel, filterOf, type Filter } from "./filter.ts";
 import { chapterHidden, hiddenHunks } from "./blind.ts";
@@ -79,7 +80,7 @@ type Content = { title: string; tag?: string; lead?: string; body: string; color
  * `decide`: this comment carries out a block or comment action on that finding. `reason`: the optional private note of an ignore.
  * `docs`: the question typed for the offline docs search (`ask` is the one for the model); `results`: its answers, `sel` the selected one.
  */
-type Mode = { kind: "nav" } | { kind: "comment"; decide?: { id: string; kind: "block" | "comment" } } | { kind: "severity"; sel: number; spot: Spot } | { kind: "finding"; severity: Severity; spot: Spot } | { kind: "reason"; id: string } | { kind: "ask" } | { kind: "docs" } | { kind: "results"; query: string; answers: Answer[]; sel: number } | { kind: "submit"; flow: Flow };
+type Mode = { kind: "nav" } | { kind: "comment"; decide?: { id: string; kind: "block" | "comment" } } | { kind: "severity"; sel: number; spot: Spot } | { kind: "finding"; severity: Severity; spot: Spot } | { kind: "reason"; id: string } | { kind: "ask"; subject: Subject } | { kind: "docs" } | { kind: "results"; query: string; answers: Answer[]; sel: number } | { kind: "submit"; flow: Flow };
 
 export type AppProps = {
   review: Review; files: FileDiff[]; onDone: (o: Outcome) => void;
@@ -103,6 +104,8 @@ export type AppProps = {
   resume?: Flow;
   /** A drafted submission (`a s`): the submit flow starts from it instead of the defaults. */
   draft?: Draft;
+  /** How `a ?` reaches a model: the config, the agent runner, the one-call path. Tests pass stubs; unset, the real ones. */
+  askDeps?: AskDeps;
 };
 
 /** What the content area opens on: the summary, the suggested verdicts and who prepared it. `a i` shows exactly this again; null when a review has neither. */
@@ -116,7 +119,7 @@ export function summaryContent(review: Review): Content | null {
   return { title: "Summary of this change · not a finding", color: "magenta", copy: d.plan.summary || suggested, body: [d.plan.summary, suggested, preparedBy(review.ai?.runs), hint].filter(Boolean).join("\n\n") };
 }
 
-export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig, resume, draft }: AppProps) {
+export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig, resume, draft, askDeps }: AppProps) {
   const { exit } = useApp();
   const term = useTerminalSize(size);
   const cols = term.cols, rows = term.rows - 1;
@@ -151,6 +154,8 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const [, tick] = useState(0);
   const setPending = (p: Pending | null) => { if (p !== pendingRef.current) { pendingRef.current = p; tick((n) => n + 1); } };
   const [busy, setBusy] = useState<string | null>(null);
+  // An `a ?` run in progress: Esc cancels it (the only key that does anything while it runs).
+  const abortRef = useRef<AbortController | null>(null);
   // Long lines are cut with an ellipsis, or wrap onto more rows (v w).
   const [wrap, setWrap] = useState(config?.wrap ?? false);
   // The severity filter (f h, f m, f a): kept with the stored review, so it is still set when the review is opened again.
@@ -224,7 +229,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     : mode.kind === "results" ? { state: "content", results: true }
     : mode.kind !== "nav" ? { state: "prompt", kind: mode.kind, decide: mode.kind === "comment" && !!mode.decide }
     : full && view ? { state: "content" }
-    : content?.finding ? { state: "finding" }
+    : content?.finding ? { state: "finding", answer: !!pendingTurn(r.asks, content.finding) }
     : focus === "content" && view ? { state: "content" } : { state: tree };
 
   // Blind: what the critic found is not shown, counted or reachable until the chapter has been read. Everything below that
@@ -289,18 +294,21 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   // A finding's header says who raised it, what it is and its action now; "(default)" is drawn dim while the action is
   // still the one its severity (or the refute step) gave it. The content area holds the whole of it. A finding opens in
   // the code, whichever of the two the cursor was in.
-  const showFinding = (f: Finding) => {
-    setTree("code");
+  // Questions asked about it follow its detail, with the keys that accept or discard the latest answer while it waits.
+  const findingContent = (f: Finding): Content => {
     const a = actionOf(h, f, defaults), mine = linkedComment(h, f.id);
     const why = !a.isDefault ? "" : f.status === "withdrawn" ? " The second look dropped this finding, so it starts ignored." : ` A ${f.severity} finding starts as ${LABEL[a.kind]}.`;
     const action = `Action: ${LABEL[a.kind]}${a.isDefault ? " (default)." : "."}${why}${mine ? ` Your comment: ${mine.text}` : ""}${a.note ? ` Private note: ${a.note}` : ""} ${keyOf("finding.block")}, ${keyOf("finding.comment")} or ${keyOf("finding.ignore")} changes it.`;
-    setContent({
+    const turns = r.asks?.[subjectKey({ kind: "finding", id: f.id })] ?? [], waiting = pendingTurn(r.asks, f.id);
+    const asked = turns.length ? `Asked about this finding:\n\n${conversationText(turns, f)}${waiting ? `\n\n${keyOf("ai.accept")} accepts ${waiting.revision ? "the proposed change" : "the answer (it proposes no change)"}; ${keyOf("ai.discard")} discards it.` : ""}` : "";
+    return {
       title: `▲ ${f.source} · ${f.kind} · ${f.severity}${f.votes && r.ai?.samples ? ` · ${f.votes}/${r.ai.samples}` : ""} · ${LABEL[a.kind]}`, ...(a.isDefault ? { tag: " (default)" } : {}),
       color: a.kind === "ignore" ? "gray" : SEV[f.severity], lead: titleOf(f), finding: f.id, copy: findingText(f, `${place(f.hunk, f.file ? null : f.line)}${f.file ? " (whole file)" : ""}`),
       ...(claimAddsTo(f) ? { claim: f.claim } : {}),
-      body: [claimAddsTo(f) ? f.claim : "", f.evidence, f.refute ? `Second look: ${f.refute}` : "", action].filter(Boolean).join("\n\n"),
-    });
+      body: [claimAddsTo(f) ? f.claim : "", f.evidence, f.refute ? `Second look: ${f.refute}` : "", action, revisedNote(r.asks, f.id), asked].filter(Boolean).join("\n\n"),
+    };
   };
+  const showFinding = (f: Finding) => { setTree("code"); setContent(findingContent(f)); };
   // What the decision keys act on: the open finding, and only while it is open. Only shown findings can be opened,
   // so a blind chapter's findings cannot be decided before they are revealed.
   const target = (): Finding | undefined => {
@@ -333,7 +341,8 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     if (input.length > 1 && !key.ctrl && !key.meta && !/^[[O][0-9;]*[A-Za-z~]$/.test(input)) for (const c of input) handle(c, {});
     else handle(input, key);
   });
-  const scrollBy = (by: number) => setScroll((s) => clampScroll(s + by, mode.kind === "submit" ? flowLines(L.contentInner).length : contentLines.length, L.contentRows));
+  // From where the content is drawn: an answer opens scrolled to its end (a scroll past it), and a page up starts from there.
+  const scrollBy = (by: number) => setScroll((s) => { const n = mode.kind === "submit" ? flowLines(L.contentInner).length : contentLines.length; return clampScroll(clampScroll(s, n, L.contentRows) + by, n, L.contentRows); });
 
   /**
    * Every key goes through the tables: tokenOf reads the key, `step` (chord.ts) resolves it in the current state, with any
@@ -341,8 +350,8 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
    * prompt, anything that is not one of its keys is text.
    */
   const handle = (ch: string, key: InkKey) => {
-    if (busy) return;
     const tok = tokenOf(ch, key);
+    if (busy) { if (tok === "esc") abortRef.current?.abort(); return; }
     if (!tok) return;
     setNote(null);
     // Capturing a binding, typing the editor, or the question on leaving: the key itself, not what it is bound to.
@@ -428,10 +437,31 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     if (mode.kind === "reason") { if (f) decided(f, decide(h, f, "ignore", { reason: text, at })); return; }
     // An emptied comment changes nothing: the finding keeps the action it had.
     if (mode.kind === "comment" && mode.decide) { if (f) { if (text) decided(f, decide(h, f, mode.decide.kind, { text, at })); else showFinding(f); } return; }
-    if (mode.kind === "ask" && item) {
-      setBusy("asking…"); setContent({ title: text || "Explain this block", body: "…" });
-      ask(r, files, item.id, text).then((a) => setContent({ title: text || "This block", body: a, copy: askText(text || "Explain this block", a) }), (e) => setContent({ title: "ask failed", body: String((e as Error).message), color: "red" })).finally(() => setBusy(null));
-    }
+    if (mode.kind === "ask") ask(mode.subject, text);
+  };
+
+  // `a ?`: the agent's steps stream into the content area as it reads, then the subject's whole conversation replaces
+  // them. About a finding, the finding stays open throughout and the conversation follows its detail.
+  const ask = (s: Subject, q: string) => {
+    const f = s.kind === "finding" ? d.findings.find((x) => x.id === s.id) : undefined;
+    const base: Content = f ? findingContent(f) : { title: `Ask · ${subjectLabel(d, files, s)}`, color: "cyan", body: "" };
+    const steps: string[] = [];
+    const draw = () => setContentRaw({ ...base, body: `› ${q || "(explain this)"}\n\n${steps.length ? steps.map((x) => `  ${x}`).join("\n") : "  starting…"}` });
+    const ctl = new AbortController();
+    abortRef.current = ctl;
+    setBusy("asking…"); setScroll(0); draw();
+    askAbout(r, files, s, q, { ...askDeps, signal: ctl.signal, onStep: (x) => { steps.push(x); draw(); } })
+      .then(() => {
+        save(r);
+        const turns = r.asks?.[subjectKey(s)] ?? [], last = turns[turns.length - 1];
+        if (f) { setContent(findingContent(d.findings.find((x) => x.id === f.id) ?? f)); setScroll(Number.MAX_SAFE_INTEGER); return; }
+        setContent({ title: `Ask · ${subjectLabel(d, files, s)}`, color: "cyan", body: `${conversationText(turns)}\n\n${keyOf("ai.ask")} asks a follow-up.`, copy: last ? askText(last.q || "Explain this", last.a) : undefined });
+        setScroll(Number.MAX_SAFE_INTEGER);
+      }, (e) => {
+        const why = ctl.signal.aborted ? "Cancelled; nothing was kept." : `Asking failed: ${String((e as Error).message)}`;
+        setContent(f ? { ...findingContent(f), body: why } : { title: `Ask · ${subjectLabel(d, files, s)}`, body: why, color: ctl.signal.aborted ? undefined : "red" });
+      })
+      .finally(() => { abortRef.current = null; setBusy(null); });
   };
 
   // What each action does. Every id in the key tables has a case here (a test holds the two together).
@@ -511,7 +541,26 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
 
       // ---- a: AI
       case "ai.info": setContent(opening() ?? { title: "Summary", body: "There is no summary for this review." }); return;
-      case "ai.ask": setMode({ kind: "ask" }); setInput(""); return;
+      // The subject: the open finding, else the chapter in the table of contents, else the block in the code.
+      case "ai.ask": {
+        const f = target();
+        const s: Subject | undefined = f ? { kind: "finding", id: f.id } : !item ? undefined : tree === "toc" ? { kind: "chapter", chapter: item.chapter } : { kind: "block", hunk: item.id };
+        if (s) { setMode({ kind: "ask", subject: s }); setInput(""); } else setNote("nothing to ask about: the diff is empty");
+        return;
+      }
+      case "ai.accept": {
+        const f = target(), res = f && r.asks ? acceptAnswer(d, r.asks, f.id, new Date().toISOString()) : undefined;
+        if (!f || !res) return;
+        redraw(); showFinding(d.findings.find((x) => x.id === f.id) ?? f);
+        setNote(res.changed ? `finding revised: ${res.changed}` : "answer accepted; it proposed no change to the finding");
+        return;
+      }
+      case "ai.discard": {
+        const f = target();
+        if (!f || !r.asks || !discardAnswer(r.asks, f.id)) return;
+        redraw(); showFinding(f); setNote("answer discarded; the finding is as it was");
+        return;
+      }
 
       // ---- v: view
       case "view.editor": {
@@ -571,7 +620,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       case "filter.all": setFilter("all"); return;
 
       // ---- keys whose behaviour comes with a later change: each says so
-      case "ai.draft": case "ai.accept": case "ai.discard":
+      case "ai.draft":
         coming(id); return;
     }
   };
@@ -674,7 +723,8 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       case "comment": return typed(`${mode.decide?.kind === "block" ? "Block on" : "Comment on"} the finding`, mode.decide?.kind === "block" ? "block on it" : "comment on the finding", `Enter saves · ${keyOf("prompt.newline")} new line.`);
       case "reason": case "ask": case "docs": {
         const label = mode.kind === "docs" ? "search the docs" : mode.kind === "ask" ? "ask" : "ignore · private note";
-        const title = mode.kind === "docs" ? "Search the docs" : mode.kind === "ask" ? "Ask the model about this block" : "Ignore the finding";
+        const earlier = mode.kind === "ask" ? (r.asks?.[subjectKey(mode.subject)] ?? []).filter((t) => t.outcome !== "discarded").length : 0;
+        const title = mode.kind === "docs" ? "Search the docs" : mode.kind === "ask" ? `Ask about the ${subjectLabel(d, files, mode.subject)}${earlier ? ` · a follow-up to ${earlier} earlier question${earlier === 1 ? "" : "s"}` : ""}` : "Ignore the finding";
         return <>
           <Text bold color="cyan" wrap="truncate">{title}</Text>
           <Text><Text color="cyan" bold>{label} › </Text>{input}<Text inverse> </Text>{mode.kind === "reason" && !input ? <Text dimColor>private note — never posted</Text> : null}</Text>
@@ -706,7 +756,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
 
   const footer = note
     ? <Text wrap="truncate" color="green"> {note}</Text>
-    : <Text wrap="truncate" dimColor> {busy ? `${busy} keys wait until it answers` : full && view && mode.kind !== "submit" ? `${keyOf("view.fullscreen")} or Esc restores the layout` : ""}{pending ? <Text color="cyan">   {pendingText(pending)}</Text> : null}</Text>;
+    : <Text wrap="truncate" dimColor> {busy ? `${busy} keys wait until it answers${abortRef.current ? "; Esc cancels" : ""}` : full && view && mode.kind !== "submit" ? `${keyOf("view.fullscreen")} or Esc restores the layout` : ""}{pending ? <Text color="cyan">   {pendingText(pending)}</Text> : null}</Text>;
 
   if (tooSmall(term)) return <Text wrap="truncate">terminal too small, need {MIN_COLS}x{MIN_ROWS}</Text>;
   if (settings) return <SettingsScreen s={settings} cols={cols} rows={rows} />;
@@ -816,11 +866,11 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
 }
 
 /** Run the app once; resolves with what the reader wants next. State lives on the review object and is saved as it changes. */
-export function show(review: Review, files: FileDiff[], beside?: Beside, blind = false, dryRun = false, defaults: Defaults = DEFAULTS, config?: Config, onConfig?: (cfg: Config) => void, resume?: Flow): Promise<Outcome> {
+export function show(review: Review, files: FileDiff[], beside?: Beside, blind = false, dryRun = false, defaults: Defaults = DEFAULTS, config?: Config, onConfig?: (cfg: Config) => void, resume?: Flow, askDeps?: AskDeps): Promise<Outcome> {
   return new Promise((resolve) => {
     let outcome: Outcome = { kind: "quit" };
     process.stdout.write("\x1b[?1049h\x1b[H");
-    const app = render(<App review={review} files={files} beside={beside} blind={blind} dryRun={dryRun} defaults={defaults} config={config} onConfig={onConfig} resume={resume} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
+    const app = render(<App review={review} files={files} beside={beside} blind={blind} dryRun={dryRun} defaults={defaults} config={config} onConfig={onConfig} resume={resume} askDeps={askDeps} onDone={(o) => { outcome = o; }} />, { exitOnCtrlC: true });
     app.waitUntilExit().then(() => { app.clear(); process.stdout.write("\x1b[?1049l"); save(review); resolve(outcome); });
   });
 }

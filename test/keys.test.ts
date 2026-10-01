@@ -17,7 +17,7 @@ afterEach(() => installKeymap(DEFAULT_KEYMAP));
 const CODE: KeyState = { state: "code" }, TOC: KeyState = { state: "toc" }, FINDING: KeyState = { state: "finding" }, CONTENT: KeyState = { state: "content" };
 /** Every state a key can be pressed in, with each variant that changes what is listed. */
 const ALL_STATES: KeyState[] = [
-  TOC, CODE, FINDING, CONTENT, { state: "content", results: true }, { state: "settings" },
+  TOC, CODE, FINDING, { state: "finding", answer: true }, CONTENT, { state: "content", results: true }, { state: "settings" },
   { state: "prompt", kind: "ask" }, { state: "prompt", kind: "comment" }, { state: "prompt", kind: "comment", decide: true }, { state: "prompt", kind: "reason" }, { state: "prompt", kind: "docs" }, { state: "prompt", kind: "severity" }, { state: "prompt", kind: "finding" },
   { state: "submit", step: "findings" }, { state: "submit", step: "verdict" },
   { state: "submit", step: "comment", typing: true }, { state: "submit", step: "comment", typing: false },
@@ -139,6 +139,8 @@ test("config: a key used twice in one state is refused naming both actions, acro
   expect(() => parseConfig(`[keys]\n"finding.close" = "b"`)).toThrow(/finding\.close and finding\.block are both "b" in the finding state/);
   expect(() => parseConfig(`[keys]\n"code.down" = { secondary = "down" }`)).toThrow(/code\.down has "down" as both primary and secondary/);
   expect(() => parseConfig(`[keys]\n"view.wrap" = "e"`)).toThrow(/view\.editor and view\.wrap are both "e" after v in the (toc|code|finding) state/);
+  // a a / a x exist only while an answer waits, and are checked there all the same.
+  expect(() => parseConfig(`[keys]\n"ai.accept" = "?"`)).toThrow(/ai\.ask and ai\.accept are both "\?" after a in the finding state/);
   // A key that is a prefix where the action acts.
   expect(() => parseConfig(`[keys]\n"code.new_finding" = "g"`)).toThrow(/code\.new_finding = "g", but g is the go to prefix in the code state/);
   expect(() => parseConfig(`[keys]\n"finding.close" = "f"`)).not.toThrow(); // no filter prefix inside a finding
@@ -188,8 +190,13 @@ test("chords: a prefix waits for its second key; Esc or an unknown key cancels i
   expect(press(CODE, ["g", "z"])).toEqual({ pending: null, out: { kind: "cancel" } }); // not a g key: nothing happens
   expect(press(CODE, ["g", "j"])).toEqual({ pending: null, out: { kind: "cancel" } }); // not even a top-level key
   expect(press(CODE, ["esc"]).out).toEqual({ kind: "escape" }); // nothing pending: the screen backs out
-  // Inside a finding, a's second keys are the finding's own; f is not a prefix there.
-  expect(press(FINDING, ["a", "a"]).out).toEqual({ kind: "act", id: "ai.accept" });
+  // Inside a finding, a's second keys are the finding's own; f is not a prefix there. a a and a x act only while an answer waits.
+  expect(press(FINDING, ["a", "a"]).out).toEqual({ kind: "cancel" });
+  expect(press(FINDING, ["a", "?"]).out).toEqual({ kind: "act", id: "ai.ask" });
+  expect(press({ state: "finding", answer: true }, ["a", "a"]).out).toEqual({ kind: "act", id: "ai.accept" });
+  expect(press({ state: "finding", answer: true }, ["a", "x"]).out).toEqual({ kind: "act", id: "ai.discard" });
+  expect(prefixRows(FINDING, "a").map((r) => r.id)).toEqual(["ai.ask"]);
+  expect(prefixRows({ state: "finding", answer: true }, "a").map((r) => r.id)).toEqual(["ai.ask", "ai.accept", "ai.discard"]);
   expect(press(FINDING, ["a", "i"]).out).toEqual({ kind: "cancel" });
   expect(press(FINDING, ["f"]).out).toEqual({ kind: "none" });
   expect(press(FINDING, ["g", "f"]).out).toEqual({ kind: "act", id: "go.next_finding" });

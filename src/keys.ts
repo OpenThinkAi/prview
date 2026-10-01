@@ -40,10 +40,11 @@ export type Action = {
   /**
    * Submit only: the steps it is pressed in; in the comment step, whether only while typing (true) or only while not
    * (false); and `needs: "boxes"`, in the send step only when the submit has a checkbox (a command, a coverage line).
+   * Inside a finding, `needs: "answer"`: only while an answer about it waits for `a a` / `a x`.
    */
   steps?: readonly SubmitStep[];
   typing?: boolean;
-  needs?: "boxes";
+  needs?: "boxes" | "answer";
 };
 
 /** The submit flow's steps (submit-flow.ts): the findings checklist, the verdict, the top-level comment, then send. */
@@ -57,7 +58,9 @@ export type PromptKind = "ask" | "comment" | "reason" | "docs" | "severity" | "f
  * comment step `typing` is whether the box takes the keys; in its send step `boxes` is whether there is a checkbox.
  */
 export type KeyState =
-  | { state: "toc" | "code" | "finding" | "settings" }
+  | { state: "toc" | "code" | "settings" }
+  /** `answer`: an answer about this finding is waiting to be accepted or discarded. */
+  | { state: "finding"; answer?: boolean }
   | { state: "content"; results?: boolean }
   | { state: "prompt"; kind: PromptKind; decide?: boolean }
   | { state: "submit"; step: "findings" | "verdict" }
@@ -114,10 +117,10 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
 
   // ---- a: AI
   { id: "ai.info", states: OUTSIDE, prefix: "a", key: "i", label: "info", description: "Show the summary of this change: the overview, suggested verdicts and who prepared it." },
-  { id: "ai.ask", states: READING, prefix: "a", key: "?", label: "ask", description: "Ask the model a question about the block under the cursor, or the open finding's block." },
+  { id: "ai.ask", states: READING, prefix: "a", key: "?", label: "ask", description: "Ask the agent about the block under the cursor (code), the chapter (table of contents) or the open finding; it reads the code to answer, and follow-ups keep the conversation." },
   { id: "ai.draft", states: OUTSIDE, prefix: "a", key: "s", label: "draft submission", description: "Have the model draft a submission: the findings to include, a verdict and a comment, for you to review.", coming: "drafted submissions" },
-  { id: "ai.accept", states: FINDING, prefix: "a", key: "a", label: "accept answer", description: "Accept the model's answer about this finding and update the finding from it.", coming: "follow-up answers on findings" },
-  { id: "ai.discard", states: FINDING, prefix: "a", key: "x", label: "discard answer", description: "Discard the model's answer about this finding and leave the finding as it was.", coming: "follow-up answers on findings" },
+  { id: "ai.accept", states: FINDING, needs: "answer", prefix: "a", key: "a", label: "accept answer", description: "Accept the agent's answer about this finding: its proposed severity, title, claim or ignore is applied, and the finding notes it was revised." },
+  { id: "ai.discard", states: FINDING, needs: "answer", prefix: "a", key: "x", label: "discard answer", description: "Discard the agent's answer about this finding and leave the finding as it was." },
 
   // ---- f: filter
   { id: "filter.high", states: OUTSIDE, prefix: "f", key: "h", label: "high only", description: "Show only the high severity findings." },
@@ -245,6 +248,7 @@ export function keyOf(id: string, km: Keymap = active): string {
 
 const inState = (ks: KeyState) => (a: Action): boolean => {
   if (!a.states.includes(ks.state)) return false;
+  if (a.needs === "answer") return ks.state === "finding" && !!ks.answer;
   if (ks.state !== "submit") return true;
   if (!a.steps?.includes(ks.step)) return false;
   if (ks.step === "comment" && a.typing !== undefined && a.typing !== ks.typing) return false;
@@ -353,8 +357,10 @@ const where = (a: Action, slot: "primary" | "secondary") => `${a.id}${slot === "
 
 /** Two bindings on one key in one state, per layer: the keys pressed first, and each prefix's second keys. */
 function checkConflicts(km: Keymap): void {
-  for (const state of REMAPPABLE_STATES) {
-    const ks = { state } as KeyState;
+  // A finding with an answer waiting has two keys more (a a, a x): it is checked as a state of its own.
+  const variants: KeyState[] = [...REMAPPABLE_STATES.map((state) => ({ state }) as KeyState), { state: "finding", answer: true }];
+  for (const ks of variants) {
+    const state = ks.state;
     const layers: [string, Action[]][] = [["", rowsOf(ks, km)], ...prefixesOf(ks, km).map((p): [string, Action[]] => [p, prefixRows(ks, p, km)])];
     const prefixes = prefixesOf(ks, km);
     for (const [layer, rows] of layers) {

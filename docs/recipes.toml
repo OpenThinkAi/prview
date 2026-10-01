@@ -147,7 +147,12 @@ why = "Shows the summary the review opened with: the overview, any suggested ver
 [[recipe]]
 q = ["how do I ask a question about this code", "ask the model about the block I am on", "what does this change do", "ask the model about this finding"]
 actions = ["ai.ask"]
-why = "Asks the model about the block under the cursor, or the open finding's block, and shows the answer."
+why = "Asks the agent about the block under the cursor, the chapter in the table of contents or the open finding; it reads the code (read-only) to answer, cites path:line, and a follow-up keeps the conversation."
+
+[[recipe]]
+q = ["dig into the code with an agent", "ask about this whole chapter", "ask a follow-up question", "check whether this finding holds elsewhere in the code"]
+actions = ["ai.ask"]
+why = "The agent can open files and search the repository at the change's head (read-only), so it can follow callers and tests; a follow-up keeps the conversation for that block, chapter or finding."
 
 [[recipe]]
 q = ["can the model draft my review", "suggest which findings to post and a verdict", "write a draft submission for me"]
@@ -157,7 +162,7 @@ why = "The model proposes the findings to include, a verdict and a comment; noth
 [[recipe]]
 q = ["how do I accept the model's answer about a finding", "update the finding from the answer", "throw away the model's answer", "keep the finding as it was"]
 actions = ["ai.accept", "ai.discard"]
-why = "After asking about a finding, accept the answer to revise the finding from it, or discard it to leave the finding alone."
+why = "After asking about a finding, accept the answer to apply the change it proposes (severity, title, claim or ignore), or discard it to leave the finding alone. These keys appear only while an answer is waiting."
 
 # ---- the action on a finding: block, comment or ignore
 

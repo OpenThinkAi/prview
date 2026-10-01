@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { all, build, preparedBy, checkHead, exportDocument, Fail, filesOf, home, importDocument, load, remove, reopen, repoFor, writeup, type BuildOpts, type Review } from "./build.ts";
-import { ConfigError, configPath, loadConfig, realLookups, resolveModel, ROLES, type Config } from "./config.ts";
+import { ConfigError, configPath, loadConfig, realLookups, resolveModel, roleModel, ROLES, type Config } from "./config.ts";
 import { describeKeymap, installKeymap } from "./keys.ts";
 import { probe } from "./llm.ts";
 import { besideIn, editor, editorArgs } from "./editor.ts";
@@ -27,8 +27,8 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   --dry-run prints the API calls a submit would make and posts nothing (nothing is written or run either).
   --samples N runs the critic N times per chapter (default 2) and keeps what the runs agree on, with votes shown.
   Models are named in ~/.config/prview/config.toml ($PRVIEW_CONFIG) and assigned per role (guide, critic,
-  refute, ask); with no config every role is claude -p on your subscription. --ai MODEL uses one named
-  model for all four roles this run; --no-ai skips the models.
+  refute, ask, deep); with no config every role is claude -p on your subscription. --ai MODEL uses one named
+  model for every role this run; --no-ai skips the models.
 
   Keys (the defaults; [keys] in the config remaps them, prview keys prints yours). Arrows move; the prefixes
   a (AI), f (filter), v (view) and g (go to) hold the rest, and the key panel (bottom right, always there) lists
@@ -60,7 +60,9 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
       (pbcopy, wl-copy, xclip, else OSC 52; PRVIEW_CLIPBOARD=osc52 forces the terminal route)
     ? search the docs: type what you want to do, Enter lists the matching actions with your keys (offline, no model)
     q quit (everything is kept)
-    a then: i the summary · ? ask the model about this block (or the open finding's)
+    a then: i the summary · ? ask the agent about the block (code), the chapter (table of contents) or the open
+            finding: it reads the code at the head (read-only) and answers with path:line references; asking again
+            is a follow-up. Inside a finding, while its answer waits: a a applies the change it proposes, a x discards it
     v then: z zen (hide or show the table of contents) · c the content area full-screen (Esc or v c restores)
             · e open the file here in your editor (inside tmux: in a split pane, this screen stays up) · w wrap
     g then: f/F next/previous finding (wrapping) · h/H next/previous by severity · g/e top/end of the file (the "whole file" rows)
@@ -148,7 +150,7 @@ async function models(): Promise<void> {
     return [def.name, def.kind, def.endpoint ?? "-", def.model ?? "-", status];
   }));
   for (const r of [["name", "kind", "endpoint", "model", "status"], ...rows]) console.log(r.join("\t"));
-  console.log(`roles: ${ROLES.map((r) => `${r}=${cfg.roles[r] ?? "claude"}`).join(" ")}`);
+  console.log(`roles: ${ROLES.map((r) => `${r}=${roleModel(cfg, r)}`).join(" ")}`);
 }
 
 /** `3 findings`, and how many of them the second look dropped (they open as ignored). */
