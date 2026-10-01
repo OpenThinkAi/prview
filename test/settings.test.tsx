@@ -287,10 +287,14 @@ test("screen: \\ opens the settings full-screen with every section, the cursor's
   for (let i = 0; i < DEFAULT_ACTIONS.length; i++) await t.press(DOWN);
   expect(t.frame()).toContain("Default actions by severity");
   expect(t.frame()).toMatch(/high\s+ block /);
-  for (let i = 0; i < 12; i++) await t.press(DOWN);
+  for (let i = 0; i < 11; i++) await t.press(DOWN);
   for (const s of ["Models per role", "Editor command", "Display", "Updates"]) expect(t.frame()).toContain(s);
   expect(t.frame()).toMatch(/blind\s+ off$/m);
   expect(t.frame()).toMatch(/auto_update\s+ off /); // the cursor's row: lit
+  // Last, the models, read-only, with where each one's credential comes from.
+  await t.press(DOWN);
+  expect(t.frame()).toContain("Models (edit them in the config file)");
+  expect(t.frame()).toMatch(/claude\s+ claude-cli · your claude login /);
 });
 
 test("screen: rebinding a key, a refused conflict, then Esc → y saves to the config and the new key acts at once", async () => {

@@ -19,6 +19,7 @@ import { ConfigError, configPath, DEFAULT_MODEL, parseConfig, ROLES, splitKey, s
 import { DEFAULT_ACTIONS, effectiveKeys, KeysError, rowById, showKey, type Action, type Binding } from "./keys.ts";
 import { ACTION_KINDS, DEFAULTS, LABEL, type Defaults } from "./triage.ts";
 import type { Severity } from "./guide.ts";
+import { credentialSetting } from "./claude-env.ts";
 
 export type Field =
   | { kind: "key"; id: string }
@@ -27,9 +28,10 @@ export type Field =
   | { kind: "editor" }
   | { kind: "wrap" }
   | { kind: "blind" }
-  | { kind: "auto_update" };
+  | { kind: "auto_update" }
+  | { kind: "model"; name: string };
 
-export const SECTIONS = { key: "Keys", default: "Default actions by severity", role: "Models per role", editor: "Editor command", wrap: "Display", blind: "Display", auto_update: "Updates" } as const;
+export const SECTIONS = { key: "Keys", default: "Default actions by severity", role: "Models per role", editor: "Editor command", wrap: "Display", blind: "Display", auto_update: "Updates", model: "Models (edit them in the config file)" } as const;
 export const sectionOf = (f: Field): string => SECTIONS[f.kind];
 
 /** What the view edits, with every value spelled out: an unset role or editor is "". */
@@ -58,6 +60,8 @@ export type Settings = {
   sub: Sub | null;
   /** The configured model names a role can be given (the built-in default is the unset choice). */
   models: string[];
+  /** Every model (the built-in one too) as read-only lines: its kind and where its credential comes from, by name only. */
+  modelLines: Record<string, string>;
   path: string;
   /** What the last key did, or why it was refused (`error`). */
   message?: { text: string; error?: boolean };
@@ -66,12 +70,13 @@ export type Settings = {
 export const SEVERITIES: readonly Severity[] = ["high", "medium", "low"];
 
 /** Every action, in table order: the ones that cannot be rebound are listed too, and say so when edited. */
-export function fieldsOf(): Field[] {
+export function fieldsOf(models: string[] = []): Field[] {
   return [
     ...DEFAULT_ACTIONS.map((a): Field => ({ kind: "key", id: a.id })),
     ...SEVERITIES.map((severity): Field => ({ kind: "default", severity })),
     ...ROLES.map((role): Field => ({ kind: "role", role })),
     { kind: "editor" }, { kind: "wrap" }, { kind: "blind" }, { kind: "auto_update" },
+    ...models.map((name): Field => ({ kind: "model", name })),
   ];
 }
 
@@ -87,7 +92,8 @@ export function valuesOf(cfg: Config): Values {
 
 export function openSettings(cfg: Config, path: string = configPath()): Settings {
   const v = valuesOf(cfg);
-  return { fields: fieldsOf(), initial: v, values: v, cursor: 0, slot: "primary", sub: null, models: Object.keys(cfg.models).filter((m) => m !== DEFAULT_MODEL), path };
+  const modelLines = Object.fromEntries(Object.values(cfg.models).map((d) => [d.name, `${d.kind}${d.model ? ` ${d.model}` : ""} · ${credentialSetting(d)}`]));
+  return { fields: fieldsOf(Object.keys(cfg.models)), initial: v, values: v, cursor: 0, slot: "primary", sub: null, models: Object.keys(cfg.models).filter((m) => m !== DEFAULT_MODEL), modelLines, path };
 }
 
 /** Every value as `path → text`, so two Values compare, and a save names what it touches, one setting at a time. */
@@ -183,6 +189,7 @@ export function settingsAct(s0: Settings, id: string): Out {
         case "wrap": return { s: { ...s, values: { ...v, wrap: !v.wrap } } };
         case "blind": return { s: { ...s, values: { ...v, blind: !v.blind } } };
         case "auto_update": return { s: { ...s, values: { ...v, autoUpdate: !v.autoUpdate } } };
+        case "model": return { s: say(s, `models are read-only here; edit [models.${f.name}] in ${s.path}`) };
       }
     }
   }
@@ -245,6 +252,7 @@ export function describeField(s: Settings, f: Field): { label: string; value: st
     case "editor": return { label: "editor", value: s.values.editor || "(from $PRVIEW_EDITOR or $EDITOR, else hx)", changed: ch("editor"), description: "The command v e runs, with the file and line added; $PRVIEW_EDITOR still wins when it is set. Empty: $EDITOR, else hx." };
     case "wrap": return { label: "wrap", value: s.values.wrap ? "on" : "off", changed: ch("wrap"), description: "Whether long lines wrap when a review opens (v w still toggles it)." };
     case "blind": return { label: "blind", value: s.values.blind ? "on" : "off", changed: ch("blind"), description: "Blind first pass: a chapter's findings stay hidden until you have read it (--blind / --no-blind still win for a run)." };
+    case "model": return { label: f.name, value: s.modelLines[f.name] ?? "", changed: false, description: `Read-only: edit [models.${f.name}] in the config file. "your claude login" runs claude -p as you are logged in; key_env or key_keychain bills that key instead (the agent of a ? too). Only the name of the variable or Keychain item shows, never the key.` };
     case "auto_update": return { label: "auto_update", value: s.values.autoUpdate ? "on" : "off", changed: ch("auto_update"), description: "Once a day an installed prview asks npm for a newer release. On: it installs it in the background (bun or npm, whichever installed prview) and says to restart. Off: it only says one is out. prview update installs at once either way; a source checkout never updates itself." };
   }
 }

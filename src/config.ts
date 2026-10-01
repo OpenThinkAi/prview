@@ -178,7 +178,7 @@ export function parseConfig(text: string, path: string | null = null): Config {
     const def: ModelDef = { name, kind: kind as Kind, endpoint: str(m, "endpoint", where), model: str(m, "model", where), keyEnv: str(m, "key_env", where), keyKeychain: str(m, "key_keychain", where) };
     if (def.kind === "openai-compatible" && !def.endpoint) throw new ConfigError(`${where}: openai-compatible needs an endpoint`);
     if (def.kind === "anthropic" && !def.model) throw new ConfigError(`${where}: anthropic needs a model`);
-    if (def.kind === "claude-cli" && (def.keyEnv || def.keyKeychain)) throw new ConfigError(`${where}: claude-cli uses your claude login; it takes no key`);
+    // claude-cli with a key: every `claude` prview runs for it bills that key, not your claude login (src/claude-env.ts).
     models[name] = def;
   }
   const roles: Partial<Record<Role, string>> = {};
@@ -255,7 +255,7 @@ export function resolveCredential(def: ModelDef, l: Lookups): string | undefined
   const named = [def.keyEnv && `$${def.keyEnv}`, def.keyKeychain && `Keychain service ${def.keyKeychain}`].filter(Boolean).join(" or ");
   if (named) throw new ConfigError(`model ${def.name}: no credential found in ${named}`);
   if (def.kind === "anthropic") throw new ConfigError(`model ${def.name}: the anthropic kind needs key_env or key_keychain`);
-  return undefined; // a local server or claude -p: no key needed
+  return undefined; // a local server, or claude -p on your claude login: no key needed
 }
 
 export function resolveModel(cfg: Config, name: string, l: Lookups): Resolved {

@@ -481,7 +481,7 @@ test("config: models, roles, defaults, and errors", () => {
   expect(c.roles).toEqual({ critic: "sonnet", ask: "local-qwen" });
   expect(() => parseConfig(`[models.a]\nkind = "gpt"`)).toThrow(/kind must be one of/);
   expect(() => parseConfig(`[models.a]\nkind = "openai-compatible"`)).toThrow(/endpoint/);
-  expect(() => parseConfig(`[models.a]\nkind = "claude-cli"\nkey_env = "X"`)).toThrow(/no key/);
+  expect(parseConfig(`[models.a]\nkind = "claude-cli"\nkey_env = "X"`).models.a!.keyEnv).toBe("X"); // AGT-1510: it bills that key
   expect(() => parseConfig(`[roles]\nguide = "ghost"`)).toThrow(/not a \[models.ghost\]/);
 });
 
