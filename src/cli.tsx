@@ -113,7 +113,7 @@ async function review(r: Review, cfg: Config, blind: boolean, dryRun = false): P
     resume = undefined;
     if (o.kind === "edit") {
       const cmd = editor(process.env, cfg.editor);
-      const p = Bun.spawnSync(editorArgs(cmd, o.path, o.line), { cwd: r.worktree, stdio: ["inherit", "inherit", "inherit"] });
+      const p = Bun.spawnSync(editorArgs(cmd, o.path, o.line, r.worktree), { cwd: r.worktree, stdio: ["inherit", "inherit", "inherit"] });
       if (p.exitCode !== 0 && !existsSync(join(r.worktree, o.path))) console.error(`prview: ${o.path} is not in the worktree`);
       continue;
     }
@@ -136,7 +136,7 @@ function editComment(r: Review, text: string, configured?: Config["editor"]): st
   const file = join(home(), `${r.slug}.comment.md`);
   try { mkdirSync(home(), { recursive: true }); writeFileSync(file, text ? text + "\n" : ""); } catch { return text; }
   const lines = text.split("\n").length;
-  const p = Bun.spawnSync(editorArgs(editor(process.env, configured), file, lines), { cwd: r.worktree, stdio: ["inherit", "inherit", "inherit"] });
+  const p = Bun.spawnSync(editorArgs(editor(process.env, configured), file, lines, r.worktree), { cwd: r.worktree, stdio: ["inherit", "inherit", "inherit"] });
   if (p.exitCode !== 0) console.error(`prview: the editor exited with ${p.exitCode}; the comment is as it was saved`);
   // Typed by the reader, but through a file: control characters go, as for anything read back from disk. The file is
   // only the editor's copy: the flow holds the comment, so it is removed once read.
