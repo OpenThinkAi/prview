@@ -14,12 +14,11 @@
 // no mention of prview or a model. The token is added by azureHttp and never seen here; every error is redacted.
 
 import { azureHttp, redact, type Http } from "../azure-auth.ts";
+import { getIterations, lastIteration, prApi } from "../azure-api.ts";
 import { azure as azureSource } from "../azure.ts";
 import { loadConfig, realLookups } from "../config.ts";
 import type { Target, Verdict } from "../document.ts";
 import type { Adapter, Posting, Runner } from "../platform.ts";
-
-const API = "api-version=7.1";
 
 /** Azure's vote for each verdict; `comment` casts none (writing 0 would reset a vote the reader already gave). */
 export const VOTE: Record<Verdict, number | undefined> = { approve: 10, request_changes: -5, comment: undefined };
@@ -66,14 +65,14 @@ function lineCtx(path: string, side: "new" | "old", line: number, end: number | 
 }
 
 function routes(t: Target) {
-  const pr = prOf(t)!;
-  const base = `https://dev.azure.com/${pr.org}/${pr.project}/_apis/git/repositories/${pr.repo}/pullRequests/${pr.id}`;
+  const pr = prOf(t)!, ref = azureSource.parse(pr.url)!;
   return {
     pr,
-    iterations: `${base}/iterations?${API}`,
-    changes: (last: number | string, skip: number) => `${base}/iterations/${last}/changes?$top=2000&$skip=${skip}&${API}`,
-    threads: `${base}/threads?${API}`,
-    reviewer: (me: string) => `${base}/reviewers/${me}?${API}`,
+    ref,
+    iterations: prApi(ref, "iterations"),
+    changes: (last: number | string, skip: number) => prApi(ref, `iterations/${last}/changes`, { $top: 2000, $skip: skip }),
+    threads: prApi(ref, "threads"),
+    reviewer: (me: string) => prApi(ref, `reviewers/${me}`),
     identity: `https://dev.azure.com/${pr.org}/_apis/connectionData`,
   };
 }
@@ -145,10 +144,9 @@ export function azureAdapter(deps: AzureDeps = { http: realHttp }): Adapter {
 
       // ---- 1. preflight: nothing is written until every check has passed.
       // A comment anchored to line 11 of one commit is wrong on another: refuse rather than mis-anchor.
-      const its = (await getJson(http, r.iterations, "the pull request's iterations"))?.value;
-      const lastIt = Array.isArray(its) ? its.reduce((a: any, b: any) => (typeof b?.id === "number" && b.id > (a?.id ?? -1) ? b : a), undefined) : undefined;
+      const lastIt = lastIteration(await getIterations(http, r.ref));
       const now = lastIt?.sourceRefCommit?.commitId;
-      if (typeof now !== "string" || !now) throw new Error("could not read the pull request's head commit");
+      if (typeof now !== "string" || !now || !lastIt) throw new Error("could not read the pull request's head commit");
       if (now !== t.head) throw new Error(`the pull request head is now ${now.slice(0, 8)}, but this review is of ${t.head.slice(0, 8)}: reopen it to review the new commits`);
       const last: number = lastIt.id;
       // The base goes into a git argv: only ever a commit id (a document is untrusted input; `--output=…` is not a commit).

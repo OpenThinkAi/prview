@@ -4,6 +4,7 @@
 // (github.ts). Posting a review back is the other half, in platform.ts.
 
 import { basename } from "node:path";
+import type { Http } from "./azure-auth.ts";
 import { Fail, type Target } from "./document.ts";
 
 /**
@@ -17,6 +18,12 @@ export type PrRef = { platform: string; url: string; repoKey: string; number: nu
 /** What a review is built from: its name in the store and the document's target. */
 export type Source = { slug: string; target: Target };
 
+/**
+ * What resolving may use beyond the clone: `say` for warnings worth showing (a closed or draft PR), `http` for a platform
+ * read over REST (Azure DevOps; tests pass a fake, so nothing touches a network). A source that needs neither ignores it.
+ */
+export type ResolveCtx = { say?: (s: string) => void; http?: Http };
+
 /** One platform's read side. */
 export type PrSource = {
   /** The id documents carry in `target.platform` (and the adapter in platform.ts is registered under). */
@@ -26,12 +33,13 @@ export type PrSource = {
   /** The repoKey a remote URL points at, or undefined when it is not this platform's shape. Pure. */
   remoteKey(remoteUrl: string): string | undefined;
   /** The PR's head, base and words, its commits fetched into this clone. A bare number is a PR of the clone's own repo. */
-  resolve(repo: string, ref: PrRef | number): Source;
+  resolve(repo: string, ref: PrRef | number, ctx?: ResolveCtx): Source | Promise<Source>;
   /**
    * Fetch the PR's head into refs/prview/pr-<n>. `known`: the ref came from a document, not from the platform in
    * this clone, so only a remote already configured here for its repo is used, never a URL the document chose.
+   * `head`: the commit the document expects, for a platform that can fetch a commit by id (Azure has no head ref).
    */
-  fetch(repo: string, ref: PrRef, known: boolean): void;
+  fetch(repo: string, ref: PrRef, known: boolean, head?: string): void;
 };
 
 /**

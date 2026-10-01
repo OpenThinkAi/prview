@@ -25,7 +25,8 @@ import {
 import { loadConfig, realLookups, resolveRoles, type Resolved, type Role } from "./config.ts";
 import { complete, modelLabel, pool, type Usage } from "./llm.ts";
 import { reviveAsks, type Asks } from "./deep.ts";
-import { git, prSlug, remoteFor, run, type Source } from "./pr.ts";
+import { git, prSlug, remoteFor, run, type ResolveCtx, type Source } from "./pr.ts";
+import type { Http } from "./azure-auth.ts";
 import { isPR, parseRef, prIn, sourceOf } from "./registry.ts";
 
 export { Fail };
@@ -86,9 +87,9 @@ function fromRange(repo: string, spec: string | undefined): Source {
 export { isPR };
 
 /** A pull request through its platform's source (registry.ts): the canonical URL is what the review stores as its ref. */
-function fromPR(repo: string, target: string): Source {
+function fromPR(repo: string, target: string, ctx: ResolveCtx): Source | Promise<Source> {
   const { source, ref } = prIn(repo, target);
-  return source.resolve(repo, ref);
+  return source.resolve(repo, ref, ctx);
 }
 
 // ---------------------------------------------------------------- the model passes
@@ -229,7 +230,7 @@ export function remove(slug: string): string {
     Bun.spawnSync(["git", "worktree", "remove", "--force", r.worktree], { cwd: r.repo });
     rmSync(r.worktree, { recursive: true, force: true });
     const pr = r.slug.match(/-pr-(\d+)$/);
-    if (pr) for (const end of ["head", "base"]) Bun.spawnSync(["git", "update-ref", "-d", `refs/prview/pr-${pr[1]}/${end}`], { cwd: r.repo });
+    if (pr) for (const end of ["head", "base", "merge"]) Bun.spawnSync(["git", "update-ref", "-d", `refs/prview/pr-${pr[1]}/${end}`], { cwd: r.repo });
     Bun.spawnSync(["git", "worktree", "prune"], { cwd: r.repo });
   }
   rmSync(metaOf(slug), { force: true });
@@ -267,14 +268,14 @@ function worktreeAt(repo: string, slug: string, head: string): string {
 
 // ---------------------------------------------------------------- building
 
-export type BuildOpts = { context?: number; /** a model name (--ai) for every role, undefined for the configured roles, null for no models. */ ai?: string | null; fresh?: boolean; samples?: number; say?: Progress };
+export type BuildOpts = { context?: number; /** a model name (--ai) for every role, undefined for the configured roles, null for no models. */ ai?: string | null; fresh?: boolean; samples?: number; say?: Progress; /** REST for a platform that needs it (Azure DevOps); the credentialed real one when absent, a fake in tests. */ http?: Http };
 
 export async function build(repo: string, target: string | undefined, opts: BuildOpts = {}): Promise<Review> {
   const context = opts.context ?? 3, say = opts.say ?? (() => {});
   repo = git(["rev-parse", "--show-toplevel"], repo);
   // Roles and credentials are resolved before anything is fetched or checked out, so a missing key costs nothing.
   const models = opts.ai === null ? null : resolveRoles(loadConfig(), realLookups(), opts.ai);
-  const { slug, target: t } = isPR(target) ? fromPR(repo, target!) : fromRange(repo, target);
+  const { slug, target: t } = isPR(target) ? await fromPR(repo, target!, { say, http: opts.http }) : fromRange(repo, target);
   if (t.base === t.head) throw new Fail(`${t.label} has no changes`);
   const worktree = worktreeAt(repo, slug, t.head);
   const files = filesOf({ repo, context, doc: blank(t) });
@@ -319,7 +320,7 @@ export async function reopen(slug: string, opts: BuildOpts): Promise<Review> {
 function haveCommits(repo: string, t: Target): void {
   const has = (c: string) => Bun.spawnSync(["git", "cat-file", "-e", `${c}^{commit}`], { cwd: repo }).exitCode === 0;
   const pr = parseRef(t.url);
-  if (!has(t.head) && pr) sourceOf(pr.platform)!.fetch(repo, pr, true);
+  if (!has(t.head) && pr) sourceOf(pr.platform)!.fetch(repo, pr, true, t.head);
   for (const c of [t.base, t.head]) if (!has(c)) throw new Fail(`commit ${c.slice(0, 8)} is not in ${repo}: fetch it, then import again`);
 }
 
