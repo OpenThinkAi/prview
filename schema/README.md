@@ -74,11 +74,14 @@ adapter, and the file is the review), then (3) runs your `on_submit` command, if
 A failed post or command never loses the file. Each submit is recorded in the document's
 `submissions`, with the command's exit code and output, and (optional fields, absent in older records) the
 head it reviewed (`head`), the target's `platform`, and in `posted.items` each thing that reached the pull
-request, even when the post failed part way: `kind` (`line`, `file` or `summary`), `path`, `line` and `side`
+request, even when the post failed part way: `kind` (`line`, `file`, `summary`, `reply` or `resolve`), `path`, `line` and `side`
 where they apply, the `text` exactly as posted, and the platform's ids. GitHub: `review_id` (also on `posted`)
 for the review a line comment or the summary is part of, and `comment_id` and `node_id` for a review comment
 (read back from the review after it is submitted) or a whole-file comment. Azure DevOps: `thread_id` and
-`comment_id` (the thread's first comment). A later re-review uses them to find those comments again.
+`comment_id` (the thread's first comment). A later re-review uses them to find those comments again. A re-review's
+answers on earlier threads are items too: `reply` (the reader's words as `text`; `path`, `line`, `side` of the comment
+answered, its id as `reply_to`, and the reply's own ids) and `resolve` (`text` empty; GitHub `comment_id` and the
+review thread's `thread_node_id`; Azure DevOps `thread_id`, set to fixed).
 
 A document can come from anywhere, so `on_submit` is only ever a request, and consent is per submit:
 

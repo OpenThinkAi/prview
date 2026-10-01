@@ -21,12 +21,51 @@ export const spawn: Runner = (argv, { cwd, stdin }) => {
   } catch (e) { return { exit: null, stdout: "", stderr: (e as Error).message }; }
 };
 
+/**
+ * A reply to, or a resolve of, an earlier thread (earlier.ts), queued in a re-review and sent before the review: `text`
+ * is the reply (the reader's own words; empty for a resolve), `place` where the comment it answers is, `key` its item.
+ * The ids are the thread's: GitHub the review comment (`comment_id`, `node_id`); Azure DevOps the thread and its first comment.
+ */
+export type EarlierPost = {
+  kind: "reply" | "resolve"; text: string; place: string; key: string; path?: string; line?: number; side?: "new" | "old";
+  comment_id?: number; node_id?: string; thread_id?: number;
+};
+
 /** The human's layer, ready to post: verdict, the summary (general comments) and the line comments. */
 export type Posting = {
   verdict: Verdict; body: string; /** The coverage line, when the human chose to add it: appended to the body, never counted as words of their own. */ coverage?: string; comments: { path: string; side: "new" | "old"; line: number; text: string }[];
   /** Comments on a whole file rather than a line: posted as file-level comments where the platform has them, else folded into the summary. */
   files?: { path: string; text: string }[];
+  /** Replies and resolves on earlier threads (a re-review), sent first, in this order. */
+  earlier?: EarlierPost[];
 };
+
+/**
+ * A comment verdict with no words of its own but replies or resolves on earlier threads: only those go out, and no
+ * review (GitHub will not take an empty comment review; Azure DevOps casts no vote for a comment anyway).
+ */
+export const onlyEarlier = (p: Posting): boolean =>
+  p.verdict === "comment" && !p.body.trim() && !p.comments.length && !p.files?.length && !p.coverage && !!p.earlier?.length;
+
+/** The earlier threads' part of a check on posted text: a reply is the reader's words, and each has the ids it needs. */
+export function earlierProblem(p: Posting, platform: "github" | "azure-devops"): string | undefined {
+  for (const e of p.earlier ?? []) {
+    if (e.kind === "reply" && !e.text.trim()) return `the reply to ${e.place} is empty`;
+    if (platform === "github" && !e.comment_id) return `${e.kind === "reply" ? "the reply to" : "resolving"} ${e.place} has no GitHub comment to act on`;
+    if (platform === "azure-devops" && (!e.thread_id || (e.kind === "reply" && !e.comment_id))) return `${e.kind === "reply" ? "the reply to" : "resolving"} ${e.place} has no Azure DevOps thread to act on`;
+  }
+  return undefined;
+}
+
+/** The earlier threads in a few words, for a describe line: `2 replies and 1 resolve on earlier threads, first`. */
+export function earlierText(p: Posting): string {
+  const r = p.earlier?.filter((e) => e.kind === "reply").length ?? 0, s = (p.earlier?.length ?? 0) - r;
+  const parts = [r ? `${r} repl${r === 1 ? "y" : "ies"}` : "", s ? `${s} resolve${s === 1 ? "" : "s"}` : ""].filter(Boolean);
+  return parts.length ? `${parts.join(" and ")} on earlier threads` : "";
+}
+
+/** What reached the PR before a failure, for its message. */
+const wentOut = (items: PostedItem[]) => items.map((i) => `${i.kind === "reply" ? "reply to" : i.kind === "resolve" ? "resolved" : `${i.kind} comment on`} ${i.path ? `${i.path}${i.line ? `:${i.line}` : ""}` : "the summary"}`).join("; ");
 
 /** What a post put on the PR: its URL when known, and each posted item with the platform's ids (see PostedItem). */
 export type Posted = { url?: string; /** GitHub: the submitted review's id. */ review_id?: number; items?: PostedItem[] };
@@ -75,6 +114,9 @@ const prOf = (t: Target) => t.url?.match(/^https:\/\/github\.com\/([^/]+)\/([^/]
 /** Why GitHub would refuse this posting before anything is sent, or undefined when it can go. */
 function githubProblem(t: Target, p: Posting): string | undefined {
   if (!prOf(t)) return "no GitHub pull request URL in the document's target";
+  const earlier = earlierProblem(p, "github");
+  if (earlier) return earlier;
+  if (onlyEarlier(p)) return undefined;
   // GitHub wants words with a change request or a comment; prview never writes them for you.
   const words = p.comments.length + (p.files?.length ?? 0);
   if (p.verdict !== "approve" && !p.body.trim() && !words) return `${p.verdict === "request_changes" ? "requesting changes" : "a comment"} needs a top-level comment or a ticked finding to post`;
@@ -115,7 +157,66 @@ function githubCalls(t: Target, p: Posting, reviewId: number | string = "<review
     discard: { method: "DELETE", path: `${pr}/reviews/${reviewId}` } as Call,
     // Read back after the submit: the review's comments, for their ids (GitHub's create does not return them).
     comments: (page: number): Call => ({ method: "GET", path: `${pr}/reviews/${reviewId}/comments?per_page=100&page=${page}` }),
+    // Earlier threads: a reply to a review comment, and (GraphQL) the review threads, to find a comment's, and resolving one.
+    reply: (e: EarlierPost): Call => ({ method: "POST", path: `${pr}/comments/${e.comment_id ?? "<comment id>"}/replies`, body: { body: e.text } }),
+    threads: (cursor: string | null): Call => ({ method: "POST", path: "graphql", body: { query: THREAD_IDS, variables: { o: owner, r: repo, n: Number(number), c: cursor } } }),
+    resolve: (threadId: string): Call => ({ method: "POST", path: "graphql", body: { query: RESOLVE, variables: { id: threadId } } }),
   };
+}
+
+/** The PR's review threads, a page at a time, each with its first comment's ids: how a comment's thread is found. */
+const THREAD_IDS = "query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:1){nodes{id databaseId}}}}}}}";
+const RESOLVE = "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}";
+
+/** A GraphQL call through gh: GitHub can answer 200 with `errors`, which is a failure all the same. */
+function graphql(run: Runner, cwd: string, c: Call): any {
+  const j = gh(run, cwd, c);
+  if (Array.isArray(j?.errors) && j.errors.length) throw new Error(`gh api graphql failed: ${String(j.errors[0]?.message ?? "an error").split("\n")[0]}`);
+  return j;
+}
+
+/**
+ * Sends the earlier threads' replies and resolves, in order, recording each as it goes out. A resolve finds its review
+ * thread from the comment (its node id, else its id) among the PR's threads, read once. The first failure stops it: a
+ * PostError carrying what already went out.
+ */
+function githubEarlier(run: Runner, cwd: string, c: ReturnType<typeof githubCalls>, earlier: EarlierPost[]): PostedItem[] {
+  const items: PostedItem[] = [];
+  let threads: { id: string; node?: string; db?: number }[] | undefined;
+  const threadOf = (e: EarlierPost): string | undefined => {
+    if (!threads) {
+      threads = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 20; page++) {
+        const t: any = graphql(run, cwd, c.threads(cursor))?.data?.repository?.pullRequest?.reviewThreads;
+        for (const n of Array.isArray(t?.nodes) ? t.nodes : []) {
+          const first = n?.comments?.nodes?.[0];
+          if (typeof n?.id === "string") threads.push({ id: n.id, ...(typeof first?.id === "string" ? { node: first.id } : {}), ...(typeof first?.databaseId === "number" ? { db: first.databaseId } : {}) });
+        }
+        if (!t?.pageInfo?.hasNextPage || typeof t.pageInfo.endCursor !== "string") break;
+        cursor = t.pageInfo.endCursor;
+      }
+    }
+    return (e.node_id ? threads.find((x) => x.node === e.node_id) : undefined)?.id ?? threads.find((x) => x.db === e.comment_id)?.id;
+  };
+  for (const e of earlier) {
+    const where = { ...(e.path ? { path: e.path } : {}), ...(e.line ? { line: e.line } : {}), ...(e.side ? { side: e.side } : {}) };
+    try {
+      if (e.kind === "reply") {
+        const got = gh(run, cwd, c.reply(e));
+        items.push({ kind: "reply", ...where, text: e.text, reply_to: e.comment_id!, ...commentIds(got) });
+      } else {
+        const id = threadOf(e);
+        if (!id) throw new Error("its review thread is not on the pull request");
+        graphql(run, cwd, c.resolve(id));
+        items.push({ kind: "resolve", ...where, text: "", comment_id: e.comment_id!, thread_node_id: id });
+      }
+    } catch (err) {
+      const what = `${e.kind === "reply" ? "the reply to" : "resolving"} ${e.place}`;
+      throw new PostError(`${what} failed: ${(err as Error).message}. ${items.length ? `Already posted (left in place): ${wentOut(items)}` : "Nothing was posted"}. The review was not posted.`, items);
+    }
+  }
+  return items;
 }
 
 /** A GitHub id as a number, or undefined. */
@@ -158,16 +259,22 @@ export const github: Adapter = {
   describe(t, p) {
     const why = githubProblem(t, p);
     if (why) return `not posted: ${why}`;
-    const n = p.comments.length, w = p.files?.length ?? 0;
-    return `posts to ${t.url} with gh: ${EVENT[p.verdict].toLowerCase().replace("_", " ")}${p.body.trim() ? ", your summary" : ""}${n ? `, ${n} line comment${n === 1 ? "" : "s"}` : ""}${w ? `, ${w} whole-file comment${w === 1 ? "" : "s"}` : ""}${p.coverage ? ", a coverage line" : ""}`;
+    const n = p.comments.length, w = p.files?.length ?? 0, first = earlierText(p);
+    if (onlyEarlier(p)) return `posts to ${t.url} with gh: only ${first} (no review: a comment with no words of its own)`;
+    return `posts to ${t.url} with gh: ${first ? `first ${first}; then ` : ""}${EVENT[p.verdict].toLowerCase().replace("_", " ")}${p.body.trim() ? ", your summary" : ""}${n ? `, ${n} line comment${n === 1 ? "" : "s"}` : ""}${w ? `, ${w} whole-file comment${w === 1 ? "" : "s"}` : ""}${p.coverage ? ", a coverage line" : ""}`;
   },
   dryRun(t, p) {
     const why = githubProblem(t, p);
     if (why) return [`would not post: ${why}`];
     const c = githubCalls(t, p);
     const show = (x: Call, note: string) => [`# ${note}`, `gh api --method ${x.method} ${x.path}${x.body === undefined ? "" : " --input -"}`, ...(x.body === undefined ? [] : [JSON.stringify(x.body, null, 2)])].join("\n");
+    const earlier = (p.earlier ?? []).flatMap((e) => e.kind === "reply"
+      ? [show(c.reply(e), `reply to your earlier comment on ${e.place} (sent before the review)`)]
+      : [show(c.threads(null), `find the review thread of your earlier comment on ${e.place} (paged; read once)`), show(c.resolve("<thread id>"), `resolve that thread (sent before the review)`)]);
+    if (onlyEarlier(p)) return [show(c.head, `the head must still be ${t.head}; if it moved, nothing is posted`), ...earlier, "# no review: a comment with no words of its own posts only the earlier threads"];
     return [
       show(c.head, `the head must still be ${t.head}; if it moved, nothing is posted`),
+      ...earlier,
       show(c.create, "a pending review holding the line comments (side RIGHT is the new file, LEFT the old)"),
       ...(p.files ?? []).map((x) => show(c.file(x), "a comment on the whole file; if GitHub refuses it, it goes into the summary instead")),
       show(c.submit, "submit it with the verdict"),
@@ -182,41 +289,56 @@ export const github: Adapter = {
     const now = gh(run, cwd, c.head)?.head?.sha;
     if (typeof now !== "string" || !now) throw new Error("could not read the pull request's head commit");
     if (now !== t.head) throw new Error(`the pull request head is now ${now.slice(0, 8)}, but this review is of ${t.head.slice(0, 8)}: reopen it to review the new commits`);
-    const id = gh(run, cwd, c.create)?.id;
-    if (typeof id !== "number" && typeof id !== "string") throw new Error("gh api did not return the pending review's id");
-    const later = githubCalls(t, p, id);
-    const fileItems: PostedItem[] = [];
-    let body: string, done: any;
-    try {
-      // Whole-file comments go after the pending review took the line comments (so a bad one is caught first). One GitHub
-      // will not take still reaches the PR, in the summary, under its file name.
-      const folded: string[] = [];
-      for (const x of p.files ?? []) {
-        let got: any;
-        try { got = gh(run, cwd, later.file(x)); } catch { folded.push(`${x.path}: ${x.text}`); continue; }
-        fileItems.push({ kind: "file", path: x.path, text: x.text, ...commentIds(got) });
-      }
-      body = [p.body, ...folded, p.coverage].filter(Boolean).join("\n\n");
-      const summary = { ...later.submit, body: { ...(later.submit.body as object), body } };
-      done = gh(run, cwd, summary);
-    } catch (e) {
-      // Never leave a pending review behind: it would sit half-made on the PR and block the next attempt.
-      try { gh(run, cwd, later.discard); } catch {}
-      // The whole-file comments are not part of the review: those already taken stay on the PR, and are recorded.
-      throw fileItems.length ? new PostError((e as Error).message, fileItems) : e;
+    // Earlier threads first: a failure there stops everything, the review included.
+    const earlier = githubEarlier(run, cwd, c, p.earlier ?? []);
+    if (onlyEarlier(p)) return { url: t.url, items: earlier };
+    try { return await githubReview(t, p, run, cwd, c, earlier); }
+    catch (e) {
+      // Whatever went out before the failure, the replies and resolves included, stays on the PR and is recorded.
+      if (!earlier.length) throw e;
+      const later = e instanceof PostError ? e.items : [];
+      throw new PostError(`${(e as Error).message} (already posted on earlier threads, left in place: ${wentOut(earlier)})`, [...earlier, ...later]);
     }
-    // Submitted: what is on the PR now, with the ids a later re-review answers and resolves by.
-    const review_id = numId(id) ?? numId(done?.id);
-    const rid = review_id ? { review_id } : {};
-    const ids = lineIds(run, cwd, later, p.comments);
-    const items: PostedItem[] = [
-      ...p.comments.map((q, i): PostedItem => ({ kind: "line", path: q.path, line: q.line, side: q.side, text: q.text, ...rid, ...ids[i] })),
-      ...fileItems,
-      ...(body.trim() ? [{ kind: "summary" as const, text: body, ...rid }] : []),
-    ];
-    return { url: typeof done?.html_url === "string" ? done.html_url : t.url, ...rid, items };
   },
 };
+
+/** The review itself, after the head check and the earlier threads: pending review, whole-file comments, submit, ids. */
+async function githubReview(t: Target, p: Posting, run: Runner, cwd: string, c: ReturnType<typeof githubCalls>, earlier: PostedItem[]): Promise<Posted> {
+  const id = gh(run, cwd, c.create)?.id;
+  if (typeof id !== "number" && typeof id !== "string") throw new Error("gh api did not return the pending review's id");
+  const later = githubCalls(t, p, id);
+  const fileItems: PostedItem[] = [];
+  let body: string, done: any;
+  try {
+    // Whole-file comments go after the pending review took the line comments (so a bad one is caught first). One GitHub
+    // will not take still reaches the PR, in the summary, under its file name.
+    const folded: string[] = [];
+    for (const x of p.files ?? []) {
+      let got: any;
+      try { got = gh(run, cwd, later.file(x)); } catch { folded.push(`${x.path}: ${x.text}`); continue; }
+      fileItems.push({ kind: "file", path: x.path, text: x.text, ...commentIds(got) });
+    }
+    body = [p.body, ...folded, p.coverage].filter(Boolean).join("\n\n");
+    const summary = { ...later.submit, body: { ...(later.submit.body as object), body } };
+    done = gh(run, cwd, summary);
+  } catch (e) {
+    // Never leave a pending review behind: it would sit half-made on the PR and block the next attempt.
+    try { gh(run, cwd, later.discard); } catch {}
+    // The whole-file comments are not part of the review: those already taken stay on the PR, and are recorded.
+    throw fileItems.length ? new PostError((e as Error).message, fileItems) : e;
+  }
+  // Submitted: what is on the PR now, with the ids a later re-review answers and resolves by.
+  const review_id = numId(id) ?? numId(done?.id);
+  const rid = review_id ? { review_id } : {};
+  const ids = lineIds(run, cwd, later, p.comments);
+  const items: PostedItem[] = [
+    ...earlier,
+    ...p.comments.map((q, i): PostedItem => ({ kind: "line", path: q.path, line: q.line, side: q.side, text: q.text, ...rid, ...ids[i] })),
+    ...fileItems,
+    ...(body.trim() ? [{ kind: "summary" as const, text: body, ...rid }] : []),
+  ];
+  return { url: typeof done?.html_url === "string" ? done.html_url : t.url, ...rid, items };
+}
 
 const ADAPTERS: Record<string, Adapter> = { github, "azure-devops": azure };
 

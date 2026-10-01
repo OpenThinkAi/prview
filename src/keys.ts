@@ -40,18 +40,19 @@ export type Action = {
    * (false); and `needs: "boxes"`, in the send step only when the submit has a checkbox (a command, a coverage line).
    * Inside a finding, `needs: "answer"`: only while an answer about it waits for `a a` / `a x`. In the code,
    * `needs: "comment"`: only on a line with a comment of the reader's that is not a finding's. `needs: "since"`: only in
-   * a re-review that has its "since your review" layer (rereview.ts).
+   * a re-review that has its "since your review" layer (rereview.ts). `needs: "previous"`: only on an item of a
+   * re-review's previous comments (the table of contents' cursor on one, or the code showing one: previous.ts).
    */
   steps?: readonly SubmitStep[];
   typing?: boolean;
-  needs?: "boxes" | "answer" | "comment" | "since";
+  needs?: "boxes" | "answer" | "comment" | "since" | "previous";
 };
 
 /** The submit flow's steps (submit-flow.ts): the findings checklist, the verdict, the top-level comment, then send. */
 export type SubmitStep = "findings" | "verdict" | "comment" | "send";
 
 /** A line being typed: `docs` is the question put to the docs search (`ask` is the one put to a model). */
-export type PromptKind = "ask" | "comment" | "reason" | "docs" | "severity" | "finding";
+export type PromptKind = "ask" | "comment" | "reason" | "docs" | "severity" | "finding" | "reply";
 
 /**
  * Where a key is pressed. `content` with `results`: docs search answers, where the arrows select. In the submit flow's
@@ -60,9 +61,10 @@ export type PromptKind = "ask" | "comment" | "reason" | "docs" | "severity" | "f
 export type KeyState =
   /**
    * `comment`: in the code, the cursor line has a comment of the reader's that is not a finding's (carried over, say).
-   * `since`: a re-review with its "since your review" layer, where `v s` acts.
+   * `since`: a re-review with its "since your review" layer, where `v s` acts. `previous`: on an item of a re-review's
+   * previous comments, where the reply and resolve keys act.
    */
-  | { state: "toc" | "code" | "settings"; comment?: boolean; since?: boolean }
+  | { state: "toc" | "code" | "settings"; comment?: boolean; since?: boolean; previous?: boolean }
   /** `answer`: an answer about this finding is waiting to be accepted or discarded. */
   | { state: "finding"; answer?: boolean }
   | { state: "content"; results?: boolean }
@@ -101,6 +103,9 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "review.search_docs", states: OUTSIDE, key: "?", label: "search docs", description: "Search the docs in your own words and see the actions that answer it, with your keys; offline, no model." },
   { id: "review.settings", states: OUTSIDE, key: "\\", label: "settings", description: "Open the settings: keys, default actions, models, editor and display, saved to the config file." },
   { id: "review.quit", states: OUTSIDE, key: "q", label: "quit", description: "Leave prview; the review so far is kept." },
+  // On an item of a re-review's previous comments (in the table of contents, or its place in the code): queued, sent with the next submit.
+  { id: "review.reply", states: OUTSIDE, needs: "previous", key: "r", label: "reply", description: "In a re-review, on one of your previous comments: write a reply to its thread in your own words, sent with your next submit before the new review; using it again edits the reply, and an empty one removes it." },
+  { id: "review.resolve", states: OUTSIDE, needs: "previous", key: "R", label: "resolve", description: "In a re-review, on one of your previous comments: mark its thread resolved (fixed on Azure DevOps) with your next submit, before the new review; using it again undoes that." },
 
   // ---- inside a finding
   { id: "finding.close", states: FINDING, key: "x", label: "close", description: "Close the finding; its action stays as it is." },
@@ -271,6 +276,7 @@ const inState = (ks: KeyState) => (a: Action): boolean => {
   if (a.needs === "answer") return ks.state === "finding" && !!ks.answer;
   if (a.needs === "comment") return ks.state === "code" && !!ks.comment;
   if (a.needs === "since") return (ks.state === "toc" || ks.state === "code") && !!ks.since;
+  if (a.needs === "previous") return (ks.state === "toc" || ks.state === "code") && !!ks.previous;
   if (ks.state !== "submit") return true;
   if (!a.steps?.includes(ks.step)) return false;
   if (ks.step === "comment" && a.typing !== undefined && a.typing !== ks.typing) return false;
@@ -280,7 +286,7 @@ const inState = (ks: KeyState) => (a: Action): boolean => {
 /** How a row reads in this state: labels that say what Enter, x or v will do right now. */
 function worded(ks: KeyState, a: Action): Action {
   if (ks.state === "prompt") {
-    if (a.id === "prompt.send") return { ...a, label: ks.kind === "ask" ? "ask" : ks.kind === "docs" ? "search" : ks.kind === "reason" ? "ignore" : ks.kind === "severity" ? "choose" : ks.decide || ks.kind === "finding" ? "save" : "send" };
+    if (a.id === "prompt.send") return { ...a, label: ks.kind === "ask" ? "ask" : ks.kind === "docs" ? "search" : ks.kind === "reason" ? "ignore" : ks.kind === "severity" ? "choose" : ks.kind === "reply" ? "queue" : ks.decide || ks.kind === "finding" ? "save" : "send" };
     if (a.id === "prompt.cancel" && ks.decide) return { ...a, label: "cancel" };
   }
   if (ks.state === "content" && ks.results && (a.id === "content.down" || a.id === "content.up")) return { ...a, label: "select" };
@@ -299,7 +305,7 @@ export const rowsOf = (ks: KeyState, km: Keymap = active): Action[] =>
 /** What a prompt does not list: the ignore note is one word (no ctrl-w); the arrows only pick a severity; a new line only where a comment can have several. The severity pick takes no text. */
 const promptHides = (kind: PromptKind, id: string): boolean =>
   (kind === "reason" && id === "prompt.word") || ((id === "prompt.up" || id === "prompt.down") && kind !== "severity")
-  || (id === "prompt.newline" && kind !== "finding" && kind !== "comment") || (kind === "severity" && (id === "prompt.clear" || id === "prompt.word"));
+  || (id === "prompt.newline" && kind !== "finding" && kind !== "comment" && kind !== "reply") || (kind === "severity" && (id === "prompt.clear" || id === "prompt.word"));
 
 /** The second keys of prefix `p` in a state. */
 export const prefixRows = (ks: KeyState, p: Prefix, km: Keymap = active): Action[] =>
@@ -380,8 +386,8 @@ const where = (a: Action, slot: "primary" | "secondary") => `${a.id}${slot === "
 /** Two bindings on one key in one state, per layer: the keys pressed first, and each prefix's second keys. */
 function checkConflicts(km: Keymap): void {
   // A finding with an answer waiting has two keys more (a a, a x), a re-review's table of contents and code one (v s),
-  // a code line with a comment of the reader's one (x): each is checked as a state of its own.
-  const variants: KeyState[] = [...REMAPPABLE_STATES.map((state) => ({ state }) as KeyState), { state: "finding", answer: true }, { state: "toc", since: true }, { state: "code", comment: true, since: true }];
+  // a code line with a comment of the reader's one (x), a previous comment two (r, R): each is checked as a state of its own.
+  const variants: KeyState[] = [...REMAPPABLE_STATES.map((state) => ({ state }) as KeyState), { state: "finding", answer: true }, { state: "toc", since: true, previous: true }, { state: "code", comment: true, since: true, previous: true }];
   for (const ks of variants) {
     const state = ks.state;
     const layers: [string, Action[]][] = [["", rowsOf(ks, km)], ...prefixesOf(ks, km).map((p): [string, Action[]] => [p, prefixRows(ks, p, km)])];

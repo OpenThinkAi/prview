@@ -33,6 +33,7 @@ import { rereviewOf } from "./rereview.ts";
 import { sinceOf, type Since } from "./since.ts";
 import { previousItems, previousOf } from "./previous-read.ts";
 import type { Previous } from "./previous.ts";
+import { earlierOf, keepQueue, type EarlierQueue } from "./earlier.ts";
 import { keyOf } from "./keys.ts";
 
 export { Fail };
@@ -61,7 +62,7 @@ export type Pos = { item: number; line: number };
 /** `ref` is what was asked for (a PR's canonical URL, a PR number in a review stored before URLs were, or a range), so the review can be rebuilt at a newer head. */
 /** `suggested`: the verdicts of documents imported at this head, shown in the opening summary as information only. */
 /** `asks`: the `a ?` conversations, by subject, kept on this machine only (never in the document). */
-export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; /** The severity filter (`f h`/`f m`/`f a`), kept here with the reader's place, never in the document; absent means all. */ filter?: Filter; ai?: Ai; doc: Doc; suggested?: Suggested[]; asks?: Asks; /** Where the reader's carried-over comments came from (carryover.ts), kept with the review, never in the document. */ carried?: Carried; /** A re-review (rereview.ts): the head last submitted at and what changed since; never in the document. */ since?: Since; /** `v s`: only the blocks changed since that review are shown, kept like the filter. */ sinceOnly?: true; /** A re-review: what the last submit posted, and where each item is now (previous.ts); worked out on every open, never in the document. */ previous?: Previous };
+export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; /** The severity filter (`f h`/`f m`/`f a`), kept here with the reader's place, never in the document; absent means all. */ filter?: Filter; ai?: Ai; doc: Doc; suggested?: Suggested[]; asks?: Asks; /** Where the reader's carried-over comments came from (carryover.ts), kept with the review, never in the document. */ carried?: Carried; /** A re-review (rereview.ts): the head last submitted at and what changed since; never in the document. */ since?: Since; /** `v s`: only the blocks changed since that review are shown, kept like the filter. */ sinceOnly?: true; /** A re-review: what the last submit posted, and where each item is now (previous.ts); worked out on every open, never in the document. */ previous?: Previous; /** A re-review: replies and resolves queued on those items for the next submit (earlier.ts), kept with the review, never in the document. */ earlier?: EarlierQueue };
 
 export const home = () => process.env.PRVIEW_HOME ?? join(homedir(), ".cache", "prview");
 const metaOf = (slug: string) => join(home(), `${slug}.json`);
@@ -210,7 +211,7 @@ function revive(j: any): Review | undefined {
     typeof v?.by === "string" && v.by && ["approve", "request_changes", "comment"].includes(v.verdict) ? [{ by: v.by.slice(0, 40), verdict: v.verdict, ...(typeof v.reason === "string" && v.reason.trim() ? { reason: v.reason.trim().slice(0, 240) } : {}) }] : []);
   try {
     const asks = reviveAsks(j.asks);
-    return { slug: j.slug, repo: j.repo, ref: j.ref ?? j.target, worktree: j.worktree, context: j.context ?? 3, created: j.created, pos: j.pos ?? { item: 0, line: 0 }, ...(filterOf(j.filter) !== "all" ? { filter: filterOf(j.filter) } : {}), ...(sinceOf(j.since) ? { since: sinceOf(j.since) } : {}), ...(j.sinceOnly === true ? { sinceOnly: true as const } : {}), ai: j.ai, doc: parseDocument(raw), ...(suggested.length ? { suggested } : {}), ...(asks ? { asks } : {}), ...(carriedOf(j.carried) ? { carried: carriedOf(j.carried) } : {}) };
+    return { slug: j.slug, repo: j.repo, ref: j.ref ?? j.target, worktree: j.worktree, context: j.context ?? 3, created: j.created, pos: j.pos ?? { item: 0, line: 0 }, ...(filterOf(j.filter) !== "all" ? { filter: filterOf(j.filter) } : {}), ...(sinceOf(j.since) ? { since: sinceOf(j.since) } : {}), ...(j.sinceOnly === true ? { sinceOnly: true as const } : {}), ai: j.ai, doc: parseDocument(raw), ...(suggested.length ? { suggested } : {}), ...(asks ? { asks } : {}), ...(carriedOf(j.carried) ? { carried: carriedOf(j.carried) } : {}), ...(earlierOf(j.earlier) ? { earlier: earlierOf(j.earlier) } : {}) };
   } catch { return undefined; }
 }
 
@@ -332,6 +333,9 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   // Its previous comments: where each is now follows the same old→new diff when the layer is of the same head.
   if (pre) {
     try { r.previous = previousOf(repo, t, pre, since?.files && since.head === pre.head ? since : undefined); } catch {}
+    // Replies and resolves queued on these items stay queued while the chapter is of the same submission.
+    const q = keepQueue(prior?.earlier, pre.head, pre.keys);
+    if (q) r.earlier = q;
     const n = pre.items.length;
     say(`re-review: your last submit (${pre.at.slice(0, 10)}, at ${pre.head.slice(0, 7)}) ${pre.posted ? "posted" : "recorded"} ${n} item${n === 1 ? "" : "s"}; ${keyOf("go.previous")} shows them, with where each is now and the replies`);
   }

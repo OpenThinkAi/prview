@@ -3,7 +3,8 @@
 //
 //   1. findings   every finding with its action; block and comment ticked, ignore not. Ticked ones post. Below them
 //                 the reader's own comments that are not a current finding's (carried over from an earlier head, say:
-//                 carryover.ts), ticked unless an earlier submit already posted them. Nothing posts that is not here.
+//                 carryover.ts), ticked unless an earlier submit already posted them. Then, in a re-review, the replies
+//                 and resolves queued on earlier threads (earlier.ts), ticked; they go out first. Nothing posts that is not here.
 //   2. verdict    the platform's verdicts as a radio, starting on what the ticks imply; the suggestions beside it.
 //   3. comment    the top-level comment, several lines (`v e` for the editor); it replaces the old summary comments.
 //   4. send       exactly what posts, the on_submit command and the coverage line as checkboxes (both off), Enter.
@@ -19,6 +20,7 @@ import { titleOf, type Finding } from "./guide.ts";
 import type { Human, Verdict } from "./document.ts";
 import { isOwnKey, ownKey, ownLabel, pathOfHunk, type Own } from "./carryover.ts";
 import type { SubmitStep } from "./keys.ts";
+import { earlierKeys, isEarlierKey, replyKey, resolveKey, type EarlierAct, type EarlierQueue } from "./earlier.ts";
 import { actionOf, actionText, decide, DEFAULTS, linkedComment, type Defaults } from "./triage.ts";
 
 export type FlowStep = SubmitStep;
@@ -42,6 +44,8 @@ export type Flow = {
   drafted?: boolean;
   /** The reader's own comments in the checklist, after the findings: `listed` holds their keys (carryover.ts ownKey). */
   own?: Own[];
+  /** A re-review's queued replies and resolves, last in the checklist: `listed` holds their keys (earlier.ts replyKey, resolveKey). */
+  earlier?: EarlierAct[];
 };
 
 /** What `a s` drafts for the reader to review here: the findings to include, a verdict and a comment. Any part may be missing. */
@@ -57,35 +61,37 @@ export type Selection = { listed: string[]; include: string[]; comment: string; 
 export const generalText = (h: Pick<Human, "comments">, posted: ReadonlySet<string> = new Set()): string => h.comments.filter((c) => !c.hunk && !posted.has(c.text)).map((c) => c.text).join("\n\n");
 
 /** What the flow knows of the reader's own comments: the checklist entries, and summary texts already posted (the box does not start from those). */
-export type Carry = { own?: Own[]; postedSummaries?: ReadonlySet<string> };
+export type Carry = { own?: Own[]; postedSummaries?: ReadonlySet<string>; earlier?: EarlierQueue };
 
 /** Ticked by default: a finding whose action is block or comment. */
 export const tickedByDefault = (h: Pick<Human, "decisions">, f: Finding, defaults: Defaults = DEFAULTS): boolean => actionOf(h, f, defaults).kind !== "ignore";
 
 export function startFlow(listed: Finding[], h: Pick<Human, "comments" | "decisions">, verdicts: Verdict[], defaults: Defaults = DEFAULTS, draft?: Draft, carry: Carry = {}): Flow {
   const own = carry.own ?? [];
-  const ids = [...listed.map((f) => f.id), ...own.map((o) => o.key)];
+  const answers = earlierKeys(carry.earlier);
+  const ids = [...listed.map((f) => f.id), ...own.map((o) => o.key), ...answers];
   // A draft picks among the findings; the reader's own comments start the same either way: ticked unless posted before.
   const ticked = [
     ...(draft?.include ? listed.map((f) => f.id).filter((id) => draft.include!.includes(id)) : listed.filter((f) => tickedByDefault(h, f, defaults)).map((f) => f.id)),
     ...own.filter((o) => !o.posted).map((o) => o.key),
+    ...answers,
   ];
   const verdict = draft?.verdict && verdicts.includes(draft.verdict) ? draft.verdict : undefined;
   return {
     step: "findings", listed: ids, ticked, at: 0, verdicts, ...(verdict ? { verdict } : {}), picked: !!verdict,
     comment: draft?.comment ?? generalText(h, carry.postedSummaries), typing: false, hook: false, coverage: false, box: 0,
-    ...(draft ? { drafted: true } : {}), ...(own.length ? { own } : {}),
+    ...(draft ? { drafted: true } : {}), ...(own.length ? { own } : {}), ...(carry.earlier?.acts.length ? { earlier: carry.earlier.acts } : {}),
   };
 }
 
 /** How a ticked finding goes out: block as block, anything else (comment, or an ignore ticked back in) as a comment. */
 const goesAs = (h: Pick<Human, "decisions">, f: Finding, defaults: Defaults) => actionOf(h, f, defaults).kind === "block" ? "block" : "comment";
 
-/** The verdict the ticks imply: request changes with any ticked block, else comment with anything ticked (a comment of the reader's too), else none. */
+/** The verdict the ticks imply: request changes with any ticked block, else comment with anything ticked (a comment of the reader's, a reply or resolve too), else none. */
 export function impliedVerdict(findings: Finding[], h: Pick<Human, "decisions">, ticked: string[], defaults: Defaults = DEFAULTS): Verdict | undefined {
   const on = findings.filter((f) => ticked.includes(f.id));
   if (on.some((f) => goesAs(h, f, defaults) === "block")) return "request_changes";
-  return on.length || ticked.some(isOwnKey) ? "comment" : undefined;
+  return on.length || ticked.some(isOwnKey) || ticked.some(isEarlierKey) ? "comment" : undefined;
 }
 
 /** Into the verdict step the radio starts on what the ticks imply, unless a verdict was already picked. */
@@ -212,13 +218,16 @@ export function stepLines(fl: Flow, s: Show): Line[] {
     case "findings": {
       const out: Line[] = fl.drafted ? [{ text: "A draft: the ticks, the verdict and the comment are suggestions to review and change. Nothing is sent until Enter on Send.", wrap: true }] : [];
       const own = new Map((fl.own ?? []).map((o) => [o.key, o]));
+      const answers = new Map<string, { a: EarlierAct; kind: "reply" | "resolve" }>((fl.earlier ?? []).flatMap((a) => [[replyKey(a), { a, kind: "reply" }], [resolveKey(a), { a, kind: "resolve" }]]));
       out.push({ text: `Ticked findings${own.size ? " and comments" : ""} post their comment on their line; the rest are left out. ${s.keys.tick} ticks one, ${s.keys.all} ticks all.`, dim: true, wrap: true });
       if ([...own.values()].some((o) => o.posted)) out.push({ text: "Your comments an earlier submit already posted start unticked: tick one to post it again.", dim: true, wrap: true });
       if (s.note) out.push({ text: s.note, wrap: true });
       if (!fl.listed.length) out.push({ text: `No findings to include. ${s.keys.next} goes on to the verdict.` });
       fl.listed.forEach((id, i) => {
-        const f = byId.get(id), o = own.get(id);
+        const f = byId.get(id), o = own.get(id), e = answers.get(id);
         const on = fl.ticked.includes(id), box = on ? "[x]" : "[ ]";
+        if (e && !answers.has(fl.listed[i - 1] ?? "")) out.push({ text: "Earlier threads, sent first (before the review):", head: true });
+        if (e) out.push({ text: `${box} ${e.kind} · ${e.a.place}${e.kind === "reply" ? ` · ${e.a.reply?.split("\n")[0] ?? ""}` : ""}`, on, cursor: i === fl.at });
         if (f) out.push({ text: `${box} ${f.severity} · ${actionText(actionOf(s.h, f, defaults))} · ${s.place(f)} · ${titleOf(f)}`, on, cursor: i === fl.at });
         else if (o) out.push({ text: `${box} yours · ${ownLabel(o) ?? "your comment"} · ${ownPlace(o)} · ${o.comment.text.split("\n")[0]}`, on, cursor: i === fl.at });
       });

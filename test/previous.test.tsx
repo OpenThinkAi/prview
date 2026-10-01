@@ -135,9 +135,10 @@ test("GitHub: matched by id, else path, line and text; replies oldest first, cle
   const t = matchGithub(ITEMS, GH_COMMENTS, new Map([[101, true], [102, false]]));
   expect(t[0]).toEqual({ found: true, resolved: true, replies: [
     { author: "author", at: "2026-09-30T11:00:00Z", text: "good point" }, { author: "author", at: "2026-09-30T12:00:00Z", text: "done in the next push" },
-  ] });
-  expect(t[1]).toMatchObject({ found: true, resolved: false, replies: [{ text: "won't fix" }] });
-  expect(t[2]).toEqual({ found: true, replies: [] });
+  ], ids: { comment_id: 101 } });
+  // The thread as found, for a reply or resolve on a legacy item (earlier.ts): its first comment's id.
+  expect(t[1]).toMatchObject({ found: true, resolved: false, replies: [{ text: "won't fix" }], ids: { comment_id: 102 } });
+  expect(t[2]).toEqual({ found: true, replies: [], ids: { comment_id: 103 } });
   expect(t[3]).toEqual({ found: false, replies: [] });
   const remote = { ok: true as const, threads: t };
   expect(ITEMS.map((i, n) => remoteText(remote, n, i, "github"))).toEqual(["2 replies · resolved", "1 reply · open", "no replies", ""]);
@@ -180,7 +181,7 @@ test("GitHub read failures: the comments failing is a reason; the threads failin
   expect(bad).toEqual({ ok: false, reason: "gh api failed (exit 1): Not Found" });
   expect(remoteText(bad, 0, ITEMS[0]!, "github")).toBe("replies unavailable (gh api failed (exit 1): Not Found)");
   const half = await readGithub({ url: "https://github.com/o/r/pull/7", items: ITEMS }, fakeGh(GH_COMMENTS, { fail: "graphql" }).run, "/x");
-  expect(half.ok && half.threads[0]).toEqual({ found: true, replies: expect.any(Array) });
+  expect(half.ok && half.threads[0]).toEqual({ found: true, replies: expect.any(Array), ids: { comment_id: 101 } });
   // gh not there at all: a reason, never a throw.
   const none: AsyncRunner = async () => { throw new Error("spawn gh ENOENT"); };
   expect(await readRemote({ head: A, at: "", round: 1, url: "https://github.com/o/r/pull/7", platform: "github", items: ITEMS }, { run: none })).toEqual({ ok: false, reason: "spawn gh ENOENT" });
@@ -218,10 +219,10 @@ test("Azure DevOps: matched by thread id, else path, line and text; replies are 
   const t = matchAzure(AZ_ITEMS, AZ_THREADS);
   expect(t[0]).toEqual({ found: true, resolved: true, replies: [
     { author: "Author", at: "2026-09-30T11:00:00Z", text: "on it" }, { author: "Author", at: "2026-09-30T12:00:00Z", text: "done" },
-  ] });
-  expect(t[1]).toEqual({ found: true, resolved: false, replies: [] });
+  ], ids: { thread_id: 7, comment_id: 1 } });
+  expect(t[1]).toEqual({ found: true, resolved: false, replies: [], ids: { thread_id: 8, comment_id: 1 } });
   expect(t[2]).toMatchObject({ found: true, resolved: true, replies: [{ text: "by design" }] });
-  expect(t[3]).toEqual({ found: true, resolved: true, replies: [] });
+  expect(t[3]).toEqual({ found: true, resolved: true, replies: [], ids: { thread_id: 10, comment_id: 1 } });
   expect(AZ_ITEMS.map((i, n) => remoteText({ ok: true, threads: t }, n, i, "azure-devops"))).toEqual(["2 replies · resolved", "no replies · open", "1 reply · resolved", "no replies · resolved"]);
 });
 

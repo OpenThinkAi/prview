@@ -18,7 +18,7 @@ import { getIterations, lastIteration, prApi } from "../azure-api.ts";
 import { azure as azureSource } from "../azure.ts";
 import { loadConfig, realLookups } from "../config.ts";
 import { PostError, type PostedItem, type Target, type Verdict } from "../document.ts";
-import type { Adapter, Posting, Runner } from "../platform.ts";
+import { earlierProblem, earlierText, onlyEarlier, type Adapter, type EarlierPost, type Posting, type Runner } from "../platform.ts";
 
 /** Azure's vote for each verdict; `comment` casts none (writing 0 would reset a vote the reader already gave). */
 export const VOTE: Record<Verdict, number | undefined> = { approve: 10, request_changes: -5, comment: undefined };
@@ -36,6 +36,9 @@ function prOf(t: Target): { org: string; project: string; repo: string; id: numb
 /** Why Azure DevOps should not be sent this posting, or undefined when it can go. Mirrors githubProblem: the one check on posted text. */
 export function azureProblem(t: Target, p: Posting): string | undefined {
   if (!prOf(t)) return "no Azure DevOps pull request URL in the document's target";
+  const earlier = earlierProblem(p, "azure-devops");
+  if (earlier) return earlier;
+  if (onlyEarlier(p)) return undefined;
   // Azure would take a bare -5, but prview never asks for changes without words, and a comment with nothing in it is nothing.
   const words = p.comments.length + (p.files?.length ?? 0);
   if (p.verdict !== "approve" && !p.body.trim() && !words) return `${p.verdict === "request_changes" ? "requesting changes" : "a comment"} needs a top-level comment or a ticked finding to post`;
@@ -73,6 +76,9 @@ function routes(t: Target) {
     changes: (last: number | string, skip: number) => prApi(ref, `iterations/${last}/changes`, { $top: 2000, $skip: skip }),
     threads: prApi(ref, "threads"),
     reviewer: (me: string) => prApi(ref, `reviewers/${me}`),
+    // Earlier threads: a reply is a comment on the thread under its first comment; resolving sets the thread fixed.
+    reply: (e: EarlierPost): Call => ({ method: "POST", url: prApi(ref, `threads/${e.thread_id ?? "<thread id>"}/comments`), body: { parentCommentId: e.comment_id ?? "<comment id>", content: e.text, commentType: 1 } }),
+    resolve: (e: EarlierPost): Call => ({ method: "PATCH", url: prApi(ref, `threads/${e.thread_id ?? "<thread id>"}`), body: { status: "fixed" } }),
     identity: `https://dev.azure.com/${pr.org}/_apis/connectionData`,
   };
 }
@@ -113,8 +119,9 @@ export function azureAdapter(deps: AzureDeps = { http: realHttp }): Adapter {
     describe(t, p) {
       const why = azureProblem(t, p);
       if (why) return `not posted: ${why}`;
-      const n = p.comments.length, w = p.files?.length ?? 0;
-      return `posts to ${prOf(t)!.url} with your Azure DevOps login: ${VOTE_TEXT[p.verdict]}${p.body.trim() ? ", your summary" : ""}${n ? `, ${n} line comment${n === 1 ? "" : "s"}` : ""}${w ? `, ${w} whole-file comment${w === 1 ? "" : "s"}` : ""}${p.coverage ? ", a coverage line" : ""}; each thread is visible as soon as it is posted`;
+      const n = p.comments.length, w = p.files?.length ?? 0, first = earlierText(p);
+      if (onlyEarlier(p)) return `posts to ${prOf(t)!.url} with your Azure DevOps login: only ${first} (a comment with no words of its own: no summary, your vote is left as it is)`;
+      return `posts to ${prOf(t)!.url} with your Azure DevOps login: ${first ? `first ${first}; then ` : ""}${VOTE_TEXT[p.verdict]}${p.body.trim() ? ", your summary" : ""}${n ? `, ${n} line comment${n === 1 ? "" : "s"}` : ""}${w ? `, ${w} whole-file comment${w === 1 ? "" : "s"}` : ""}${p.coverage ? ", a coverage line" : ""}; each thread is visible as soon as it is posted`;
     },
     dryRun(t, p) {
       const why = azureProblem(t, p);
@@ -125,10 +132,15 @@ export function azureAdapter(deps: AzureDeps = { http: realHttp }): Adapter {
       const show = (c: Call, note: string) => [`# ${note}`, `${c.method} ${c.url}`, ...(c.body === undefined ? [] : [JSON.stringify(c.body, null, 2)])].join("\n");
       const summary = [p.body, p.coverage].filter((x) => x?.trim()).join("\n\n");
       const vote = VOTE[p.verdict];
+      const earlier = (p.earlier ?? []).map((e) => e.kind === "reply"
+        ? show(r.reply(e), `reply on the thread of your earlier comment on ${e.place} (sent before the review)`)
+        : show(r.resolve(e), `resolve the thread of your earlier comment on ${e.place}: status fixed (sent before the review)`));
+      if (onlyEarlier(p)) return [show({ method: "GET", url: r.iterations }, `the last iteration's head must still be ${t.head}; if it moved, nothing is posted`), ...earlier, "# no summary and no vote: a comment with no words of its own posts only the earlier threads"];
       return [
         show({ method: "GET", url: r.iterations }, `the last iteration's head must still be ${t.head}; if it moved, nothing is posted`),
         show({ method: "GET", url: r.changes(last, 0) }, "the change list of that iteration (paged): each commented file's tracking id; a file not in it goes into the summary instead"),
         ...(vote === undefined ? [] : [show({ method: "GET", url: r.identity }, "who you are, for the vote (if this fails, the vote goes through `az repos pr set-vote` instead)")]),
+        ...earlier,
         ...p.comments.map((c) => show({ method: "POST", url: r.threads, body: thread(c.text, { threadContext: lineCtx(c.path, c.side, c.line, `<length of line ${c.line} + 1>`), pullRequestThreadContext: prCtx(id(c.path), last) }) },
           `a line comment on the ${c.side === "old" ? "old (left)" : "new (right)"} side, posted active`)),
         ...(p.files ?? []).map((x) => show({ method: "POST", url: r.threads, body: thread(x.text, { threadContext: { filePath: slash(x.path) }, pullRequestThreadContext: prCtx(id(x.path), last) }) }, "a comment on the whole file, posted active")),
@@ -211,6 +223,20 @@ export function azureAdapter(deps: AzureDeps = { http: realHttp }): Adapter {
         items.push({ ...item, ...(whole(id) ? { thread_id: id } : {}), ...(whole(first) ? { comment_id: first } : {}) });
         posted.push(`thread ${id ?? "?"} (${what}${typeof id === "number" ? `, ${r.pr.url}?discussionId=${id}` : ""})`);
       };
+      // Earlier threads first (a re-review's replies and resolves), each recorded as it goes out.
+      for (const e of p.earlier ?? []) {
+        const what = `${e.kind === "reply" ? "the reply to" : "resolving"} ${e.place}`, c = e.kind === "reply" ? r.reply(e) : r.resolve(e);
+        let res;
+        try { res = await http({ method: c.method, url: c.url, headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(c.body) }); }
+        catch (err) { fail(what, (err as Error).message); }
+        if (!ok(res!.status)) fail(what, reason(res!));
+        const at = { ...(e.path ? { path: e.path } : {}), ...(e.line ? { line: e.line } : {}), ...(e.side ? { side: e.side } : {}), thread_id: e.thread_id! };
+        const got = (res!.json as any)?.id;
+        items.push(e.kind === "reply"
+          ? { kind: "reply", ...at, text: e.text, reply_to: e.comment_id!, ...(typeof got === "number" && Number.isSafeInteger(got) && got > 0 ? { comment_id: got } : {}) }
+          : { kind: "resolve", ...at, text: "", ...(e.comment_id ? { comment_id: e.comment_id } : {}) });
+        posted.push(`${e.kind === "reply" ? "reply on" : "resolved"} thread ${e.thread_id} (${e.place}, ${r.pr.url}?discussionId=${e.thread_id})`);
+      }
       const where = (c: Call) => { const x = (c.body as Thread).threadContext!; const s = x.rightFileStart ?? x.leftFileStart; return `${x.filePath.slice(1)}${s ? `:${s.line}${x.leftFileStart ? " (old side)" : ""}` : ""}`; };
       for (const w of lines) await send(w, `line comment on ${where(w.call)}`);
       for (const w of wholeFiles) await send(w, `whole-file comment on ${where(w.call)}`);
