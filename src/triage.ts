@@ -67,11 +67,11 @@ export function defaultVerdict(findings: Finding[], h: Pick<Human, "decisions">)
  * The submit preview's list of every finding with its action, so what the review says about each is seen before
  * anything posts. `hidden`: blind chapters still hold findings back. Empty when there are no findings.
  */
-export function actionsNote(findings: Finding[], h: Pick<Human, "decisions">, place: (hunk: string, line: number) => string, defaults: Defaults = DEFAULTS, hidden = false, note = ""): string {
+export function actionsNote(findings: Finding[], h: Pick<Human, "decisions">, place: (hunk: string, line: number | null) => string, defaults: Defaults = DEFAULTS, hidden = false, note = ""): string {
   if (!findings.length && !hidden) return "";
   const out = [`── Findings (${findings.length})`, ""];
   if (note) out.splice(1, 0, note);
-  for (const f of findings) out.push(`▲ ${place(f.hunk, f.line)} · ${f.severity} · ${actionText(actionOf(h, f, defaults))} · ${titleOf(f)}`);
+  for (const f of findings) out.push(`▲ ${place(f.hunk, f.file ? null : f.line)}${f.file ? " (whole file)" : ""} · ${f.severity} · ${actionText(actionOf(h, f, defaults))} · ${titleOf(f)}`);
   if (findings.length) out.push("", "What posts is the comments you saved with b or c; a finding on its default action posts nothing.");
   if (hidden) out.push("Chapters you have not read yet still hide their findings.");
   return out.join("\n") + "\n\n";
@@ -100,7 +100,7 @@ export function decide(h: Human, f: Finding, kind: DecisionKind, input: { text?:
       decision = { kind, comment: prior.id! };
     } else {
       const id = freshId(comments);
-      comments = [...comments, { id, hunk: f.hunk, side: f.side, line: f.line, text, at: input.at }];
+      comments = [...comments, f.file ? { id, hunk: f.hunk, side: f.side, line: null, text, at: input.at, file: true } : { id, hunk: f.hunk, side: f.side, line: f.line, text, at: input.at }];
       decision = { kind, comment: id };
     }
   } else {

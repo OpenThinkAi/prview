@@ -2,6 +2,7 @@
 
 import type { Hunk } from "./diff.ts";
 import { RANK, type Finding } from "./guide.ts";
+import { edgeItem } from "./rows.ts";
 
 export type NavItem = { id: string; path: string; hunk: Hunk; chapter: number };
 export type At = { item: number; line: number };
@@ -25,12 +26,13 @@ export function gotoLine(items: NavItem[], current: number, n: number): At | und
   return best?.at;
 }
 
-const lineOf = (h: Hunk, f: Finding) => h.lines.findIndex((l) => f.side === "new" ? l.n !== null && l.n === f.line : l.o !== null && l.o === f.line);
+// A finding on a whole file sits on the row that starts the file's diff (-1) or the one that ends it (one past the last line).
+const lineOf = (h: Hunk, f: Finding) => f.file ? (f.line === 1 ? h.lines.length : -1) : Math.max(0, h.lines.findIndex((l) => f.side === "new" ? l.n !== null && l.n === f.line : l.o !== null && l.o === f.line));
 
 /** Every finding's place in reading order, across hunks and chapters; ties on one line keep the document's order. */
 export function spotsOf(items: NavItem[], findings: Finding[]): (At & { finding: Finding })[] {
   return items.flatMap((it, item) =>
-    findings.map((f, k) => ({ f, k })).filter(({ f }) => f.hunk === it.id).map(({ f, k }) => ({ item, line: Math.max(0, lineOf(it.hunk, f)), finding: f, k })),
+    findings.map((f, k) => ({ f, k })).filter(({ f }) => f.hunk === it.id).map(({ f, k }) => ({ item, line: lineOf(it.hunk, f), finding: f, k })),
   ).sort((a, b) => a.item - b.item || a.line - b.line || a.k - b.k).map(({ item, line, finding }) => ({ item, line, finding }));
 }
 
@@ -60,13 +62,10 @@ export function nextFindingWrapping(items: NavItem[], findings: Finding[], from:
   return nextFinding(items, findings, from, dir) ?? (dir > 0 ? spots[0] : spots[spots.length - 1]);
 }
 
-/** `g g` / `g e`: the first line of this file's first block, or the last line of its last block, by line number. */
+/** `g g` / `g e`: the "whole file" row that starts this file's first block, or the one that ends its last block (first and last by line number). */
 export function fileEdge(items: NavItem[], current: number, edge: "top" | "end"): At | undefined {
-  const path = items[current]?.path;
-  const mine = items.map((it, i) => ({ it, i })).filter(({ it }) => it.path === path);
-  if (!mine.length) return undefined;
-  const pick = mine.reduce((a, b) => (edge === "top" ? b.it.hunk.newStart < a.it.hunk.newStart : b.it.hunk.newStart > a.it.hunk.newStart) ? b : a);
-  return { item: pick.i, line: edge === "top" ? 0 : Math.max(0, pick.it.hunk.lines.length - 1) };
+  const i = edgeItem(items, current, edge);
+  return i === undefined ? undefined : { item: i, line: edge === "top" ? -1 : items[i]!.hunk.lines.length };
 }
 
 /** `g c <n> Enter`: chapter n's first block (chapters count from 1; the mechanical group is the one after the last). */

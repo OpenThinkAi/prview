@@ -22,7 +22,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput } from "ink";
 import { where, type DiffLine, type FileDiff } from "./diff.ts";
-import { claimAddsTo, hunksOf, MECHANICAL_INTENT, titleOf, worstFirst, type Finding, type HunkAt } from "./guide.ts";
+import { claimAddsTo, hunksOf, MECHANICAL_INTENT, titleOf, worstFirst, type Finding, type HunkAt, type Severity } from "./guide.ts";
 import { ask, preparedBy, save, VERDICT, writeup, type Pos, type Review } from "./build.ts";
 import type { Doc, Human, Verdict } from "./document.ts";
 import { checklistNote, filtered, filterLabel, filterOf, type Filter } from "./filter.ts";
@@ -33,6 +33,7 @@ import { boxLines, clampScroll, layoutOf, STATUS_H, pageStep, rowsFor, windowOf,
 import type { Beside } from "./editor.ts";
 import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
 import { describe, planOf } from "./submit.ts";
+import { clampLine, edgesOf, inputLines, ownFinding, rowKind, SEVERITIES, stepLine, type Spot } from "./rows.ts";
 import { actionOf, actionsNote, bySeverity, decide, decisionOf, DEFAULTS, defaultVerdict, IN_HOUSE, LABEL, linkedComment, suggestionHint, type Defaults } from "./triage.ts";
 import { installKeymap, type KeyState, keyOf, rowById } from "./keys.ts";
 import { pendingText, step, tokenOf, type InkKey, type Pending } from "./chord.ts";
@@ -71,7 +72,7 @@ type Content = { title: string; tag?: string; lead?: string; body: string; color
  * `decide`: this comment carries out a block or comment action on that finding. `reason`: the optional private note of an ignore.
  * `docs`: the question typed for the offline docs search (`ask` is the one for the model); `results`: its answers, `sel` the selected one.
  */
-type Mode = { kind: "nav" } | { kind: "comment"; decide?: { id: string; kind: "block" | "comment" } } | { kind: "reason"; id: string } | { kind: "ask" } | { kind: "docs" } | { kind: "results"; query: string; answers: Answer[]; sel: number } | { kind: "verdict" } | { kind: "preview"; hook: boolean; coverage: boolean };
+type Mode = { kind: "nav" } | { kind: "comment"; decide?: { id: string; kind: "block" | "comment" } } | { kind: "severity"; sel: number; spot: Spot } | { kind: "finding"; severity: Severity; spot: Spot } | { kind: "reason"; id: string } | { kind: "ask" } | { kind: "docs" } | { kind: "results"; query: string; answers: Answer[]; sel: number } | { kind: "verdict" } | { kind: "preview"; hook: boolean; coverage: boolean };
 
 export type AppProps = {
   review: Review; files: FileDiff[]; onDone: (o: Outcome) => void;
@@ -154,7 +155,11 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const item = items[pos.item];
   const hunk = item?.hunk ?? null;
   const lines = hunk?.lines ?? [];
-  const line = Math.min(pos.line, Math.max(0, lines.length - 1));
+  // The cursor's row: a diff line, or a file's "whole file" row before its first block's lines (-1) or after its last block's (lines.length).
+  const edges = edgesOf(items, pos.item), off = edges.top ? 1 : 0;
+  const nRows = lines.length + off + (edges.end ? 1 : 0);
+  const line = clampLine(items, pos);
+  const row = rowKind(items, { item: pos.item, line });
   // Tabs become spaces before colouring so a token's columns are the columns it is drawn in.
   const shape = useMemo(() => lines.map((l) => printable(l.text.replace(/\t/g, "    "))), [item?.id]);
   const spans = useMemo(() => highlightLines(shape, item ? langOf(item.path) : undefined), [shape, item?.path]);
@@ -198,7 +203,9 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     return fs.length ? <Text color={worst ? SEV[worst.severity] : undefined} dimColor={!worst}>{text}</Text> : null;
   };
   const findingsHere = item ? visible().filter((f) => f.hunk === item.id) : [];
-  const findingsAt = (l: DiffLine) => findingsHere.filter((f) => f.side === "new" ? l.n !== null && f.line === l.n : l.o !== null && f.line === l.o);
+  const findingsAt = (l: DiffLine) => findingsHere.filter((f) => !f.file && (f.side === "new" ? l.n !== null && f.line === l.n : l.o !== null && f.line === l.o));
+  // A finding on a whole file is shown on the row where it was written, the one that starts the file's diff or the one that ends it.
+  const findingsOnFile = (r: "start" | "end") => findingsHere.filter((f) => f.file && f.line === (r === "end" ? 1 : 0));
   const notesAt = (l: DiffLine) => h.comments.filter((n) => n.hunk === item?.id && n.line !== null && (n.side === "new" ? n.line === l.n : n.line === l.o));
 
   // Seeing a hunk is reading it.
@@ -214,11 +221,8 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   };
   // ↓ and ↑ run on from the end of a block into the next one in reading order, and back.
   const lineBy = (dir: 1 | -1) => {
-    const next = line + dir;
-    if (next >= 0 && next < lines.length) { setPos({ ...pos, line: next }); return; }
-    const i = pos.item + dir;
-    if (i < 0 || i >= items.length) return;
-    goTo({ item: i, line: dir > 0 ? 0 : Math.max(0, items[i]!.hunk.lines.length - 1) });
+    const to = stepLine(items, { item: pos.item, line }, dir);
+    if (to) goTo(to);
   };
   // Back to the table of contents at block `at`, its chapter expanded so the cursor can be seen; the content area shows the chapter.
   const toToc = (at: Pos) => {
@@ -233,10 +237,12 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     setCollapsed(res.collapsed); setOnChapter(res.at.onChapter); setContent(null);
     if (res.at.item !== pos.item) setPos({ item: res.at.item, line: 0 });
   };
-  const anchor = (): { side: "new" | "old"; line: number | null } => {
+  // Where a new finding goes: the cursor's line, or the file when the cursor is on a "whole file" row.
+  const spotHere = (): Spot | undefined => {
+    if (!item) return undefined;
+    if (row !== "line") return { hunk: item.id, file: row };
     const l = lines[line];
-    if (!l) return { side: "new", line: null };
-    return l.n !== null ? { side: "new", line: l.n } : { side: "old", line: l.o };
+    return l ? { hunk: item.id, ...(l.n !== null ? { side: "new" as const, line: l.n } : { side: "old" as const, line: l.o! }) } : undefined;
   };
   // A finding's header says who raised it, what it is and its action now; "(default)" is drawn dim while the action is
   // still the one its severity (or the refute step) gave it. The content area holds the whole of it. A finding opens in
@@ -248,7 +254,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     const action = `Action: ${LABEL[a.kind]}${a.isDefault ? " (default)." : "."}${why}${mine ? ` Your comment: ${mine.text}` : ""}${a.note ? ` Private note: ${a.note}` : ""} ${keyOf("finding.block")}, ${keyOf("finding.comment")} or ${keyOf("finding.ignore")} changes it.`;
     setContent({
       title: `▲ ${f.source} · ${f.kind} · ${f.severity}${f.votes && r.ai?.samples ? ` · ${f.votes}/${r.ai.samples}` : ""} · ${LABEL[a.kind]}`, ...(a.isDefault ? { tag: " (default)" } : {}),
-      color: a.kind === "ignore" ? "gray" : SEV[f.severity], lead: titleOf(f), finding: f.id, copy: findingText(f, place(f.hunk, f.line)),
+      color: a.kind === "ignore" ? "gray" : SEV[f.severity], lead: titleOf(f), finding: f.id, copy: findingText(f, `${place(f.hunk, f.file ? null : f.line)}${f.file ? " (whole file)" : ""}`),
       ...(claimAddsTo(f) ? { claim: f.claim } : {}),
       body: [claimAddsTo(f) ? f.claim : "", f.evidence, f.refute ? `Second look: ${f.refute}` : "", action].filter(Boolean).join("\n\n"),
     });
@@ -314,7 +320,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     setPending(res.pending);
     if (res.out.kind === "act") { act(res.out.id, res.out.n); return; }
     if (res.out.kind === "escape") { backOut(); return; }
-    if (keyState.state === "prompt" && res.out.kind === "none") {
+    if (keyState.state === "prompt" && res.out.kind === "none" && mode.kind !== "severity") {
       if (tok === "backspace") setInput((s) => s.slice(0, -1));
       else if (tok === "space") setInput((s) => s + " ");
       else if ([...tok].length === 1) setInput((s) => s + tok);
@@ -353,17 +359,29 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     if (mode.kind === "results") { const a = mode.answers[mode.sel]; setNote(a ? confirmation(copier(answerText(a))) : "nothing to copy here"); return; }
     // The content area copies its own text; with nothing there, the cursor line's reference, which is what you paste into a note.
     const l = lines[line], at = l ? l.n ?? l.o : null;
-    const text = view ? view.copy : item && at !== null ? `${item.path}:${at}` : undefined;
+    const text = view ? view.copy : item && at !== null ? `${item.path}:${at}` : item && row !== "line" ? item.path : undefined;
     setNote(text ? confirmation(copier(text)) : "nothing to copy here");
   };
   // Enter in a prompt: what the typed line does depends on the prompt.
   const send = () => {
     if (mode.kind === "nav" || mode.kind === "results" || mode.kind === "verdict" || mode.kind === "preview") return;
+    // Your own finding: Enter on the severity goes on to the comment; Enter on the comment saves the finding.
+    if (mode.kind === "severity") { setMode({ kind: "finding", severity: SEVERITIES[mode.sel]!, spot: mode.spot }); setInput(""); return; }
     const text = input.trim();
     if (mode.kind === "docs") {
       setInput("");
       if (!text) { setMode({ kind: "nav" }); return; }
       try { showResults(text, answersFor(text), 0); } catch (e) { setMode({ kind: "nav" }); setContent({ title: "search the docs failed", body: String((e as Error).message), color: "red" }); }
+      return;
+    }
+    if (mode.kind === "finding") {
+      // An emptied comment makes no finding; the prompt stays open.
+      if (!text) { setNote("a finding needs its comment; Esc cancels"); return; }
+      const made = ownFinding(d.findings, h, mode.spot, mode.severity, text, new Date().toISOString(), defaults);
+      setMode({ kind: "nav" }); setInput("");
+      d.findings.push(made.finding); Object.assign(h, made.human); redraw(); showFinding(made.finding);
+      // A filter that hides its severity hides it on its line too; it is still made, and still in the submit checklist.
+      if (!filtered([made.finding], level).length) setNote(`saved; the filter (${filterLabel(level)}) hides it on the screen, ${keyOf("filter.all")} shows all`);
       return;
     }
     setMode({ kind: "nav" }); setInput("");
@@ -372,10 +390,6 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     if (mode.kind === "reason") { if (f) decided(f, decide(h, f, "ignore", { reason: text, at })); return; }
     // An emptied comment changes nothing: the finding keeps the action it had.
     if (mode.kind === "comment" && mode.decide) { if (f) { if (text) decided(f, decide(h, f, mode.decide.kind, { text, at })); else showFinding(f); } return; }
-    if (mode.kind === "comment" && text) {
-      h.comments.push({ hunk: item?.id ?? null, ...anchor(), text, at });
-      redraw();
-    }
     if (mode.kind === "ask" && item) {
       setBusy("asking…"); setContent({ title: text || "Explain this block", body: "…" });
       ask(r, files, item.id, text).then((a) => setContent({ title: text || "This block", body: a, copy: askText(text || "Explain this block", a) }), (e) => setContent({ title: "ask failed", body: String((e as Error).message), color: "red" })).finally(() => setBusy(null));
@@ -404,7 +418,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       case "code.prev_chapter": goChapter(-1); return;
       case "code.open_finding": {
         if (item && hidden.has(item.id)) { setContent({ title: "Findings", body: "Hidden until you have been through this chapter." }); return; }
-        const l = lines[line], here = l ? [...findingsAt(l)].sort(worstFirst) : [];
+        const l = lines[line], here = (row !== "line" ? findingsOnFile(row) : l ? findingsAt(l) : []).sort(worstFirst);
         if (!here.length) { setNote(`no finding on this line; ${keyOf("go.next_finding")} goes to the next one`); return; }
         showFinding(here[0]!);
         return;
@@ -421,7 +435,17 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       case "toc.prev_chapter": tocGo("prev_chapter"); return;
       case "toc.expand": tocGo("expand"); return;
       case "toc.collapse": tocGo("collapse"); return;
-      case "code.new_finding": setMode({ kind: "comment" }); return;
+      // Enter always makes a new finding, on the cursor's line or the file's row: the severity first, then the comment.
+      case "code.new_finding": {
+        const spot = spotHere();
+        if (!spot) { setNote("there is nothing here to write a finding on"); return; }
+        if (item && hidden.has(item.id)) { setContent({ title: "Findings", body: "Hidden until you have been through this chapter." }); return; }
+        setMode({ kind: "severity", sel: 1, spot }); return;
+      }
+      case "prompt.up": case "prompt.down":
+        if (mode.kind === "severity") setMode({ ...mode, sel: Math.max(0, Math.min(SEVERITIES.length - 1, mode.sel + (id === "prompt.down" ? 1 : -1))) });
+        return;
+      case "prompt.newline": setInput((s) => s + "\n"); return;
 
       // ---- the content area
       case "content.back": setFull(false); if (mode.kind === "results") { setMode({ kind: "nav" }); setContent(null); } else setFocus("code"); return;
@@ -454,7 +478,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       case "view.editor": {
         if (!item) return;
         const l = lines[line];
-        const at = l?.n ?? lines.slice(line).find((x) => x.n !== null)?.n ?? hunk?.newStart ?? 1;
+        const at = l?.n ?? lines.slice(Math.max(0, line)).find((x) => x.n !== null)?.n ?? hunk?.newStart ?? 1;
         if (beside) { const err = beside(item.path, at); if (err) setContent({ title: "editor", body: err, color: "red" }); return; }
         onDone({ kind: "edit", path: item.path, line: at }); exit();
         return;
@@ -535,13 +559,15 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const boxBody = content?.finding && content.claim ? wrapText(content.claim, boxInner).filter(Boolean).slice(0, Math.min(2, boxLines(L.middleH))) : [];
   const boxH = content?.finding ? 3 + boxBody.length : 0;
   const bodyRows = L.middleH - 2; // the path line and the intent
-  const heights = lines.map((l, i) => (wrap ? rowsFor(lengthOf(spans[i] ?? []), codeCols) : 1) + notesAt(l).length);
-  const { start, end } = windowOf(heights, line, Math.max(1, bodyRows - boxH));
+  // Rows: the file's "whole file" row first when this block starts it, then the diff lines, then the row that ends the file.
+  const rowLine = (i: number): number => i - off; // the index into `lines`, or -1 / lines.length on a whole-file row
+  const heights = Array.from({ length: nRows }, (_, i) => { const l = lines[rowLine(i)]; return l ? (wrap ? rowsFor(lengthOf(spans[rowLine(i)] ?? []), codeCols) : 1) + notesAt(l).length : 1; });
+  const { start, end } = windowOf(heights, line + off, Math.max(1, bodyRows - boxH));
   // The table of contents: every chapter, the blocks of the expanded ones, windowed round the cursor's row like the code.
   const railRows = tocRows(items, collapsed);
   const railWin = windowOf(railRows.map(() => 1), Math.max(0, tocIndex(railRows, items, { item: pos.item, onChapter: tree === "toc" && onChapter })), Math.max(1, L.middleH - 1));
   const railShown = railRows.slice(railWin.start, railWin.end);
-  const shown = lines.slice(start, end);
+  const shown = Array.from({ length: Math.max(0, end - start) }, (_, k) => start + k);
   const fit = (t: string) => t.length > codeW ? t.slice(0, codeW - 1) + "…" : t;
 
   /** The code of line `i` as rows of spans: one row cut with an ellipsis, or every row it wraps to. */
@@ -571,14 +597,33 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     </Box>
   ); };
 
+  // A comment being typed, which can have several lines: the last ones that fit, the cursor at the end.
+  const typed = (title: string, label: string, hint: string) => {
+    const room = Math.max(1, L.contentRows - 2), all = inputLines(input, L.contentInner - label.length - 3), tail = all.slice(-room);
+    return <>
+      <Text bold color="cyan" wrap="truncate">{title}</Text>
+      {tail.map((t, i) => <Text key={i} wrap="truncate">{i === 0 && all.length <= room ? <Text color="cyan" bold>{label} › </Text> : <Text>{" ".repeat(label.length + 3)}</Text>}{t}{i === tail.length - 1 ? <Text inverse> </Text> : null}</Text>)}
+      <Text dimColor wrap="truncate">{hint}</Text>
+    </>;
+  };
   // What the content area holds: a prompt or the verdict question while one is open, else what was last shown there.
   const contentView = () => {
     switch (mode.kind) {
-      case "comment": case "reason": case "ask": case "docs": {
-        const decideKind = mode.kind === "comment" ? mode.decide?.kind : undefined;
-        const label = mode.kind === "docs" ? "search the docs" : mode.kind === "ask" ? "ask" : mode.kind === "reason" ? "ignore · private note" : decideKind === "block" ? "block on it" : decideKind ? "comment on the finding" : "new finding";
-        const l = lines[line], at = l ? l.n ?? l.o : null;
-        const title = mode.kind === "docs" ? "Search the docs" : mode.kind === "ask" ? "Ask the model about this block" : mode.kind === "reason" ? "Ignore the finding" : decideKind ? `${decideKind === "block" ? "Block on" : "Comment on"} the finding` : `Your own finding${item ? ` at ${place(item.id, at)}` : ""}`;
+      // Your own finding: the severity (arrows, then Enter), then the comment, which can run to several lines.
+      case "severity": case "finding": {
+        const where = "file" in mode.spot ? `${printable(items.find((x) => x.id === mode.spot.hunk)?.path ?? "")} (whole file)` : place(mode.spot.hunk, mode.spot.line);
+        if (mode.kind === "severity") return <>
+          <Text bold color="cyan" wrap="truncate">New finding at {where} · pick its severity</Text>
+          {SEVERITIES.map((s, i) => <Text key={s} wrap="truncate" color={i === mode.sel ? SEV[s] : undefined} bold={i === mode.sel}>{i === mode.sel ? "▸" : " "} {s}<Text dimColor>{` · starts as ${LABEL[defaults[s]]}`}</Text></Text>)}
+          <Text dimColor wrap="truncate">Enter chooses, Esc cancels.</Text>
+        </>;
+        return typed(`New ${mode.severity} finding at ${where}`, "comment", `Posted if its action is ${LABEL.block} or ${LABEL.comment}. Enter saves · ${keyOf("prompt.newline")} new line.`);
+      }
+      // A comment on a finding can run to several lines too (one saved with a new line in it comes back prefilled).
+      case "comment": return typed(`${mode.decide?.kind === "block" ? "Block on" : "Comment on"} the finding`, mode.decide?.kind === "block" ? "block on it" : "comment on the finding", `Enter saves · ${keyOf("prompt.newline")} new line.`);
+      case "reason": case "ask": case "docs": {
+        const label = mode.kind === "docs" ? "search the docs" : mode.kind === "ask" ? "ask" : "ignore · private note";
+        const title = mode.kind === "docs" ? "Search the docs" : mode.kind === "ask" ? "Ask the model about this block" : "Ignore the finding";
         return <>
           <Text bold color="cyan" wrap="truncate">{title}</Text>
           <Text><Text color="cyan" bold>{label} › </Text>{input}<Text inverse> </Text>{mode.kind === "reason" && !input ? <Text dimColor>private note — never posted</Text> : null}</Text>
@@ -656,9 +701,20 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
                     ? <Text color="magenta">  ▸ {MECHANICAL_INTENT} · {item.mechanical}</Text>
                     : chapter?.intent ? <Text color="cyan">  ▸ {chapter.intent}</Text> : <Text dimColor>  {chapterTitle}</Text>}
                 </Text>
-                {shown.map((l, k) => {
-                  const i = start + k;
+                {shown.map((ri) => {
+                  const i = rowLine(ri), l = lines[i];
                   const cur = i === line, lit = cur && tree === "code"; // the cursor line is lit only while the arrows act in the code
+                  if (!l) {
+                    // A file's whole-file row: where Enter writes a finding about the file. Its findings are marked like a line's.
+                    const kind = i < 0 ? "start" : "end", wf = findingsOnFile(kind), worst = wf.filter((f) => !ignored(f)).sort(worstFirst)[0];
+                    const wmark = worst ? <Text color={SEV[worst.severity]}>▲</Text> : wf.length ? <Text dimColor>△</Text> : <Text> </Text>;
+                    return (
+                      <Box key={`w${kind}`} flexDirection="column">
+                        <Text wrap="truncate"><Text dimColor={!cur} color={cur ? "cyan" : undefined}>{" ".repeat(gutterW)}</Text> {wmark} <Text dimColor={!lit} inverse={lit}>{fit(`${kind === "start" ? "┌" : "└"} whole file · ${printable(item.path)}`).padEnd(lit ? codeW : 0)}</Text></Text>
+                        {cur ? findingBox() : null}
+                      </Box>
+                    );
+                  }
                   const fs = findingsAt(l), ns = notesAt(l);
                   const worst = fs.filter((f) => !ignored(f)).sort(worstFirst)[0];
                   // ▲ in its severity's colour, △ dim when every finding on the line is ignored.

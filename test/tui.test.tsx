@@ -153,15 +153,19 @@ test("cursor: ↓/↑ and j/k move a line and run on across blocks; ⇧↓/⇧�
   expect(t.r.pos.line).toBe(3);
   await t.press(UP + "k");
   expect(t.r.pos.line).toBe(1);
-  await t.press("ge");
-  expect(t.r.pos).toEqual({ item: 0, line: 4 });
-  await t.press("j"); // the end of the block: on into the next one
-  expect(t.r.pos).toEqual({ item: 1, line: 0 });
-  await t.press("k"); // and back to the last line of the one before
+  await t.press("ge"); // the file's "whole file" row after its last line
+  expect(t.r.pos).toEqual({ item: 0, line: 5 });
+  await t.press("j"); // the end of the block: on into the next one, which starts with its own file's row
+  expect(t.r.pos).toEqual({ item: 1, line: -1 });
+  await t.press("k"); // and back to the row that ended the one before
+  expect(t.r.pos).toEqual({ item: 0, line: 5 });
+  await t.press("k"); // then its last line
   expect(t.r.pos).toEqual({ item: 0, line: 4 });
   await t.press("gg");
-  expect(t.r.pos.line).toBe(0);
-  await t.press("k"); // the very first line: nowhere to go
+  expect(t.r.pos.line).toBe(-1);
+  await t.press("k"); // the very first row: nowhere to go
+  expect(t.r.pos).toEqual({ item: 0, line: -1 });
+  await t.press("j");
   expect(t.r.pos).toEqual({ item: 0, line: 0 });
   await t.press(SDOWN);
   expect(t.r.pos.item).toBe(1);
@@ -260,16 +264,98 @@ test("g h / g H: by severity, every high finding first, then the medium ones, th
   expect(await title("gH")).toBe("A nit");
 });
 
-test("Enter on a line writes your own finding there, shown under the line with a mark in the gutter", async () => {
+test("Enter on a line makes your own finding there: pick a severity (arrows, Enter), write the comment (several lines), save; it behaves like any finding", async () => {
   const t = await open(undefined, { code: true });
   await t.press("jj\r");
-  expect(t.frame()).toContain("new finding ›");
-  shown(t, { state: "prompt", kind: "comment" });
-  await t.press("why 42?");
+  expect(t.frame()).toContain("New finding at src/a.rs:11 · pick its severity");
+  shown(t, { state: "prompt", kind: "severity" });
+  await t.press(UP); // medium is where it starts; up is high
   await t.press("\r");
-  expect(t.r.doc.human.comments.map((n) => [n.hunk, n.side, n.line, n.text])).toEqual([[h1!.id, "new", 11, "why 42?"]]);
-  expect(t.frame()).toMatch(/» why 42\?/);
-  expect(t.frame()).toContain("comments 1");
+  expect(t.frame()).toContain("New high finding at src/a.rs:11");
+  shown(t, { state: "prompt", kind: "finding" });
+  await t.press("why 42?");
+  await t.press("\x0e"); // ctrl-n: a new line
+  await t.press("it is not derived");
+  expect(t.frame()).toContain("it is not derived");
+  await t.press("\r");
+  const mine = t.r.doc.findings.find((f) => f.source === "you")!;
+  expect(mine).toMatchObject({ source: "you", hunk: h1!.id, side: "new", line: 11, severity: "high", claim: "why 42?\nit is not derived" });
+  expect(mine.file).toBeUndefined();
+  // High starts as block: the action is carried out as the reader's own comment with exactly those words.
+  expect(t.r.doc.human.decisions![mine.id]).toMatchObject({ kind: "block" });
+  expect(t.r.doc.human.comments.map((n) => [n.hunk, n.side, n.line, n.text])).toEqual([[h1!.id, "new", 11, "why 42?\nit is not derived"]]);
+  // It opens like any finding, on its line, with the action keys.
+  expect(t.frame()).toContain("▲ you · finding · high · block");
+  expect(t.frame()).toContain("findings ▲ 2 high");
+  await t.press("c\r"); // comment instead, prefilled with what was written
+  expect(t.r.doc.human.decisions![mine.id]).toMatchObject({ kind: "comment" });
+  await t.press("y");
+  expect(t.frame()).toContain("copied");
+});
+
+test("a new finding takes the severity's default action; an empty comment or Esc makes none", async () => {
+  const t = await open(undefined, { code: true, defaults: { high: "block", medium: "comment", low: "ignore" } });
+  await t.press("\r" + DOWN + "\r"); // low, whose default here is ignore
+  await t.press("fine but odd\r");
+  const low = t.r.doc.findings.find((f) => f.source === "you")!;
+  expect(low.severity).toBe("low");
+  expect(t.r.doc.human.decisions?.[low.id]).toBeUndefined(); // still on its default, ignore: nothing is posted
+  expect(t.r.doc.human.comments).toEqual([]);
+  await t.press("x\r\r\r"); // close it; a new finding at medium; an empty comment stays in the prompt
+  expect(t.frame()).toContain("a finding needs its comment");
+  expect(t.r.doc.findings.filter((f) => f.source === "you")).toHaveLength(1);
+  await t.press(ESC);
+  expect(t.r.doc.findings.filter((f) => f.source === "you")).toHaveLength(1);
+});
+
+test("each file's diff starts and ends with a whole file row; g g and g e land on them, and Enter there makes a file-level finding", async () => {
+  const t = await open(undefined, { code: true });
+  expect(t.frame()).toContain("┌ whole file · src/a.rs");
+  expect(t.frame()).toContain("└ whole file · src/a.rs");
+  await t.press("gg");
+  expect(t.r.pos).toEqual({ item: 0, line: -1 });
+  await t.press("\r\r"); // medium
+  expect(t.frame()).toContain("New medium finding at src/a.rs (whole file)");
+  await t.press("the whole file is too clever\r");
+  const mine = t.r.doc.findings.find((f) => f.source === "you")!;
+  expect(mine).toMatchObject({ hunk: h1!.id, file: true, line: 0, severity: "medium", claim: "the whole file is too clever" });
+  expect(t.r.doc.human.comments).toEqual([expect.objectContaining({ hunk: h1!.id, line: null, file: true, text: "the whole file is too clever" })]);
+  expect(t.frame()).toContain("▲ you · finding · medium · comment");
+  expect(t.frame()).toMatch(/▲ ┌ whole file/); // marked in the gutter of its row
+  await t.press("x");
+  await t.press("ge");
+  expect(t.r.pos).toEqual({ item: 0, line: 5 });
+  await t.press("\r\r");
+  await t.press("and the end of it\r");
+  expect(t.r.doc.findings.filter((f) => f.file).map((f) => f.line)).toEqual([0, 1]);
+  // → on a row opens a finding there; Enter there makes a new one.
+  await t.press("x");
+  await t.press("gg" + RIGHT);
+  expect(t.frame()).toContain("the whole file is too clever");
+  // g f walks to the file-level findings too.
+  await t.press("x");
+  await t.press("gf");
+  expect(t.r.pos.line).toBe(2); // the critic's finding, between the two rows
+  await t.press("gf");
+  expect(t.r.pos.line).toBe(5); // then the one on the end row
+  await t.press("gf");
+  expect(t.r.pos.line).toBe(-1); // and round to the start row
+  expect(writeup(t.r.doc, files)).toContain("src/a.rs (whole file)");
+  // Copy on a row is the file's path.
+  await t.press("x");
+  await t.press("gg");
+  await t.press("y");
+  expect(t.frame()).toContain("copied");
+});
+
+test("→ on a line opens an existing finding and never makes one; Enter always makes a new one, even where a finding is", async () => {
+  const t = await open(undefined, { code: true });
+  await t.press("jj" + RIGHT);
+  expect(t.frame()).toContain("critic · bug · high");
+  await t.press("x" + "\r");
+  expect(t.frame()).toContain("New finding at src/a.rs:11 · pick its severity");
+  await t.press(ESC + "j" + RIGHT);
+  expect(t.frame()).toContain("no finding on this line");
 });
 
 test("submit flow: s asks for a verdict, previews the write-up, Esc goes back, Enter submits", async () => {
@@ -526,7 +612,7 @@ test("blind: before visiting, the gutter has no ▲, the rail shows ▲?, → an
 test("blind: visiting every hunk of a chapter reveals it without recording anything", async () => {
   const t = await open({ plan: { summary: "", by: "guide", mechanical: [], chapters: [{ title: "Both", intent: "Check it", why: "w", hunks: [h1!.id, h2!.id] }] } }, { blind: true, code: true });
   expect(t.frame()).toContain("Both ▲?");
-  await t.press("jjjjj"); // runs on into the second hunk; the first was visited on open
+  await t.press("jjjjjjj"); // runs on through the first file's closing row and the second's opening row into the second hunk; the first was visited on open
   expect(t.r.pos.item).toBe(1);
   expect(t.frame()).toContain("1 Both ▲1");
   await t.press("gf");
@@ -663,7 +749,7 @@ test("with nothing to act on: off a finding b/c/i are not keys; in blind, a reve
   const t = await open(three, { code: true });
   await t.press("jjc\r"); // on a finding's line with no box open: c is nothing, Enter starts your own finding
   expect(t.frame()).not.toContain("comment on the finding ›");
-  expect(t.frame()).toContain("new finding ›");
+  expect(t.frame()).toContain("pick its severity");
   await t.press(ESC);
   expect(t.r.doc.human.decisions).toBeUndefined();
   expect(t.r.doc.human.comments).toEqual([]);
@@ -687,8 +773,8 @@ test("nav helpers (pure): wrapping, severity order, file edges and chapter start
   expect(nextBySeverity(items, [f3, f2, finding], "1", 1)?.finding.id).toBe("2");
   expect(nextBySeverity(items, [f3, f2, finding], "3", 1)?.finding.id).toBe("1");
   expect(nextBySeverity(items, [f3, f2, finding], undefined, -1)?.finding.id).toBe("3");
-  expect(fileEdge(items, 0, "end")).toEqual({ item: 0, line: 4 });
-  expect(fileEdge(items, 1, "top")).toEqual({ item: 1, line: 0 });
+  expect(fileEdge(items, 0, "end")).toEqual({ item: 0, line: 5 }); // the whole-file row after the last line
+  expect(fileEdge(items, 1, "top")).toEqual({ item: 1, line: -1 });
   expect(chapterStart(items, 2)).toEqual({ item: 1, line: 0 });
   expect(chapterStart(items, 3)).toBeUndefined();
 });
@@ -1043,7 +1129,7 @@ test("g c into a collapsed chapter expands it; ← from its code comes back with
   await t.press("K" + LEFT); // chapter 1's row, collapsed
   expect(regions(t).middle).toContain("▸ 1 Core change");
   await t.press("ge"); // g e: the end of this file, in the code
-  expect(t.r.pos).toEqual({ item: 0, line: 4 });
+  expect(t.r.pos).toEqual({ item: 0, line: 5 });
   expect(regions(t).bottom).toMatch(/│ keys/);
   await t.press(LEFT); // back at that block, its chapter expanded so the cursor shows
   expect(regions(t).middle).toContain("▾ 1 Core change");
@@ -1084,7 +1170,8 @@ test("each state's panel lists its keys, and leaving the state brings the code's
     { name: "finding", into: "gf", state: { state: "finding" }, out: ESC },
     { name: "content", into: TAB, state: { state: "content" }, out: ESC + ESC, over: withSummary() },
     { name: "ask prompt", into: "a?", state: { state: "prompt", kind: "ask" }, out: ESC },
-    { name: "new finding", into: "\r", state: { state: "prompt", kind: "comment" }, out: ESC },
+    { name: "new finding: severity", into: "\r", state: { state: "prompt", kind: "severity" }, out: ESC },
+    { name: "new finding: comment", into: "\r\r", state: { state: "prompt", kind: "finding" }, out: ESC },
     { name: "ignore note", into: "gfi", state: { state: "prompt", kind: "reason" }, out: ESC + ESC },
     { name: "block comment", into: "gfb", state: { state: "prompt", kind: "comment", decide: true }, out: ESC + ESC },
     { name: "verdict", into: "s", state: { state: "submit", step: "verdict" }, out: ESC },
@@ -1102,20 +1189,23 @@ test("each state's panel lists its keys, and leaving the state brings the code's
 
 test("prompts: their panel is the keys that work; text goes in as typed, prefixes and backslash included", async () => {
   const t = await open(undefined, { code: true });
+  await t.press("\r"); // Enter: the severity first, then the comment
+  expect(listing(entriesOf({ state: "prompt", kind: "severity" }))).toEqual(["Enter choose", "Esc cancel", "↑/↓ k/j severity"]);
+  shown(t, { state: "prompt", kind: "severity" });
   await t.press("\r");
-  expect(listing(entriesOf({ state: "prompt", kind: "comment" }))).toEqual(["Enter send", "ctrl-u clear line", "ctrl-w delete word", "Esc cancel"]);
+  expect(listing(entriesOf({ state: "prompt", kind: "finding" }))).toEqual(["Enter save", "ctrl-u clear line", "ctrl-w delete word", "Esc cancel", "ctrl-n new line"]);
   await t.press("one gv two\\ ?");
-  expect(t.frame()).toContain("new finding › one gv two\\ ?");
-  shown(t, { state: "prompt", kind: "comment" }); // g, v, \ and ? did nothing but type
+  expect(t.frame()).toContain("comment › one gv two\\ ?");
+  shown(t, { state: "prompt", kind: "finding" }); // g, v, \ and ? did nothing but type
   await t.press("\x17"); // ctrl-w
-  expect(t.frame()).toContain("new finding › one gv two\\ ");
+  expect(t.frame()).toContain("comment › one gv two\\ ");
   await t.press("zzz\x15"); // ctrl-u
   expect(t.frame()).not.toContain("zzz");
   await t.press("x\r");
   expect(t.r.doc.human.comments.map((c) => c.text)).toEqual(["x"]);
   expect(listing(entriesOf({ state: "prompt", kind: "ask" }))[0]).toBe("Enter ask");
   expect(listing(entriesOf({ state: "prompt", kind: "reason" }))).toEqual(["Enter ignore", "ctrl-u clear line", "Esc cancel"]);
-  expect(listing(entriesOf({ state: "prompt", kind: "comment", decide: true }))).toEqual(["Enter save", "ctrl-u clear line", "ctrl-w delete word", "Esc cancel"]);
+  expect(listing(entriesOf({ state: "prompt", kind: "comment", decide: true }))).toEqual(["Enter save", "ctrl-u clear line", "ctrl-w delete word", "Esc cancel", "ctrl-n new line"]);
 });
 
 test("verdict and preview: the panel lists what acts; x and v appear only when the submit has that choice", async () => {
@@ -1268,7 +1358,7 @@ test("? a question: the top answers show the action, the user's key, where it wo
   await t.press(ESC);
   expect(t.frame()).not.toContain("Search the docs ·");
   await t.press("\r");
-  expect(t.frame()).toContain("new finding › "); // back in the code: Enter is a new finding again
+  expect(t.frame()).toContain("pick its severity"); // back in the code: Enter is a new finding again
 });
 
 test("? results: j and k move the selection, y copies the selected answer as plain text, other keys do nothing", async () => {
@@ -1393,8 +1483,7 @@ test("bottom panel: the content area on the left and the key panel on the right 
 test("content area: prompts, docs search, answers and the verdict show there, one at a time, not over the code", async () => {
   const t = await open(withSummary(), { code: true });
   await t.press("\r");
-  expect(regions(t).bottom).toContain("new finding ›");
-  expect(regions(t).bottom).toContain("Your own finding at src/a.rs:10");
+  expect(regions(t).bottom).toContain("New finding at src/a.rs:10 · pick its severity");
   expect(regions(t).bottom).not.toContain(SUMMARY); // one thing at a time
   await t.press(ESC);
   expect(regions(t).bottom).toContain(SUMMARY); // the prompt gone, what was there is back
