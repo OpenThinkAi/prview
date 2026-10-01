@@ -35,8 +35,6 @@ export type Action = {
   description: string;
   /** Not remappable: Tab, the prompt and submit steps, settings, and `g <digits> Enter`. */
   fixed?: true;
-  /** Not built yet: the key acts with a notice naming what is coming. */
-  coming?: string;
   /**
    * Submit only: the steps it is pressed in; in the comment step, whether only while typing (true) or only while not
    * (false); and `needs: "boxes"`, in the send step only when the submit has a checkbox (a command, a coverage line).
@@ -392,7 +390,7 @@ export function describeKeymap(km: Keymap = active): string {
   const w = Math.max(...all.map((a) => a.id.length));
   const shown = (a: Action, k: string | undefined) => (k ? (a.prefix ? `${a.prefix} ${showKey(k)}` : showKey(k)) : "-");
   const kw = Math.max(7, ...all.map((a) => shown(a, a.key || undefined).length)), sw = Math.max(9, ...all.map((a) => shown(a, a.secondary).length));
-  const line = (a: Action) => `  ${a.id.padEnd(w)}  ${(a.key ? shown(a, a.key) : "(unbound)").padEnd(kw)}  ${shown(a, a.secondary).padEnd(sw)}  ${a.description}${a.coming ? ` (coming: ${a.coming})` : ""}${a.fixed ? " (fixed)" : ""}`;
+  const line = (a: Action) => `  ${a.id.padEnd(w)}  ${(a.key ? shown(a, a.key) : "(unbound)").padEnd(kw)}  ${shown(a, a.secondary).padEnd(sw)}  ${a.description}${a.fixed ? " (fixed)" : ""}`;
   const out: string[] = [`  ${"action".padEnd(w)}  ${"primary".padEnd(kw)}  ${"secondary".padEnd(sw)}  description`, ""];
   for (const state of STATES) {
     const rows = all.filter((a) => !a.prefix && a.states.includes(state) && (a.states[0] === state || a.states.length === 1));
@@ -412,4 +410,36 @@ export function describeKeymap(km: Keymap = active): string {
   }
   out.push("Always: Esc backs out of anything (a pending prefix, a finding, the content area, a prompt). Esc and Tab cannot be rebound.");
   return out.join("\n");
+}
+
+// ---------------------------------------------------------------- the README's key map
+
+const MD_SECTIONS: [string, (a: Action) => boolean][] = [
+  ["Table of contents", (a) => !a.prefix && a.id.startsWith("toc.")],
+  ["Code", (a) => !a.prefix && a.id.startsWith("code.")],
+  ["Anywhere outside a finding", (a) => !a.prefix && a.id.startsWith("review.")],
+  ["Inside a finding", (a) => !a.prefix && a.id.startsWith("finding.")],
+  ["Content area, with focus in it", (a) => !a.prefix && a.id.startsWith("content.")],
+  ["`a` AI", (a) => a.prefix === "a"],
+  ["`f` filter", (a) => a.prefix === "f"],
+  ["`v` view", (a) => a.prefix === "v" && a.id !== "view.comment_editor"],
+  ["`g` go to", (a) => a.prefix === "g"],
+];
+
+/** The key map as Markdown tables, one per state or prefix, generated from the default rows so the README cannot drift from them. */
+export function keysMarkdown(): string {
+  const cell = (a: Action, k: string | undefined): string => {
+    if (!k) return "";
+    const typed = a.id === "go.chapter" ? `${showKey(k)} <n> Enter` : showKey(k);
+    return `\`${a.prefix ? `${a.prefix} ${typed}` : typed}\``;
+  };
+  const out: string[] = [];
+  for (const [title, pick] of MD_SECTIONS) {
+    const rows = ALL_ACTIONS.filter(pick);
+    if (!rows.length) continue;
+    out.push(`**${title}**`, "", "| Key | Alt | Action | What it does |", "|---|---|---|---|");
+    for (const a of rows) out.push(`| ${cell(a, a.key)} | ${cell(a, a.secondary)} | \`${a.id}\` | ${a.description.replace(/\|/g, "\\|")} |`);
+    out.push("");
+  }
+  return out.join("\n").trimEnd();
 }

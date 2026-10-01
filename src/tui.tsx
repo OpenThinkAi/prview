@@ -403,8 +403,6 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     Object.assign(live, cfg); onConfig?.(cfg);
     setSettings(null); setNote(`settings saved to ${cfg.path}`);
   };
-  // A key whose behaviour comes with a later change says so, and does nothing else.
-  const coming = (id: string) => { const a = rowById(id); setNote(`${keyOf(id)} ${a?.label ?? id}: not built yet, coming with ${a?.coming ?? "a later change"}`); };
   const copy = () => {
     if (mode.kind === "results") { const a = mode.answers[mode.sel]; setNote(a ? confirmation(copier(answerText(a))) : "nothing to copy here"); return; }
     // The content area copies its own text; with nothing there, the cursor line's reference, which is what you paste into a note.

@@ -39,7 +39,8 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build:docs-index": "bun scripts/build-docs-index.ts"
+    "build:docs-index": "bun scripts/build-docs-index.ts",
+    "build:readme-keys": "bun scripts/build-readme-keys.ts"
   },
   "dependencies": {
     "ink": "^7.0.1",
