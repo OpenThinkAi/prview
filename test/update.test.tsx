@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import React from "react";
 import { cleanup, render } from "ink-testing-library";
+import { inkTestHooks } from "./ink-hooks.ts";
 import { availableNotice, backgroundCheck, CHECK_EVERY_MS, compare, installArgv, managerOf, newer, PACKAGE, REGISTRY, runningVersion, updateCommand, type UpdateDeps } from "../src/update.ts";
 import { parseDiff } from "../src/diff.ts";
 import { hunksOf } from "../src/guide.ts";
@@ -12,6 +13,8 @@ import type { Doc } from "../src/document.ts";
 import { App } from "../src/tui.tsx";
 
 // Every test stubs the registry and the installer: nothing here touches the network or installs anything.
+
+inkTestHooks();
 
 const tmp = mkdtempSync(join(tmpdir(), "prview-update-"));
 const savedHome = process.env.PRVIEW_HOME;
