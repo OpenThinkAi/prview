@@ -146,10 +146,14 @@ What you get is a full-screen review, not a diff dump:
      and comment start ticked, ignore unticked; `↑`/`↓` move, `Space` ticks one, `a` ticks (or unticks) all. A
      ticked finding posts a comment on its line: the one you wrote with `b`/`c`, or, left on its default, the
      finding's own text (never who raised it). Unticked ones post nothing and are recorded as ignored.
+     Below the findings: your own comments that no current finding owns, such as those carried over when the PR's
+     head moved and the review was rebuilt. One an earlier submit already posted starts unticked, labelled `posted
+     <date> (round n)`; one that never posted starts ticked, labelled `carried over from <old head>`. In the code
+     they show on their line with the same label, and `x` there deletes one.
   2. **Verdict**: the platform's verdicts as a radio (GitHub: approve, request changes, comment), starting on
      what the ticks imply (any ticked block: request changes; else anything ticked: comment; nothing: no
      selection). The in-house and imported suggestions show beside it as information; `↑`/`↓` change it.
-  3. **Comment**: the review's top-level comment, several lines (`Enter` adds one). The box starts with any summary comments the review already has. `Esc` stops typing,
+  3. **Comment**: the review's top-level comment, several lines (`Enter` adds one). The box starts with any summary comments the review already has (not one an earlier submit already posted). `Esc` stops typing,
      then `v e` writes it in your editor and brings you back here.
   4. **Send**: exactly what will be posted (the verdict, the comment, each ticked finding's comment on its file
      and line), then what `Enter` does: write the finished document to `$PRVIEW_HOME/submitted/<name>/<UTC time>.json`
@@ -213,6 +217,7 @@ tables with your own bindings.
 | `←` | `h` | `code.to_toc` | Back to the table of contents at this block, which shows the chapter's intent and why. |
 | `Tab` |  | `code.focus_content` | Move focus into the content area to scroll it. |
 | `Enter` |  | `code.new_finding` | Write a finding of your own on the cursor line, or on a file's whole-file row: pick a severity, then write the comment, which posts if the finding's action is block or comment. |
+| `x` |  | `code.delete_comment` | Delete your comment on the cursor line that is not a finding's (one carried over from an earlier head, say), so it is not posted. |
 
 **Anywhere outside a finding**
 

@@ -83,7 +83,7 @@ export function managerOf(moduleDir: string, userHome: string, env: Record<strin
 /** The install command, argv fixed: the package name is a constant and the version has been checked. */
 export function installArgv(manager: Manager, version: string): string[] {
   if (!RELEASE.test(version)) throw new Error(`not a release version: ${version}`);
-  return manager === "bun" ? ["bun", "add", "-g", `${PACKAGE}@${version}`] : ["npm", "install", "-g", `${PACKAGE}@${version}`];
+  return manager === "bun" ? ["bun", "add", "-g", "--no-cache", `${PACKAGE}@${version}`] : ["npm", "install", "-g", `${PACKAGE}@${version}`];
 }
 
 // ---------------------------------------------------------------- the registry and the daily throttle

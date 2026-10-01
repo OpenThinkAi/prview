@@ -37,6 +37,7 @@ import { coverageLine, describe, planOf, postPreview, shown as shownArgv, type P
 import { clampLine, edgesOf, inputLines, ownFinding, rowKind, SEVERITIES, stepLine, type Spot } from "./rows.ts";
 import { actionOf, bySeverity, decide, decisionOf, DEFAULTS, IN_HOUSE, LABEL, linkedComment, suggestionHint, type Defaults } from "./triage.ts";
 import * as flows from "./submit-flow.ts";
+import { ownComments, ownKey, ownLabel, pathOfHunk, placedKey, postedBefore, postedSummaries, type Own } from "./carryover.ts";
 import { draftSubmission } from "./draft.ts";
 import { FLOW_STEPS, STEP_NAMES, type Box as CheckBox, type Draft, type Flow, type Selection } from "./submit-flow.ts";
 import { verdictsFor } from "./platform.ts";
@@ -129,6 +130,11 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const r = useRef(review).current;
   const d = r.doc, h = d.human;
   const items = useMemo(() => itemsOf(d, files), [d, files]);
+  // What earlier submits of this review posted (read once), and the reader's comments that are not a finding's: the
+  // submit checklist lists those beside the findings and the code labels them (carryover.ts).
+  const earlier = useMemo(() => postedBefore(r.slug, d), []);
+  const ownNow = (): Own[] => ownComments(h, d.findings.map((f) => f.id), earlier, r.carried);
+  const carryNow = (): flows.Carry => ({ own: ownNow(), postedSummaries: postedSummaries(h, earlier) });
   const [, bump] = useState(0);
   const redraw = () => { save(r); bump((n) => n + 1); };
   const [pos, setPosRaw] = useState<Pos>(() => ({ item: Math.min(r.pos.item, Math.max(0, items.length - 1)), line: r.pos.line }));
@@ -213,6 +219,11 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     return { state: "submit", step: fl.step };
   }
   const flowBoxes = (): CheckBox[] => mode.kind === "submit" && mode.flow.step === "send" ? boxesOf(sendPlan(mode.flow)) : [];
+  // The send preview's labels on the reader's own comments: where each ticked one came from, and how many posted ones are left out.
+  const marksOf = (fl: Flow) => {
+    const on = new Map((fl.own ?? []).filter((o) => fl.ticked.includes(o.key)).map((o) => [placedKey(pathOfHunk(o.comment.hunk ?? ""), o.comment.file ? "file" : o.comment.side, o.comment.file ? null : o.comment.line, o.comment.text), o]));
+    return { tag: (path: string, side: "new" | "old" | "file", line: number | null, text: string) => { const o = on.get(placedKey(path, side, line, text)); return o && ownLabel(o); }, left: (fl.own ?? []).filter((o) => o.posted && !fl.ticked.includes(o.key)).length };
+  };
   // The flow's current step as display lines, wrapped to the content area's width.
   const flowView = (fl: Flow, inner: number): flows.Line[] => {
     const p = fl.step === "send" ? sendPlan(fl) : undefined, boxes = p ? boxesOf(p) : [];
@@ -223,7 +234,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       findings: d.findings, h, defaults, place: (f) => `${place(f.hunk, f.file ? null : f.line)}${f.file ? " (whole file)" : ""}`, label: (v) => VERDICT[v],
       keys: { tick: keyOf("submit.tick"), all: keyOf("submit.tick_all"), editor: keyOf("view.comment_editor"), next: keyOf("submit.next"), back: keyOf("submit.back") },
       hidden: d.findings.some((f) => !unhidden(f)), note: checklistNote(level), suggested: suggestionHint(r.suggested ?? [], (v) => VERDICT[v]),
-      ...(p ? { boxes: boxes.map((box) => ({ box, text: boxText(box) })), preview: `${postPreview(p, (v) => VERDICT[v])}\n\n${describe(p, fl.hook, dryRun)}` } : {}),
+      ...(p ? { boxes: boxes.map((box) => ({ box, text: boxText(box) })), preview: `${postPreview(p, (v) => VERDICT[v], marksOf(fl))}\n\n${describe(p, fl.hook, dryRun)}` } : {}),
     });
     // A wrapped line keeps its indent on every row, so the preview's comments stay under their file and line.
     return ls.flatMap((l) => {
@@ -233,13 +244,18 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     });
   };
 
+  const notesAt = (l: DiffLine) => h.comments.filter((n) => n.hunk === item?.id && n.line !== null && (n.side === "new" ? n.line === l.n : n.line === l.o));
+  // The reader's comments on the cursor line that are not a finding's: what `d` deletes.
+  const ownHere = (): Own[] => { const l = row === "line" ? lines[line] : undefined; if (!l) return []; const at = new Set(notesAt(l).map(ownKey)); return ownNow().filter((o) => at.has(o.key)); };
+  const noteLabel = (n: Human["comments"][number]) => { const o = ownNow().find((x) => x.key === ownKey(n)); return o ? ownLabel(o) : undefined; };
+
   // Where a key is pressed: the submit steps, a prompt, the docs results, the content area (full-screen, or Tab, an
   // open finding's detail included), an open finding, the table of contents or the code.
   const keyState: KeyState = settings ? { state: "settings" } : mode.kind === "submit" ? submitState(mode.flow)
     : mode.kind === "results" ? { state: "content", results: true }
     : mode.kind !== "nav" ? { state: "prompt", kind: mode.kind, decide: mode.kind === "comment" && !!mode.decide }
     : (full || focus === "content") && view ? { state: "content" }
-    : content?.finding ? { state: "finding", answer: !!pendingTurn(r.asks, content.finding) } : { state: tree };
+    : content?.finding ? { state: "finding", answer: !!pendingTurn(r.asks, content.finding) } : tree === "code" ? { state: "code", comment: ownHere().length > 0 } : { state: tree };
 
   // Blind: what the critic found is not shown, counted or reachable until the chapter has been read. Everything below that
   // draws or steps through a finding goes through `unhidden`, so the gate cannot be bypassed by one key.
@@ -262,7 +278,6 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const findingsAt = (l: DiffLine) => findingsHere.filter((f) => !f.file && (f.side === "new" ? l.n !== null && f.line === l.n : l.o !== null && f.line === l.o));
   // A finding on a whole file is shown on the row where it was written, the one that starts the file's diff or the one that ends it.
   const findingsOnFile = (r: "start" | "end") => findingsHere.filter((f) => f.file && f.line === (r === "end" ? 1 : 0));
-  const notesAt = (l: DiffLine) => h.comments.filter((n) => n.hunk === item?.id && n.line !== null && (n.side === "new" ? n.line === l.n : n.line === l.o));
 
   // Seeing a hunk is reading it.
   useEffect(() => { if (item && !h.visited.includes(item.id)) { h.visited.push(item.id); redraw(); } }, [item?.id]);
@@ -477,7 +492,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       // ---- anywhere outside a finding
       case "review.quit": onDone({ kind: "quit" }); exit(); return;
       // Every finding is in the checklist, whatever the filter (it is for reading); a blind chapter's stay hidden and post nothing.
-      case "review.submit": setContent(null); setMode({ kind: "submit", flow: flows.startFlow(unfiltered(), h, verdictsFor(d.target.platform), defaults, draft) }); return;
+      case "review.submit": setContent(null); setMode({ kind: "submit", flow: flows.startFlow(unfiltered(), h, verdictsFor(d.target.platform), defaults, draft, carryNow()) }); return;
       case "review.copy": case "finding.copy": case "content.copy": copy(); return;
       case "review.search_docs": setMode({ kind: "docs" }); setInput(""); return;
       case "review.settings": setSettings(openSettings(live, configPath())); return;
@@ -512,6 +527,14 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       case "toc.expand": tocGo("expand"); return;
       case "toc.collapse": tocGo("collapse"); return;
       // Enter always makes a new finding, on the cursor's line or the file's row: the severity first, then the comment.
+      // A comment of the reader's that no finding owns (carried over from an earlier head, say): gone, so it cannot post.
+      case "code.delete_comment": {
+        const gone = new Set(ownHere().map((o) => o.key));
+        if (!gone.size) return;
+        h.comments = h.comments.filter((c) => !gone.has(ownKey(c))); redraw();
+        setNote(`deleted your comment${gone.size === 1 ? "" : "s"} on this line; it will not be posted`);
+        return;
+      }
       case "code.new_finding": {
         const spot = spotHere();
         if (!spot) { setNote("there is nothing here to write a finding on"); return; }
@@ -642,7 +665,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
         Promise.race([asked, stopped]).then((dr) => {
           save(r);
           setDraft(dr);
-          setContent(null); setMode({ kind: "submit", flow: flows.startFlow(unfiltered(), h, verdicts, defaults, dr) });
+          setContent(null); setMode({ kind: "submit", flow: flows.startFlow(unfiltered(), h, verdicts, defaults, dr, carryNow()) });
         }, (e) => {
           setNote(ctl.signal.aborted ? "Cancelled; no draft was made." : `Drafting failed: ${String((e as Error).message)}`);
         }).finally(() => { abortRef.current = null; setBusy(null); });
@@ -870,7 +893,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
                           </Text>
                         );
                       })}
-                      {ns.map((n, j) => <Text key={j} color="cyan" wrap="truncate">{" ".repeat(gutterW + 3)}» {fit(n.text)}</Text>)}
+                      {ns.map((n, j) => { const tag = noteLabel(n); return <Text key={j} color="cyan" wrap="truncate">{" ".repeat(gutterW + 3)}» {tag ? <Text dimColor>[{tag}] </Text> : null}{fit(n.text)}</Text>; })}
                       {cur ? findingBox() : null}
                     </Box>
                   );

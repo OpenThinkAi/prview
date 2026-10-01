@@ -38,11 +38,12 @@ export type Action = {
   /**
    * Submit only: the steps it is pressed in; in the comment step, whether only while typing (true) or only while not
    * (false); and `needs: "boxes"`, in the send step only when the submit has a checkbox (a command, a coverage line).
-   * Inside a finding, `needs: "answer"`: only while an answer about it waits for `a a` / `a x`.
+   * Inside a finding, `needs: "answer"`: only while an answer about it waits for `a a` / `a x`. In the code,
+   * `needs: "comment"`: only on a line with a comment of the reader's that is not a finding's.
    */
   steps?: readonly SubmitStep[];
   typing?: boolean;
-  needs?: "boxes" | "answer";
+  needs?: "boxes" | "answer" | "comment";
 };
 
 /** The submit flow's steps (submit-flow.ts): the findings checklist, the verdict, the top-level comment, then send. */
@@ -56,7 +57,8 @@ export type PromptKind = "ask" | "comment" | "reason" | "docs" | "severity" | "f
  * comment step `typing` is whether the box takes the keys; in its send step `boxes` is whether there is a checkbox.
  */
 export type KeyState =
-  | { state: "toc" | "code" | "settings" }
+  /** `comment`: in the code, the cursor line has a comment of the reader's that is not a finding's (carried over, say). */
+  | { state: "toc" | "code" | "settings"; comment?: boolean }
   /** `answer`: an answer about this finding is waiting to be accepted or discarded. */
   | { state: "finding"; answer?: boolean }
   | { state: "content"; results?: boolean }
@@ -87,6 +89,7 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "code.to_toc", states: CODE, key: "left", secondary: "h", label: "contents", description: "Back to the table of contents at this block, which shows the chapter's intent and why." },
   { id: "code.focus_content", states: CODE, key: "tab", label: "content", description: "Move focus into the content area to scroll it.", fixed: true },
   { id: "code.new_finding", states: CODE, key: "enter", label: "new finding", description: "Write a finding of your own on the cursor line, or on a file's whole-file row: pick a severity, then write the comment, which posts if the finding's action is block or comment." },
+  { id: "code.delete_comment", states: CODE, needs: "comment", key: "x", label: "delete comment", description: "Delete your comment on the cursor line that is not a finding's (one carried over from an earlier head, say), so it is not posted." },
 
   // ---- anywhere outside a finding
   { id: "review.submit", states: OUTSIDE, key: "s", label: "submit", description: "Submit the review: tick the findings to post, pick a verdict, write the top-level comment, see exactly what posts, then send." },
@@ -259,6 +262,7 @@ export function keyOf(id: string, km: Keymap = active): string {
 const inState = (ks: KeyState) => (a: Action): boolean => {
   if (!a.states.includes(ks.state)) return false;
   if (a.needs === "answer") return ks.state === "finding" && !!ks.answer;
+  if (a.needs === "comment") return ks.state === "code" && !!ks.comment;
   if (ks.state !== "submit") return true;
   if (!a.steps?.includes(ks.step)) return false;
   if (ks.step === "comment" && a.typing !== undefined && a.typing !== ks.typing) return false;
