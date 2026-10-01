@@ -48,13 +48,16 @@ const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head
       Enter a finding of your own on this line, or on a file's "whole file" row (its diff starts and ends with one):
         pick a severity (↑/↓, Enter), write the comment (ctrl-n a new line, Enter saves, Esc cancels); it has its
         severity's default action, carried out as your own comment, and then acts like any finding
+      x deletes your comment on this line that no finding owns (one carried over when the head moved), so it is not posted
     Tab into the content area (from the table of contents, the code or an open finding) to scroll it;
       Tab or Esc comes back to where you were
     s submit, four steps (Tab next, ⇧Tab back, Esc leaves and sends nothing):
       1 findings: every finding with its action; block and comment ticked, ignore not (Space ticks one, a all).
         A ticked finding posts its comment on its line: yours from b/c, else the finding's text.
+        Below them, your comments no current finding owns (carried over when the head moved): one an earlier submit
+        posted starts unticked ("posted <date> (round n)"), one that never posted ticked ("carried over from <head>").
       2 verdict: the platform's verdicts (↑/↓), starting on what the ticks imply; suggestions shown beside it
-      3 comment: the review's top-level comment (it starts with any summary comments the review has); Enter adds a
+      3 comment: the review's top-level comment (it starts with any summary comments the review has, not one already posted); Enter adds a
         line, Esc stops typing, then v e writes it in your editor
       4 send: exactly what posts, then checkboxes (↑/↓, Space), both off: the document's on_submit command
         (shown in full; no shell) and a line saying how much you read. Enter sends.
