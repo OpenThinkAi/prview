@@ -25,7 +25,7 @@ const keysOfGroup = (g: Action[]): Entry => {
  * (`g go to…`). While a prefix is pending, its second keys instead; while a number is typed after g, how to finish it.
  */
 export function entriesOf(s: KeyState, pending: Pending | null = null): Entry[] {
-  if (pending?.digits !== undefined) return [entry("0-9", "", pending.chapter ? "chapter number" : "line number"), entry("Enter", "", "go"), entry("Esc", "", "cancel")];
+  if (pending?.digits !== undefined) return [entry("0-9", "", pending.chapter ? "chapter number" : "line number"), entry(pending.prefix, "Enter", "go"), entry("Esc", "", "cancel")];
   if (pending) return groups(prefixRows(s, pending.prefix)).map((g) => g[0]!.id === "go.line" ? entry("0-9", "", g[0]!.label) : keysOfGroup(g));
   return [...groups(rowsOf(s)).map(keysOfGroup), ...prefixesOf(s).map((p) => entry(p, "", `${PREFIXES[p]}…`))];
 }

@@ -68,7 +68,7 @@ export function fileEdge(items: NavItem[], current: number, edge: "top" | "end")
   return i === undefined ? undefined : { item: i, line: edge === "top" ? -1 : items[i]!.hunk.lines.length };
 }
 
-/** `g c <n> Enter`: chapter n's first block (chapters count from 1; the mechanical group is the one after the last). */
+/** `g c <n> g`: chapter n's first block (chapters count from 1; the mechanical group is the one after the last). */
 export function chapterStart(items: NavItem[], n: number): At | undefined {
   const i = items.findIndex((it) => it.chapter === n - 1);
   return i < 0 ? undefined : { item: i, line: 0 };

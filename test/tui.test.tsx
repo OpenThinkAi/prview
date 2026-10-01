@@ -178,15 +178,20 @@ test("cursor: ↓/↑ and j/k move a line and run on across blocks; ⇧↓/⇧�
   expect(t.frame()).toMatch(/11\s+▲\s*\+let answer/);
 });
 
-test("g <digits> Enter goes to that line of the file, g c <digits> Enter to a chapter; the footer shows the chord as it is typed", async () => {
+test("g <digits> g goes to that line of the file, g c <digits> g to a chapter (Enter too); the footer shows the chord as it is typed", async () => {
   const t = await open();
   await t.press("g1");
   expect(t.frame()).toMatch(/ g 1\s*$/m);
-  expect(t.frame()).toMatch(row("Enter", "go")); // the panel says how to finish
+  expect(t.frame()).toMatch(row("g Enter", "go")); // the panel says how to finish
   await t.press("2\r");
   expect(t.r.pos).toEqual({ item: 0, line: 3 }); // new-side line 12 is the fourth row
   await t.press("gc2\r");
   expect(t.r.pos).toEqual({ item: 1, line: 0 });
+  await t.press("gc1g"); // g closes the chapter number too
+  expect(t.r.pos).toEqual({ item: 0, line: 0 });
+  await t.press("g12g");
+  expect(t.r.pos).toEqual({ item: 0, line: 3 });
+  await t.press("gc2\r");
   await t.press("gc9\r");
   expect(t.frame()).toContain("there is no chapter 9");
   await t.press("g7" + ESC); // Esc cancels a half-typed number

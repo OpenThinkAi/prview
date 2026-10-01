@@ -33,7 +33,7 @@ export type Action = {
   secondary?: string;
   label: string;
   description: string;
-  /** Not remappable: Tab, the prompt and submit steps, settings, and `g <digits> Enter`. */
+  /** Not remappable: Tab, the prompt and submit steps, settings, and `g <digits> g` (the number closes on the prefix key itself, Enter alike). */
   fixed?: true;
   /**
    * Submit only: the steps it is pressed in; in the comment step, whether only while typing (true) or only while not
@@ -139,8 +139,8 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "go.prev_severity", states: READING, prefix: "g", key: "H", label: "previous by severity", description: "Go to the previous finding by severity, the reverse of next by severity." },
   { id: "go.top", states: READING, prefix: "g", key: "g", label: "top of file", description: "Go to the first line of this file's first block." },
   { id: "go.end", states: READING, prefix: "g", key: "e", label: "end of file", description: "Go to the last line of this file's last block." },
-  { id: "go.line", states: READING, prefix: "g", key: "<n>", label: "line", description: "Type a line number and Enter to go to that line of this file, or the nearest line shown.", fixed: true },
-  { id: "go.chapter", states: READING, prefix: "g", key: "c", label: "chapter", description: "Type a chapter number and Enter to go to that chapter's first block." },
+  { id: "go.line", states: READING, prefix: "g", key: "<n>", label: "line", description: "Type a line number, then close it with the go prefix key again or Enter, to go to that line of this file, or the nearest line shown.", fixed: true },
+  { id: "go.chapter", states: READING, prefix: "g", key: "c", label: "chapter", description: "Type a chapter number, then close it with the go prefix key again or Enter, to go to that chapter's first block." },
 
   // ---- a line being typed
   { id: "prompt.send", states: ["prompt"], key: "enter", label: "send", description: "Send the line.", fixed: true },
@@ -202,10 +202,21 @@ export const RENAMED: Readonly<Record<string, string | null>> = {
 export const NAMED_KEYS = ["up", "down", "left", "right", "shift-up", "shift-down", "shift-left", "shift-right", "tab", "shift-tab", "enter", "esc", "backspace", "pgup", "pgdn", "space", "home", "end"] as const;
 const SHOWN: Record<string, string> = {
   up: "↑", down: "↓", left: "←", right: "→", "shift-up": "⇧↑", "shift-down": "⇧↓", "shift-left": "⇧←", "shift-right": "⇧→",
-  tab: "Tab", "shift-tab": "⇧Tab", enter: "Enter", esc: "Esc", backspace: "Backspace", pgup: "PgUp", pgdn: "PgDn", space: "Space", home: "Home", end: "End", "<n>": "<n> Enter",
+  tab: "Tab", "shift-tab": "⇧Tab", enter: "Enter", esc: "Esc", backspace: "Backspace", pgup: "PgUp", pgdn: "PgDn", space: "Space", home: "Home", end: "End", "<n>": "<n> g",
 };
 /** A token as the panel and hints draw it: arrows as arrows, names capitalised, a character as itself. */
 export const showKey = (token: string): string => SHOWN[token] ?? token;
+
+/**
+ * A go-to row's typed form: `<n> g` / `c <n> g` (the number closes on the prefix key, which is not remappable), and with
+ * `alt` the Enter spelling `<n> Enter` / `c <n> Enter`. Null for any other row.
+ */
+export function gotoTyped(a: Action, alt = false): string | null {
+  const end = alt ? "Enter" : (a.prefix ?? "g");
+  if (a.id === "go.line") return `<n> ${end}`;
+  if (a.id === "go.chapter") return `${showKey(a.key)} <n> ${end}`;
+  return null;
+}
 
 const ALIASES: Record<string, string> = { return: "enter", escape: "esc", pagedown: "pgdn", pageup: "pgup", "page-down": "pgdn", "page-up": "pgup", " ": "space", "↑": "up", "↓": "down", "←": "left", "→": "right" };
 const printable = (c: string) => /^[^\p{C}\s]$/u.test(c);
@@ -241,7 +252,7 @@ export function keyOf(id: string, km: Keymap = active): string {
   const a = rowById(id, km);
   const k = a ? keysOf(a)[0] : undefined;
   if (!a || !k) return "(unbound)";
-  const second = a.id === "go.chapter" ? `${showKey(k)} <n> Enter` : showKey(k);
+  const second = gotoTyped(a) ?? showKey(k);
   return a.prefix ? `${a.prefix} ${second}` : second;
 }
 
@@ -389,9 +400,9 @@ const STATE_NAMES: Record<State, string> = {
 export function describeKeymap(km: Keymap = active): string {
   const all = km.actions;
   const w = Math.max(...all.map((a) => a.id.length));
-  const shown = (a: Action, k: string | undefined) => (k ? (a.prefix ? `${a.prefix} ${showKey(k)}` : showKey(k)) : "-");
-  const kw = Math.max(7, ...all.map((a) => shown(a, a.key || undefined).length)), sw = Math.max(9, ...all.map((a) => shown(a, a.secondary).length));
-  const line = (a: Action) => `  ${a.id.padEnd(w)}  ${(a.key ? shown(a, a.key) : "(unbound)").padEnd(kw)}  ${shown(a, a.secondary).padEnd(sw)}  ${a.description}${a.fixed ? " (fixed)" : ""}`;
+  const shown = (a: Action, k: string | undefined, alt = false) => { const go = gotoTyped(a, alt); return go ? `${a.prefix} ${go}` : k ? (a.prefix ? `${a.prefix} ${showKey(k)}` : showKey(k)) : "-"; };
+  const kw = Math.max(7, ...all.map((a) => shown(a, a.key || undefined).length)), sw = Math.max(9, ...all.map((a) => shown(a, a.secondary, true).length));
+  const line = (a: Action) => `  ${a.id.padEnd(w)}  ${(a.key ? shown(a, a.key) : "(unbound)").padEnd(kw)}  ${shown(a, a.secondary, true).padEnd(sw)}  ${a.description}${a.fixed ? " (fixed)" : ""}`;
   const out: string[] = [`  ${"action".padEnd(w)}  ${"primary".padEnd(kw)}  ${"secondary".padEnd(sw)}  description`, ""];
   for (const state of STATES) {
     const rows = all.filter((a) => !a.prefix && a.states.includes(state) && (a.states[0] === state || a.states.length === 1));
@@ -429,9 +440,11 @@ const MD_SECTIONS: [string, (a: Action) => boolean][] = [
 
 /** The key map as Markdown tables, one per state or prefix, generated from the default rows so the README cannot drift from them. */
 export function keysMarkdown(): string {
-  const cell = (a: Action, k: string | undefined): string => {
+  const cell = (a: Action, k: string | undefined, alt = false): string => {
+    const go = gotoTyped(a, alt);
+    if (go) return `\`${a.prefix} ${go}\``;
     if (!k) return "";
-    const typed = a.id === "go.chapter" ? `${showKey(k)} <n> Enter` : showKey(k);
+    const typed = showKey(k);
     return `\`${a.prefix ? `${a.prefix} ${typed}` : typed}\``;
   };
   const out: string[] = [];
@@ -439,7 +452,7 @@ export function keysMarkdown(): string {
     const rows = ALL_ACTIONS.filter(pick);
     if (!rows.length) continue;
     out.push(`**${title}**`, "", "| Key | Alt | Action | What it does |", "|---|---|---|---|");
-    for (const a of rows) out.push(`| ${cell(a, a.key)} | ${cell(a, a.secondary)} | \`${a.id}\` | ${a.description.replace(/\|/g, "\\|")} |`);
+    for (const a of rows) out.push(`| ${cell(a, a.key)} | ${cell(a, a.secondary, true)} | \`${a.id}\` | ${a.description.replace(/\|/g, "\\|")} |`);
     out.push("");
   }
   return out.join("\n").trimEnd();

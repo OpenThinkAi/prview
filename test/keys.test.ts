@@ -82,8 +82,8 @@ test("keyOf and the display: arrows as arrows, a prefixed action as its chord, u
   expect(keyOf("code.down")).toBe("↓");
   expect(keyOf("code.next_chapter")).toBe("⇧↓");
   expect(keyOf("go.next_finding")).toBe("g f");
-  expect(keyOf("go.chapter")).toBe("g c <n> Enter");
-  expect(keyOf("go.line")).toBe("g <n> Enter");
+  expect(keyOf("go.chapter")).toBe("g c <n> g");
+  expect(keyOf("go.line")).toBe("g <n> g");
   expect(keyOf("code.new_finding")).toBe("Enter");
   expect(keyOf("nope")).toBe("(unbound)");
   installKeymap(effectiveKeys({ "view.wrap": { primary: "" } }));
@@ -205,6 +205,12 @@ test("chords: a prefix waits for its second key; Esc or an unknown key cancels i
 
 test("chords: g <digits> Enter goes to a line, g c <digits> Enter to a chapter; Backspace edits, Esc or another key cancels", () => {
   expect(press(CODE, ["g", "1", "2", "0", "enter"]).out).toEqual({ kind: "act", id: "go.line", n: 120 });
+  expect(press(CODE, ["g", "1", "2", "3", "g"])).toEqual({ pending: null, out: { kind: "act", id: "go.line", n: 123 } });
+  expect(press(CODE, ["g", "c", "3", "g"]).out).toEqual({ kind: "act", id: "go.chapter", n: 3 });
+  expect(press(CODE, ["g", "g"]).out).toEqual({ kind: "act", id: "go.top" });
+  expect(press(CODE, ["g", "c", "g"])).toEqual({ pending: null, out: { kind: "cancel" } }); // g with no number cancels
+  expect(press(CODE, ["g", "1", "2", "backspace", "g"]).out).toEqual({ kind: "act", id: "go.line", n: 1 });
+  expect(press(CODE, ["g", "1", "backspace", "g"]).out).toEqual({ kind: "cancel" });
   expect(press(CODE, ["g", "1", "2"]).pending).toEqual({ prefix: "g", digits: "12" });
   expect(press(CODE, ["g", "1", "2", "backspace", "enter"]).out).toEqual({ kind: "act", id: "go.line", n: 1 });
   expect(press(CODE, ["g", "c", "3", "enter"]).out).toEqual({ kind: "act", id: "go.chapter", n: 3 });
@@ -309,7 +315,7 @@ function listedActs(ks: KeyState, km: Keymap): Set<string> {
   for (const p of prefixesOf(ks, km)) {
     expect(step(ks, null, p, km).out, `${name(ks)} prefix ${p}`).toEqual({ kind: "pending" });
     for (const r of prefixRows(ks, p, km)) {
-      const keys = r.id === "go.line" ? ["7", "enter"] : r.id === "go.chapter" ? [r.key, "2", "enter"] : keysOf(r);
+      const keys = r.id === "go.line" ? ["7", "g"] : r.id === "go.chapter" ? [r.key, "2", "g"] : keysOf(r);
       if (r.id === "go.line" || r.id === "go.chapter") {
         expect(press(ks, [p, ...keys], km).out, `${name(ks)} ${p} ${keys}`).toMatchObject({ kind: "act", id: r.id });
       } else for (const k of keys) expect(press(ks, [p, k], km).out, `${name(ks)} ${p} ${k}`).toEqual({ kind: "act", id: r.id });
@@ -373,7 +379,7 @@ test("the panel: entries show primary then secondary, grouped by label; a pendin
   expect(e.slice(0, 4)).toEqual(["↓/↑ j/k line", "⇧↓/⇧↑ J/K chapter", "→ l open finding", "← h contents"]);
   expect(e.slice(-4)).toEqual(["a AI…", "f filter…", "v view…", "g go to…"]);
   expect(entriesOf(CODE, { prefix: "g" }).map((x) => `${x.keys} ${x.label}`)).toContain("0-9 line");
-  expect(entriesOf(CODE, { prefix: "g", digits: "1" }).map((x) => x.keys)).toEqual(["0-9", "Enter", "Esc"]);
+  expect(entriesOf(CODE, { prefix: "g", digits: "1" }).map((x) => x.keys)).toEqual(["0-9", "g Enter", "Esc"]);
   expect(panelTitle(CODE)).toBe("keys");
   expect(panelTitle(FINDING)).toBe("finding");
   expect(panelTitle(CONTENT)).toBe("content");

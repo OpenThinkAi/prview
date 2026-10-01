@@ -2,8 +2,11 @@
 // state, with or without a prefix pending, to what happens. Pure, so every chord is tested without a screen:
 //
 //   a prefix, then its second key            `g f`, `v w`, `a ?`
-//   g, digits, Enter                          `g 120 Enter`: that line of this file
-//   g c, digits, Enter                        `g c 3 Enter`: that chapter
+//   g, digits, g (or Enter)                   `g 120 g`: that line of this file
+//   g c, digits, g (or Enter)                 `g c 3 g`: that chapter
+//
+// The number closes on the prefix key it opened with (the g prefix is not remappable, so that is always g); Enter does
+// the same. With no digits typed yet, `g` or Enter after `g c` cancels the chord; a bare `g g` is go.top.
 //
 // Esc cancels a pending prefix (and a half-typed number); any key that is not one of the prefix's second keys
 // cancels it too, and does nothing else. With nothing pending, Esc is `escape`: the screen backs out of whatever is open.
@@ -32,7 +35,7 @@ export function step(ks: KeyState, pending: Pending | null, token: string, km: K
   if (pending?.digits !== undefined) {
     if (/^[0-9]$/.test(token)) return { pending: { ...pending, digits: pending.digits + token }, out: { kind: "pending" } };
     if (token === "backspace") return { pending: { ...pending, digits: pending.digits.slice(0, -1) }, out: { kind: "pending" } };
-    if (token === "enter" && pending.digits) return idle({ kind: "act", id: pending.chapter ? "go.chapter" : "go.line", n: parseInt(pending.digits, 10) });
+    if ((token === "enter" || token === pending.prefix) && pending.digits) return idle({ kind: "act", id: pending.chapter ? "go.chapter" : "go.line", n: parseInt(pending.digits, 10) });
     return idle({ kind: "cancel" });
   }
   if (pending) {

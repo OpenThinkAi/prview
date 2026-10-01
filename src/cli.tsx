@@ -67,8 +67,8 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
     v then: z zen (hide or show the table of contents) · c the content area full-screen (Esc or v c restores)
             · e open the file here in your editor (inside tmux: in a split pane, this screen stays up) · w wrap
     g then: f/F next/previous finding (wrapping) · h/H next/previous by severity · g/e top/end of the file (the "whole file" rows)
-            · <digits> Enter that line of this file (these land in the code)
-            · c <digits> Enter that chapter's first block in the table of contents
+            · <digits> g (or Enter) that line of this file (these land in the code)
+            · c <digits> g (or Enter) that chapter's first block in the table of contents
     Findings are high, medium or low severity, and each has an action: block, comment or ignore. Until you pick
     one it is its severity's default ([defaults] in the config: high = "block", medium and low = "comment"), shown
     as "(default)"; a finding the second look (refute) dropped is shown too, ignored by default, with its reason.
