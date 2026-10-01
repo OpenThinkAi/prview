@@ -138,12 +138,12 @@ const comments = [
   { id: "c2", hunk: hs[1]!.id, side: "new" as const, line: null, text: "about the whole file", at: "now", file: true as const },
 ];
 
-test("a file-level comment posts as a file-level review comment (subject_type file) after the line comments, and never in the summary", () => {
+test("a file-level comment posts as a file-level review comment (subject_type file) after the line comments, and never in the summary", async () => {
   const p = postingOf("comment", comments, (id) => id.split("@")[0]);
   expect(p.comments).toEqual([{ path: "src/a.rs", side: "new", line: 2, text: "a line comment" }]);
   expect(p.files).toEqual([{ path: "src/a.rs", text: "about the whole file" }]);
   const { calls, run } = fakeGh();
-  expect(github.post(target, p, run, "/wt")).toEqual({ url: `${PR}#r` });
+  expect(await github.post(target, p, run, "/wt")).toEqual({ url: `${PR}#r` });
   expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET repos/o/r/pulls/7", "POST repos/o/r/pulls/7/reviews", "POST repos/o/r/pulls/7/comments", "POST repos/o/r/pulls/7/reviews/99/events"]);
   expect(calls[1]!.body.comments).toHaveLength(1); // the pending review holds only the line comment
   expect(calls[2]!.body).toEqual({ commit_id: B, path: "src/a.rs", subject_type: "file", body: "about the whole file" });
@@ -152,10 +152,10 @@ test("a file-level comment posts as a file-level review comment (subject_type fi
   expect(github.dryRun(target, p).join("\n")).toContain('"subject_type": "file"');
 });
 
-test("a file-level comment GitHub refuses falls back to the summary under its file name; a file comment alone is words enough", () => {
+test("a file-level comment GitHub refuses falls back to the summary under its file name; a file comment alone is words enough", async () => {
   const p = postingOf("request_changes", [comments[1]!], (id) => id.split("@")[0]);
   const { calls, run } = fakeGh({ refuseFile: true });
-  github.post(target, p, run, "/wt");
+  await github.post(target, p, run, "/wt");
   expect(calls.at(-1)!.body).toEqual({ event: "REQUEST_CHANGES", body: "src/a.rs: about the whole file" });
   expect(github.describe(target, p)).not.toContain("not posted"); // a whole-file comment counts as the words requesting changes needs
   expect(github.describe(target, postingOf("request_changes", [], () => undefined))).toContain("not posted");

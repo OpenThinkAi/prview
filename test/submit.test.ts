@@ -115,7 +115,7 @@ function fakeGh(head = B, over: { submit?: { exit: number; stdout: string; stder
   return { calls, run };
 }
 
-test("github: checks the head, makes a pending review with the line comments, then submits it with the verdict and summary", () => {
+test("github: checks the head, makes a pending review with the line comments, then submits it with the verdict and summary", async () => {
   const t = review({}, { url: PR, platform: "github" }).doc.target;
   const { calls, run } = fakeGh();
   const p = postingOf("comment", [
@@ -123,7 +123,7 @@ test("github: checks the head, makes a pending review with the line comments, th
     { hunk: h1!.id, side: "new", line: 12, text: "why two?", at: "now" },
     { hunk: null, side: "new", line: null, text: "Mostly fine.", at: "now" },
   ], () => "src/a.rs");
-  expect(github.post(t, p, run, "/wt")).toEqual({ url: `${PR}#pullrequestreview-99` });
+  expect(await github.post(t, p, run, "/wt")).toEqual({ url: `${PR}#pullrequestreview-99` });
   expect(calls.map((c) => c.argv.slice(0, 5).join(" "))).toEqual([
     "gh api --method GET repos/o/r/pulls/7",
     "gh api --method POST repos/o/r/pulls/7/reviews",
@@ -138,43 +138,43 @@ test("github: checks the head, makes a pending review with the line comments, th
   expect(github.describe(t, p)).toContain("posts to https://github.com/o/r/pull/7");
 });
 
-test("github: every verdict maps to its review event", () => {
+test("github: every verdict maps to its review event", async () => {
   const t = review({}, { url: PR, platform: "github" }).doc.target;
   for (const [verdict, event] of [["approve", "APPROVE"], ["request_changes", "REQUEST_CHANGES"], ["comment", "COMMENT"]] as const) {
     const { calls, run } = fakeGh();
-    github.post(t, postingOf(verdict, [{ hunk: null, side: "new", line: null, text: "words", at: "now" }], () => undefined), run, "/wt");
+    await github.post(t, postingOf(verdict, [{ hunk: null, side: "new", line: null, text: "words", at: "now" }], () => undefined), run, "/wt");
     expect(calls[2]!.body.event).toBe(event);
   }
 });
 
-test("github: refuses when the pull request has moved off the reviewed head; nothing is created", () => {
+test("github: refuses when the pull request has moved off the reviewed head; nothing is created", async () => {
   const t = review({}, { url: PR, platform: "github" }).doc.target;
   const { calls, run } = fakeGh("c".repeat(40));
-  expect(() => github.post(t, postingOf("approve", [], () => undefined), run, "/wt")).toThrow("head is now cccccccc, but this review is of bbbbbbbb");
+  await expect(github.post(t, postingOf("approve", [], () => undefined), run, "/wt")).rejects.toThrow("head is now cccccccc, but this review is of bbbbbbbb");
   expect(calls).toHaveLength(1); // only the GET
 });
 
-test("github: a failed submit deletes the pending review rather than leaving it on the PR", () => {
+test("github: a failed submit deletes the pending review rather than leaving it on the PR", async () => {
   const t = review({}, { url: PR, platform: "github" }).doc.target;
   const { calls, run } = fakeGh(B, { submit: { exit: 1, stdout: JSON.stringify({ message: "Unprocessable Entity", errors: ["Can not approve your own pull request"] }), stderr: "gh: HTTP 422" } });
-  expect(() => github.post(t, postingOf("approve", [], () => undefined), run, "/wt")).toThrow("gh api failed (exit 1): Unprocessable Entity: Can not approve your own pull request");
+  await expect(github.post(t, postingOf("approve", [], () => undefined), run, "/wt")).rejects.toThrow("gh api failed (exit 1): Unprocessable Entity: Can not approve your own pull request");
   expect(calls.at(-1)!.argv.slice(3, 5)).toEqual(["DELETE", "repos/o/r/pulls/7/reviews/99"]);
 });
 
-test("github: refused before sending when GitHub would refuse it", () => {
+test("github: refused before sending when GitHub would refuse it", async () => {
   const t = review({}, { url: PR, platform: "github" }).doc.target;
   const silent = postingOf("request_changes", [], () => undefined);
-  expect(() => github.post(t, silent, noNet, "/wt")).toThrow("needs a top-level comment or a ticked finding");
+  await expect(github.post(t, silent, noNet, "/wt")).rejects.toThrow("needs a top-level comment or a ticked finding");
   expect(github.describe(t, silent)).toStartWith("not posted:");
   // A coverage line is not words of your own.
-  expect(() => github.post(t, postingOf("comment", [], () => undefined, { coverage: "I read 1 of 2 hunks." }), noNet, "/wt")).toThrow("needs a top-level comment");
-  expect(() => github.post(t, postingOf("approve", [], () => undefined, { coverage: "I read 1 of 2 hunks." }), noNet, "/wt")).toThrow("coverage line needs a top-level comment");
-  expect(() => github.post({ ...t, url: undefined }, postingOf("approve", [], () => undefined), noNet, "/wt")).toThrow("no GitHub pull request URL");
+  await expect(github.post(t, postingOf("comment", [], () => undefined, { coverage: "I read 1 of 2 hunks." }), noNet, "/wt")).rejects.toThrow("needs a top-level comment");
+  await expect(github.post(t, postingOf("approve", [], () => undefined, { coverage: "I read 1 of 2 hunks." }), noNet, "/wt")).rejects.toThrow("coverage line needs a top-level comment");
+  await expect(github.post({ ...t, url: undefined }, postingOf("approve", [], () => undefined), noNet, "/wt")).rejects.toThrow("no GitHub pull request URL");
   const down: Runner = () => ({ exit: 1, stdout: "", stderr: "gh: HTTP 404" });
-  expect(() => github.post(t, postingOf("approve", [], () => undefined), down, "/wt")).toThrow("gh api failed (exit 1): gh: HTTP 404");
+  await expect(github.post(t, postingOf("approve", [], () => undefined), down, "/wt")).rejects.toThrow("gh api failed (exit 1): gh: HTTP 404");
 });
 
-test("a finding posts only as the comment its block or comment action wrote; ignored ones and defaults post nothing; coverage only when chosen", () => {
+test("a finding posts only as the comment its block or comment action wrote; ignored ones and defaults post nothing; coverage only when chosen", async () => {
   const f = { id: "1", source: "stamp:security", hunk: h1!.id, side: "new" as const, line: 11, severity: "high" as const, kind: "bug", claim: "This can overflow when the count is zero.", evidence: "see the loop", status: "upheld" as const };
   let human: Doc["human"] = { comments: [], visited: [h1!.id], verdict: "request_changes" };
   human = decide(human, f, "block", { text: "Guard the zero count here", at: "now" });
@@ -186,16 +186,16 @@ test("a finding posts only as the comment its block or comment action wrote; ign
   const plan = planOf(r, files, { coverage: true });
   expect(plan.posting!.coverage).toBe("I read 1 of 1 hunk.");
   const { calls, run } = fakeGh();
-  github.post(r.doc.target, plan.posting!, run, "/wt");
+  await github.post(r.doc.target, plan.posting!, run, "/wt");
   expect(calls[1]!.body.comments).toEqual([{ path: "src/a.rs", line: 11, side: "RIGHT", body: "Guard the zero count here" }]);
   // Nothing but the reader's words: no source, claim, evidence, reason or comment id reaches GitHub.
   expect(JSON.stringify(calls.map((c) => c.body))).not.toMatch(/stamp|security|prview|critic|evidence|see the loop|overflow|misread|"c1"|blocking|default|high/i);
   expect(calls[2]!.body.body).toBe("I read 1 of 1 hunk.");
 });
 
-test("dry run: prints the API calls, writes nothing, posts nothing, records nothing", () => {
+test("dry run: prints the API calls, writes nothing, posts nothing, records nothing", async () => {
   const r = review({ human: { comments: [{ hunk: h1!.id, side: "old", line: 11, text: "was this used?", at: "now" }], visited: [], verdict: "comment" } }, { url: PR, platform: "github" });
-  const res = submit(r, files, { allowHook: true, run: noNet, hook: noHook, dryRun: true });
+  const res = await submit(r, files, { allowHook: true, run: noNet, hook: noHook, dryRun: true });
   expect(res.ok).toBe(true);
   expect(res.summary).toContain("Dry run (Comment): nothing written or posted.");
   expect(res.summary).toContain("gh api --method POST repos/o/r/pulls/7/reviews --input -");
@@ -205,9 +205,9 @@ test("dry run: prints the API calls, writes nothing, posts nothing, records noth
   expect(r.doc.submissions).toBeUndefined();
 });
 
-test("no platform and no hook: submit writes the document and its markdown, and says where", () => {
+test("no platform and no hook: submit writes the document and its markdown, and says where", async () => {
   const r = review();
-  const res = submit(r, files, { allowHook: false, run: noNet, hook: noHook });
+  const res = await submit(r, files, { allowHook: false, run: noNet, hook: noHook });
   const file = join(tmp, "home", "submitted", `${r.slug}.json`);
   expect(res.ok).toBe(true);
   expect(res.summary).toBe(`Submitted (Approve): wrote ${file} · no platform to post to, the file is the review`);
@@ -219,9 +219,9 @@ test("no platform and no hook: submit writes the document and its markdown, and 
   expect(JSON.parse(readFileSync(join(tmp, "home", `${r.slug}.json`), "utf8")).doc.submissions).toHaveLength(1);
 });
 
-test("an allowed hook runs for real: `cat {file} > out` in the worktree produces the written document", () => {
+test("an allowed hook runs for real: `cat {file} > out` in the worktree produces the written document", async () => {
   const r = review({ on_submit: { run: splitArgs("cat {file} > out.json")! } });
-  const res = submit(r, files, { allowHook: true, run: noNet });
+  const res = await submit(r, files, { allowHook: true, run: noNet });
   const out = join(r.worktree, "out.json");
   expect(res.ok).toBe(true);
   expect(res.summary).toContain(`on_submit ran (exit 0, stdout in ${out})`);
@@ -229,38 +229,38 @@ test("an allowed hook runs for real: `cat {file} > out` in the worktree produces
   expect(r.doc.submissions![0]!.hook).toEqual({ argv: ["cat", res.submission.file.replace(/\.json$/, ".hook.json"), ">", out], cwd: r.worktree, ran: true, exit: 0, output: "" });
 });
 
-test("a hook the human did not allow never runs, and the summary says so", () => {
+test("a hook the human did not allow never runs, and the summary says so", async () => {
   const r = review({ on_submit: { run: ["cat", "{file}", ">", "out.json"] } });
-  const res = submit(r, files, { allowHook: false, run: noNet, hook: noHook });
+  const res = await submit(r, files, { allowHook: false, run: noNet, hook: noHook });
   expect(res.summary).toContain("on_submit not run (not allowed)");
   expect(existsSync(join(r.worktree, "out.json"))).toBe(false);
   expect(res.submission.hook).toMatchObject({ ran: false });
 });
 
-test("a failing hook, a missing command, or a failed post is in the summary and the record; the document is still written", () => {
+test("a failing hook, a missing command, or a failed post is in the summary and the record; the document is still written", async () => {
   const r = review({ on_submit: { run: ["sh", "-c", "echo boom >&2; exit 3"] } }, { url: PR, platform: "github" });
   const down: Runner = () => ({ exit: 1, stdout: "", stderr: "gh: could not resolve host" });
-  const res = submit(r, files, { allowHook: true, run: down });
+  const res = await submit(r, files, { allowHook: true, run: down });
   expect(res.ok).toBe(false);
   expect(res.summary).toContain("NOT posted to github: gh api failed (exit 1): gh: could not resolve host");
   expect(res.summary).toContain("on_submit FAILED (exit 3): boom");
   expect(existsSync(res.submission.file)).toBe(true);
   expect(res.submission).toMatchObject({ posted: { platform: "github", ok: false }, hook: { ran: true, exit: 3, output: "boom\n" } });
 
-  const gone = submit(review({ on_submit: { run: ["no-such-command-prview-test"] } }), files, { allowHook: true, run: noNet });
+  const gone = await submit(review({ on_submit: { run: ["no-such-command-prview-test"] } }), files, { allowHook: true, run: noNet });
   expect(gone.summary).toContain("on_submit FAILED (Executable not found");
   expect(existsSync(gone.submission.file)).toBe(true);
 
-  const posted = submit(review({}, { url: PR, platform: "github" }), files, { allowHook: false, run: fakeGh().run });
+  const posted = await submit(review({}, { url: PR, platform: "github" }), files, { allowHook: false, run: fakeGh().run });
   expect(posted.summary).toContain(`posted to ${PR}#pullrequestreview-99`);
   expect(posted.submission.posted).toEqual({ platform: "github", ok: true, url: `${PR}#pullrequestreview-99` });
 });
 
-test("a hook that runs too long is stopped and reported as timed out", () => {
+test("a hook that runs too long is stopped and reported as timed out", async () => {
   const res = runHook({ argv: ["sleep", "5"], cwd: tmp, timeoutMs: 200 });
   expect(res.timedOut).toBe(true);
   const r = review({ on_submit: { run: ["sleep", "5"] } });
-  const s = submit(r, files, { allowHook: true, run: noNet, hook: () => ({ exit: null, stdout: "", stderr: "", timedOut: true }) });
+  const s = await submit(r, files, { allowHook: true, run: noNet, hook: () => ({ exit: null, stdout: "", stderr: "", timedOut: true }) });
   expect(s.summary).toContain("on_submit FAILED (timed out after 60s)");
   expect(s.submission.hook).toMatchObject({ timed_out: true });
 });
@@ -299,9 +299,9 @@ test("a > path must land inside the worktree: absolute, .. and symlinks out are 
   expect(hookOf(["cat", ">", "x"], "/f", wt).refused).toBeUndefined();
 });
 
-test("a refused redirect: the hook does not run, nothing is written outside, the record says why", () => {
+test("a refused redirect: the hook does not run, nothing is written outside, the record says why", async () => {
   const r = review({ on_submit: { run: ["cat", "{file}", ">", "../escaped.json"] } });
-  const res = submit(r, files, { allowHook: true, run: noNet, hook: noHook });
+  const res = await submit(r, files, { allowHook: true, run: noNet, hook: noHook });
   expect(res.ok).toBe(false);
   expect(res.summary).toContain("on_submit REFUSED, not run");
   expect(existsSync(join(r.worktree, "..", "escaped.json"))).toBe(false);
@@ -310,17 +310,17 @@ test("a refused redirect: the hook does not run, nothing is written outside, the
   expect(existsSync(res.submission.file)).toBe(true); // the document is still written
 });
 
-test("a link planted by the hook itself is caught before stdout is written through it", () => {
+test("a link planted by the hook itself is caught before stdout is written through it", async () => {
   const outside = mkdtempSync(join(tmp, "late-"));
   const r = review({ on_submit: { run: ["cat", "{file}", ">", "late.txt"] } });
-  const res = submit(r, files, { allowHook: true, run: noNet, hook: () => { symlinkSync(join(outside, "stolen"), join(r.worktree, "late.txt")); return { exit: 0, stdout: "data", stderr: "", timedOut: false }; } });
+  const res = await submit(r, files, { allowHook: true, run: noNet, hook: () => { symlinkSync(join(outside, "stolen"), join(r.worktree, "late.txt")); return { exit: 0, stdout: "data", stderr: "", timedOut: false }; } });
   expect(res.ok).toBe(false);
   expect(existsSync(join(outside, "stolen"))).toBe(false);
 });
 
-test("the hook's copy of the document has the private ignore notes removed; the kept document keeps them", () => {
+test("the hook's copy of the document has the private ignore notes removed; the kept document keeps them", async () => {
   const r = review({ on_submit: { run: ["cat", "{file}", ">", "copy.json"] }, findings: [{ id: "f1", source: "s", hunk: h1!.id, side: "new", line: 11, severity: "medium", kind: "bug", claim: "c", evidence: "", status: "upheld" }], human: { comments: [], visited: [], decisions: { f1: { kind: "ignore", reason: "SECRET-REASON" } }, verdict: "comment" } });
-  const res = submit(r, files, { allowHook: true, run: noNet });
+  const res = await submit(r, files, { allowHook: true, run: noNet });
   expect(res.ok).toBe(true);
   const seen = readFileSync(join(r.worktree, "copy.json"), "utf8");
   expect(seen).not.toContain("SECRET-REASON");
@@ -340,10 +340,10 @@ const flowFindings = () => {
   ];
 };
 
-test("submit with a selection: ticked findings post their text on their lines, the comment is the body, the verdict the event", () => {
+test("submit with a selection: ticked findings post their text on their lines, the comment is the body, the verdict the event", async () => {
   const r = review({ findings: flowFindings(), human: { comments: [], visited: [h1!.id] } }, { url: PR, platform: "github" });
   const { calls, run } = fakeGh();
-  const res = submit(r, files, { allowHook: false, run, selection: { listed: ["1", "2", "3"], include: ["1"], comment: "Nearly there.", verdict: "request_changes" } });
+  const res = await submit(r, files, { allowHook: false, run, selection: { listed: ["1", "2", "3"], include: ["1"], comment: "Nearly there.", verdict: "request_changes" } });
   expect(res.ok).toBe(true);
   expect(calls[1]!.body.comments).toEqual([{ path: "src/a.rs", line: 11, side: "RIGHT", body: "Guard the zero count." }]);
   expect(calls[2]!.body).toEqual({ event: "REQUEST_CHANGES", body: "Nearly there." });
@@ -356,25 +356,25 @@ test("submit with a selection: ticked findings post their text on their lines, t
   expect(Object.fromEntries(Object.entries(written.human.decisions!).map(([k, v]) => [k, v.kind]))).toEqual({ "1": "block", "2": "ignore" });
 });
 
-test("submit with a selection: a ticked comment verdict with only a finding posts; nothing ticked and no words is refused by the GitHub check, the file still written", () => {
+test("submit with a selection: a ticked comment verdict with only a finding posts; nothing ticked and no words is refused by the GitHub check, the file still written", async () => {
   const r = review({ findings: flowFindings(), human: { comments: [], visited: [] } }, { url: PR, platform: "github" });
   const { calls, run } = fakeGh();
-  submit(r, files, { allowHook: false, run, selection: { listed: ["1", "2", "3"], include: ["3"], comment: "", verdict: "comment" } });
+  await submit(r, files, { allowHook: false, run, selection: { listed: ["1", "2", "3"], include: ["3"], comment: "", verdict: "comment" } });
   expect(calls[1]!.body.comments).toEqual([{ path: "src/a.rs", line: 12, side: "RIGHT", body: "Dropped by the second look." }]);
   expect(calls[2]!.body).toEqual({ event: "COMMENT", body: "" });
 
   const silent = review({ findings: flowFindings(), human: { comments: [], visited: [] } }, { url: PR, platform: "github" });
-  const res = submit(silent, files, { allowHook: false, run: noNet, selection: { listed: ["1", "2", "3"], include: [], comment: "  ", verdict: "request_changes" } });
+  const res = await submit(silent, files, { allowHook: false, run: noNet, selection: { listed: ["1", "2", "3"], include: [], comment: "  ", verdict: "request_changes" } });
   expect(res.ok).toBe(false);
   expect(res.summary).toContain("NOT posted to github: requesting changes needs a top-level comment or a ticked finding to post");
   expect(existsSync(res.submission.file)).toBe(true);
 });
 
-test("submit with a selection: no verdict is refused before anything is written; a dry run applies it to a copy only", () => {
+test("submit with a selection: no verdict is refused before anything is written; a dry run applies it to a copy only", async () => {
   const r = review({ findings: flowFindings(), human: { comments: [], visited: [] } }, { url: PR, platform: "github" });
-  expect(() => submit(r, files, { allowHook: false, run: noNet, selection: { listed: ["1"], include: ["1"], comment: "x" } })).toThrow("pick a verdict");
+  await expect(submit(r, files, { allowHook: false, run: noNet, selection: { listed: ["1"], include: ["1"], comment: "x" } })).rejects.toThrow("pick a verdict");
   expect(existsSync(join(tmp, "home", "submitted", `${r.slug}.json`))).toBe(false);
-  const res = submit(r, files, { allowHook: false, run: noNet, dryRun: true, selection: { listed: ["1", "2", "3"], include: ["1", "2"], comment: "Top.", verdict: "comment" } });
+  const res = await submit(r, files, { allowHook: false, run: noNet, dryRun: true, selection: { listed: ["1", "2", "3"], include: ["1", "2"], comment: "Top.", verdict: "comment" } });
   expect(res.summary).toContain('"body": "Guard the zero count."');
   expect(res.summary).toContain('"body": "Name this better."');
   expect(res.summary).toContain('"body": "Top."');
@@ -394,7 +394,7 @@ test("the send step's preview is drawn from the posting: verdict, comment, cover
   expect(postPreview(planOf(review(), files), (v) => v)).toStartWith("── Nothing is posted (the document has no platform)");
 });
 
-test("submit with a selection: a ticked whole-file finding posts as a file comment; your own decided finding posts once, as you wrote it", () => {
+test("submit with a selection: a ticked whole-file finding posts as a file comment; your own decided finding posts once, as you wrote it", async () => {
   const base = { source: "critic", hunk: h1!.id, side: "new" as const, kind: "bug", evidence: "", status: "upheld" as const };
   const whole = { ...base, id: "w", line: 0, severity: "medium" as const, claim: "This file needs a header.", file: true as const };
   const own = { ...base, id: "y", source: "you", line: 11, severity: "high" as const, claim: "Derive this." };
@@ -406,7 +406,7 @@ test("submit with a selection: a ticked whole-file finding posts as a file comme
   expect(p.posting!.files).toEqual([{ path: "src/a.rs", text: "This file needs a header." }]);
   expect(postPreview(p, (v) => v)).toContain("Whole-file comments (1):\n  src/a.rs\n    This file needs a header.");
   const { calls, run } = fakeGh();
-  expect(submit(r, files, { allowHook: false, run, selection: sel }).ok).toBe(true); // a file comment is words enough for request changes
+  expect((await submit(r, files, { allowHook: false, run, selection: sel })).ok).toBe(true); // a file comment is words enough for request changes
   expect(calls.map((c) => c.argv[4])).toEqual(["repos/o/r/pulls/7", "repos/o/r/pulls/7/reviews", "repos/o/r/pulls/7/comments", "repos/o/r/pulls/7/reviews/99/events"]);
   expect(calls[2]!.body).toEqual({ commit_id: B, path: "src/a.rs", subject_type: "file", body: "This file needs a header." });
   expect(r.doc.human.comments.filter((c) => c.text === "Derive this.")).toHaveLength(1);

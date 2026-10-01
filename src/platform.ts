@@ -34,8 +34,8 @@ export type Adapter = {
   describe(t: Target, p: Posting): string;
   /** The API calls post would make, as printable text, without making any. */
   dryRun(t: Target, p: Posting): string[];
-  /** Post it; throws with a reason the reader can act on. Returns the URL of what was posted when known. */
-  post(t: Target, p: Posting, run: Runner, cwd: string): { url?: string };
+  /** Post it; rejects with a reason the reader can act on. Resolves to the URL of what was posted when known. Async: a platform reached over HTTP awaits each call. */
+  post(t: Target, p: Posting, run: Runner, cwd: string): Promise<{ url?: string }>;
 };
 
 /**
@@ -128,7 +128,7 @@ export const github: Adapter = {
       show(c.submit, "submit it with the verdict"),
     ];
   },
-  post(t, p, run, cwd) {
+  async post(t, p, run, cwd) {
     const why = githubProblem(t, p);
     if (why) throw new Error(why);
     const c = githubCalls(t, p);
@@ -157,7 +157,7 @@ export const github: Adapter = {
 
 const ADAPTERS: Record<string, Adapter> = { github };
 
-/** The adapter for a platform, if prview has one. GitLab and Azure DevOps come later, as more entries here. */
+/** The adapter for a platform, if prview has one: keyed by the same id as its read side in registry.ts. More platforms are more entries here. */
 export const adapterFor = (platform: string | undefined): Adapter | undefined => platform ? ADAPTERS[platform.toLowerCase()] : undefined;
 
 /** Every verdict a document can record: what the submit radio offers when no adapter posts (the file is the review). */

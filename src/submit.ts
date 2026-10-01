@@ -161,7 +161,7 @@ export type Result = { submission: Submission; summary: string; ok: boolean };
  * Submit the review. Throws only if the document itself cannot be written (step 1); anything after
  * that is caught, recorded in `submissions`, and summed up in one line.
  */
-export function submit(r: Review, files: FileDiff[], opts: Choices & { allowHook: boolean; run?: Runner; hook?: HookRunner; now?: () => Date; dryRun?: boolean }): Result {
+export async function submit(r: Review, files: FileDiff[], opts: Choices & { allowHook: boolean; run?: Runner; hook?: HookRunner; now?: () => Date; dryRun?: boolean }): Promise<Result> {
   const d = r.doc;
   const at = (opts.now ?? (() => new Date()))().toISOString();
   const p = planOf(r, files, { ...opts, at });
@@ -192,7 +192,7 @@ export function submit(r: Review, files: FileDiff[], opts: Choices & { allowHook
   else if (!p.adapter) parts.push(`no ${p.platform} adapter yet, the file is the review`);
   else {
     try {
-      const { url } = p.adapter.post(d.target, p.posting!, opts.run ?? spawn, r.worktree);
+      const { url } = await p.adapter.post(d.target, p.posting!, opts.run ?? spawn, r.worktree);
       sub.posted = { platform: p.adapter.platform, ok: true, ...(url ? { url } : {}) };
       parts.push(`posted to ${url ?? p.platform}`);
     } catch (e) {

@@ -143,7 +143,7 @@ async function reviewLoop(r: Review, cfg: Config, blind: boolean, dryRun: boolea
       continue;
     }
     if (o.kind === "submit") {
-      const res = submit(r, files, { allowHook: o.hook, coverage: o.coverage, selection: o.selection, dryRun, defaults: o.defaults });
+      const res = await submit(r, files, { allowHook: o.hook, coverage: o.coverage, selection: o.selection, dryRun, defaults: o.defaults });
       process.stdout.write((dryRun ? "" : writeup(r.doc, files, o.defaults) + "\n") + `${res.summary}\n`);
       if (!res.ok) process.exitCode = 1;
     }

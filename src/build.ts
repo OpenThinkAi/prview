@@ -25,6 +25,8 @@ import {
 import { loadConfig, realLookups, resolveRoles, type Resolved, type Role } from "./config.ts";
 import { complete, modelLabel, pool, type Usage } from "./llm.ts";
 import { reviveAsks, type Asks } from "./deep.ts";
+import { git, prSlug, remoteFor, run, type Source } from "./pr.ts";
+import { isPR, parseRef, prIn, sourceOf } from "./registry.ts";
 
 export { Fail };
 /** One model call: which role, how long, what it cost where the provider reports it. */
@@ -49,20 +51,13 @@ export function preparedBy(runs: Run[] | undefined): string | undefined {
 /** `models` names what each role used, so `ask` in a reopened review talks to the same model. */
 export type Ai = { models: Partial<Record<Role, string>>; at: string; errors: string[]; samples?: number; runs?: Run[] };
 export type Pos = { item: number; line: number };
-/** `ref` is what was asked for (a PR number or a range), so the review can be rebuilt at a newer head. */
+/** `ref` is what was asked for (a PR's canonical URL, a PR number in a review stored before URLs were, or a range), so the review can be rebuilt at a newer head. */
 /** `suggested`: the verdicts of documents imported at this head, shown in the opening summary as information only. */
 /** `asks`: the `a ?` conversations, by subject, kept on this machine only (never in the document). */
 export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; /** The severity filter (`f h`/`f m`/`f a`), kept here with the reader's place, never in the document; absent means all. */ filter?: Filter; ai?: Ai; doc: Doc; suggested?: Suggested[]; asks?: Asks };
 
 export const home = () => process.env.PRVIEW_HOME ?? join(homedir(), ".cache", "prview");
 const metaOf = (slug: string) => join(home(), `${slug}.json`);
-
-function run(cmd: string[], cwd: string): string {
-  const r = Bun.spawnSync(cmd, { cwd, stdin: "ignore" });
-  if (r.exitCode !== 0) throw new Fail(`${cmd.slice(0, 3).join(" ")} failed: ${r.stderr.toString().trim() || r.stdout.toString().trim()}`);
-  return r.stdout.toString();
-}
-const git = (args: string[], cwd: string) => run(["git", ...args], cwd).trim();
 
 // ---------------------------------------------------------------- what to review
 
@@ -73,47 +68,8 @@ function defaultBranch(repo: string): string {
   throw new Fail("no default branch found: pass a range like main..my-branch");
 }
 
-/** The remote that points at this GitHub repo, so a stamp-server origin still finds the PR refs. */
-function githubRemote(repo: string, nwo: string): string | undefined {
-  const tail = `/${nwo.toLowerCase()}`;
-  for (const name of git(["remote"], repo).split("\n").filter(Boolean)) {
-    const url = git(["remote", "get-url", name], repo).replace(/\.git$/, "").replace(/:(?=[^/])/, "/").toLowerCase();
-    if (url.endsWith(tail)) return name;
-  }
-  return undefined;
-}
-
-type Source = { slug: string; target: Target };
-
-const nwoOf = (url: string | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
-const prSlug = (repo: string, n: string | number) => `${basename(repo)}-pr-${n}`;
 /** A branch name as a slug part; a full commit id is cut to twelve characters. */
 const slugPart = (s: string) => s.replace(/^([0-9a-f]{12})[0-9a-f]{28}$/, "$1").replace(/[^\w.-]+/g, "-");
-
-/**
- * Fetch a PR's head into refs/prview so a clone that never saw it (or whose origin is not GitHub) has it.
- * `known` is for a repo name prview did not get from `gh` in this clone (an imported document names it):
- * then only a remote already configured here for that repo is used, never a URL the document chose.
- */
-function fetchPR(repo: string, nwo: string, n: string | number, base?: string, known = false): string {
-  const ns = `refs/prview/pr-${n}`;
-  const remote = githubRemote(repo, nwo);
-  if (!remote && known) throw new Fail(`no remote in ${repo} points at github.com/${nwo}, so prview will not fetch the PR from there: add one (git remote add <name> https://github.com/${nwo}.git) or fetch the commits yourself, then import again`);
-  git(["fetch", "-q", remote ?? `https://github.com/${nwo}.git`, `+refs/pull/${n}/head:${ns}/head`, ...(base ? [`+refs/heads/${base}:${ns}/base`] : [])], repo);
-  return ns;
-}
-
-function fromPR(repo: string, ref: string): Source {
-  const j = JSON.parse(run(["gh", "pr", "view", ref, "--json", "number,title,body,url,headRefOid,baseRefName"], repo));
-  const nwo = nwoOf(j.url)![1]!;
-  const ns = fetchPR(repo, nwo, j.number, j.baseRefName);
-  const headSha = git(["rev-parse", `${ns}/head`], repo);
-  if (headSha !== j.headRefOid) throw new Fail(`fetched head ${headSha.slice(0, 8)} is not the PR head ${j.headRefOid.slice(0, 8)}; try again`);
-  return {
-    slug: prSlug(repo, j.number),
-    target: { repo: nwo, base: git(["merge-base", `${ns}/base`, headSha], repo), head: headSha, url: j.url, platform: "github", title: clean(String(j.title ?? "")), body: clean(String(j.body ?? "")), label: `${nwo}#${j.number}` },
-  };
-}
 
 function fromRange(repo: string, spec: string | undefined): Source {
   let [base, head] = spec?.includes("..") ? spec.split(/\.{2,3}/) as [string, string] : [defaultBranch(repo), spec ?? "HEAD"];
@@ -127,7 +83,13 @@ function fromRange(repo: string, spec: string | undefined): Source {
   return { slug, target: { repo: basename(repo), base: baseSha, head: headSha, title, body, label: `${base}..${head}` } };
 }
 
-export const isPR = (target: string | undefined) => !!target && (/^#?\d+$/.test(target) || /github\.com\/.+\/pull\/\d+/.test(target));
+export { isPR };
+
+/** A pull request through its platform's source (registry.ts): the canonical URL is what the review stores as its ref. */
+function fromPR(repo: string, target: string): Source {
+  const { source, ref } = prIn(repo, target);
+  return source.resolve(repo, ref);
+}
 
 // ---------------------------------------------------------------- the model passes
 
@@ -233,7 +195,7 @@ function revive(j: any): Review | undefined {
   if (typeof j?.slug !== "string" || typeof j?.worktree !== "string") return undefined;
   const raw = j.doc ?? (typeof j.headSha === "string" ? {
     schema: SCHEMA, plan: j.plan,
-    target: { repo: basename(String(j.repo)), base: j.baseSha, head: j.headSha, url: j.url, platform: j.url ? "github" : undefined, title: j.title, body: j.body, label: j.label },
+    target: { repo: basename(String(j.repo)), base: j.baseSha, head: j.headSha, url: j.url, platform: parseRef(j.url)?.platform, title: j.title, body: j.body, label: j.label },
     findings: (j.findings ?? []).map((f: any) => ({ ...f, source: "critic" })),
     human: { comments: j.notes, dismissals: j.dismissed, visited: j.visited, verdict: j.verdict },
   } : undefined);
@@ -280,9 +242,9 @@ const knownRepos = () => [...new Set(all().map((r) => r.repo))].filter((d) => ex
 /** Which clone to build from: --repo, else a known clone of the PR's repo, else here, else the only clone we know. */
 export function repoFor(target: string | undefined, explicit: string | undefined): string {
   if (explicit) return explicit;
-  const nwo = nwoOf(target)?.[1];
-  if (nwo) {
-    const clone = knownRepos().find((d) => git(["remote", "-v"], d).toLowerCase().includes(nwo.toLowerCase()));
+  const pr = parseRef(target);
+  if (pr) {
+    const clone = knownRepos().find((d) => remoteFor(d, sourceOf(pr.platform)!, pr) !== undefined);
     if (clone) return clone;
   }
   if (isRepo(process.cwd())) return process.cwd();
@@ -312,7 +274,7 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   repo = git(["rev-parse", "--show-toplevel"], repo);
   // Roles and credentials are resolved before anything is fetched or checked out, so a missing key costs nothing.
   const models = opts.ai === null ? null : resolveRoles(loadConfig(), realLookups(), opts.ai);
-  const { slug, target: t } = isPR(target) ? fromPR(repo, target!.replace(/^#/, "")) : fromRange(repo, target);
+  const { slug, target: t } = isPR(target) ? fromPR(repo, target!) : fromRange(repo, target);
   if (t.base === t.head) throw new Fail(`${t.label} has no changes`);
   const worktree = worktreeAt(repo, slug, t.head);
   const files = filesOf({ repo, context, doc: blank(t) });
@@ -320,7 +282,7 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   // The document is anchored on its head: while the head is the same it is reused whole (whoever
   // produced it); once the head moves only the reader's own comments carry over.
   const same = !!prior && prior.doc.target.head === t.head && !opts.fresh;
-  const r: Review = { slug, repo, ref: isPR(target) ? target!.replace(/^#/, "") : target, worktree, context, created: new Date().toISOString(), pos: { item: 0, line: 0 }, doc: fit(blank(t), files) };
+  const r: Review = { slug, repo, ref: isPR(target) ? t.url ?? target!.replace(/^#/, "") : target, worktree, context, created: new Date().toISOString(), pos: { item: 0, line: 0 }, doc: fit(blank(t), files) };
   if (same) {
     // The conversations are about blocks and findings of this head, so they carry over only while it is the same.
     Object.assign(r, { pos: prior.pos, ...(prior.filter ? { filter: prior.filter } : {}), ai: prior.ai, doc: fit(prior.doc, files), ...(prior.suggested ? { suggested: prior.suggested } : {}), ...(prior.asks ? { asks: prior.asks } : {}) });
@@ -341,7 +303,7 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   return r;
 }
 
-/** A review by name, rebuilt at the PR's current head. */
+/** A review by name, rebuilt at the PR's current head. A review stored with a bare PR number (before refs were URLs) still reopens: the number means a PR of its clone. */
 export async function reopen(slug: string, opts: BuildOpts): Promise<Review> {
   const r = load(slug);
   return build(r.repo, r.ref ?? r.slug.match(/-pr-(\d+)$/)?.[1], opts);
@@ -350,14 +312,14 @@ export async function reopen(slug: string, opts: BuildOpts): Promise<Review> {
 // ---------------------------------------------------------------- importing a document
 
 /**
- * Make sure the clone has the document's commits; a GitHub PR's head can be fetched, anything else
+ * Make sure the clone has the document's commits; a PR's head can be fetched (by its platform's source), anything else
  * has to be there. Only the head is fetched: the base is the merge base, an ancestor of the head,
  * so fetching the head brings it too (in any clone that is not shallow).
  */
 function haveCommits(repo: string, t: Target): void {
   const has = (c: string) => Bun.spawnSync(["git", "cat-file", "-e", `${c}^{commit}`], { cwd: repo }).exitCode === 0;
-  const pr = nwoOf(t.url);
-  if (!has(t.head) && pr) fetchPR(repo, pr[1]!, pr[2]!, undefined, true);
+  const pr = parseRef(t.url);
+  if (!has(t.head) && pr) sourceOf(pr.platform)!.fetch(repo, pr, true);
   for (const c of [t.base, t.head]) if (!has(c)) throw new Fail(`commit ${c.slice(0, 8)} is not in ${repo}: fetch it, then import again`);
 }
 
@@ -383,15 +345,15 @@ export function importDocument(text: string, explicitRepo?: string, mine = false
     return existing;
   }
   const repo = git(["rev-parse", "--show-toplevel"], repoFor(doc.target.url, explicitRepo));
-  const pr = nwoOf(doc.target.url);
-  const slug = pr ? prSlug(repo, pr[2]!) : `${basename(repo)}-${slugPart(doc.target.head)}`;
+  const pr = parseRef(doc.target.url);
+  const slug = pr ? prSlug(repo, pr.number) : `${basename(repo)}-${slugPart(doc.target.head)}`;
   if (existsSync(metaOf(slug))) {
     const at = load(slug).doc.target.head;
     throw new Fail(`the document is for ${doc.target.head.slice(0, 8)} but ${slug} is at ${at.slice(0, 8)}: a document only opens against its own head`);
   }
   haveCommits(repo, doc.target);
   const r: Review = {
-    slug, repo, ref: pr ? pr[2]! : `${doc.target.base}..${doc.target.head}`, worktree: worktreeAt(repo, slug, doc.target.head),
+    slug, repo, ref: pr ? pr.url : `${doc.target.base}..${doc.target.head}`, worktree: worktreeAt(repo, slug, doc.target.head),
     context: 3, created: new Date().toISOString(), pos: { item: 0, line: 0 }, doc,
   };
   r.doc = take(r, filesOf(r));
