@@ -12,9 +12,9 @@ import { show } from "./tui.tsx";
 import { submit } from "./submit.ts";
 import { clean } from "./sanitize.ts";
 import type { Flow } from "./submit-flow.ts";
-import { backgroundCheck, realDeps, updateCommand } from "./update.ts";
+import { backgroundCheck, managerOf, realDeps, runningVersion, updateCommand } from "./update.ts";
 
-const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [--context N] [--ai MODEL | --no-ai] [--samples N] [--blind | --no-blind] [--fresh] [--dry-run]
+const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head | branch> [--repo DIR] [--context N] [--ai MODEL | --no-ai] [--samples N] [--blind | --no-blind] [--fresh] [--dry-run]
   Opens the change in a full-screen review: a guide (a model) has ordered the hunks into chapters,
   core change first, tests last, and says what to verify in each; mechanical hunks (whitespace, lock
   files, pure moves, classified by rule) come last; a critic (a model) has raised findings, each
@@ -102,6 +102,7 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
   prview show [--mine] <file | ->
                               import a document, then open it
   prview done <name>          remove it (worktree, fetched refs, state)
+  prview --version            print the version (also -V, or the word version)
   prview update [--dry-run]   check npm for a newer release now and install it (with bun or npm, whichever installed
                               prview), whatever auto_update says; a source checkout never updates itself. An installed
                               prview also checks once a day by itself (not under --dry-run or PRVIEW_NO_UPDATE=1): it says
@@ -189,7 +190,13 @@ function start() {
   return cfg;
 }
 
+/** `prview <version>`, with ` (source checkout)` when this copy is not an installed one. Needs no terminal, repo or config. */
+function versionLine(moduleDir = import.meta.dir, userHome = process.env.HOME ?? ""): string {
+  return `prview ${runningVersion(moduleDir) ?? "(unknown version)"}${managerOf(moduleDir, userHome, process.env) ? "" : " (source checkout)"}`;
+}
+
 async function main(args: string[]): Promise<void> {
+  if (args[0] === "--version" || args[0] === "-V" || args[0] === "version") { console.log(versionLine()); return; }
   const opts: BuildOpts & { repo?: string; blind?: boolean; dryRun?: boolean; mine?: boolean } = { context: 3, fresh: false };
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {

@@ -19,6 +19,7 @@ Only a plain `1.2.3` release newer than the running one is ever installed (never
 check is skipped under `--dry-run`, with `PRVIEW_NO_UPDATE=1`, and in a source checkout, which never updates itself.
 
 ```sh
+prview --version               # also -V or `prview version`: prints `prview 0.1.4`
 prview 42                      # a PR in this repo
 prview main..my-branch         # any range
 prview prepare 42              # build now, open later (the model pass takes a few minutes)
@@ -155,7 +156,7 @@ What you get is a full-screen review, not a diff dump:
      (and `.md`) first, post to the PR, and run the document's `on_submit` command if you ticked it. Two
      checkboxes, both off (`↑`/`↓`, `Space`): that command, shown in full, and a line saying how much you read,
      added to the posted comment.
-  On GitHub (through `gh`) this is one review: the head commit is checked first (a PR that moved since the
+  On Azure DevOps a submit is not one review (see [Azure DevOps](#azure-devops)). On GitHub (through `gh`) this is one review: the head commit is checked first (a PR that moved since the
   review is refused), a pending review gets the line comments (right side for lines in the new file, left for
   the old), whole-file comments follow one by one, then it is submitted with your verdict and comment. A failed post or command is reported, and the
   file is kept. `--dry-run` prints the API calls a submit would make and does nothing else.
@@ -401,7 +402,56 @@ Their coverage, reveals and decisions are dropped. Only `--mine`, for your own e
 A document is anchored on its head commit and is refused by a review at any other head.
 [`schema/`](./schema/) has the JSON Schema and what a producer needs to emit.
 
-Not yet: posting to GitLab or Azure DevOps.
+Posting works on GitHub and [Azure DevOps](#azure-devops). GitLab is not supported yet: a document for a GitLab
+merge request can be imported and read, but not posted.
+
+## Azure DevOps
+
+`prview <PR url>` also opens pull requests on Azure DevOps (cloud, `dev.azure.com` URLs; `org.visualstudio.com` URLs
+and `ssh.dev.azure.com` remotes are understood too):
+
+```sh
+prview https://dev.azure.com/<org>/<project>/_git/<repo>/pullrequest/<id> --no-ai --dry-run   # first time
+prview 42                      # a bare number works in a clone whose origin is that Azure repo
+```
+
+**Setup.**
+
+- Run prview in a clone of the repo (or one with a remote that points at it). prview fetches the PR's head with
+  `git` from a remote you already configured, using your own git credentials; it never fetches from a URL it
+  chose itself and refuses with the command to add one (`git remote add azure <url>`).
+- **Sign in with `az login`** (the default): prview asks the Azure CLI for an Entra token for Azure DevOps, in
+  memory, each run. With several tenants name yours: `az login --tenant <id>` and `tenant = "<id>"` below.
+  Conditional Access or MFA rules that block the token fail the run with az's own message.
+- **Or a PAT** (an org-scoped personal access token, Code: Read & write). Name where it lives; the environment
+  variable is tried first, then the Keychain service. The token is never put on a command line, in the review,
+  or in an error message.
+
+```toml
+[azure]
+auth = "az"                  # "az" (default) or "pat"
+tenant = "<tenant id>"       # optional, with auth = "az"
+pat_env = "AZURE_DEVOPS_PAT" # with auth = "pat": an environment variable, then...
+pat_keychain = "prview-azure" # ...a Keychain service
+```
+
+**What a submit posts**, in this order: a thread for each ticked line comment (on the right or left side of the
+file), a thread for each whole-file comment, a thread on the PR for your top-level comment, then your vote last.
+A comment on a line or file that Azure cannot place goes into the top-level thread under the file's name. The
+head commit is checked first: a PR that moved since the review is refused. Verdicts: approve votes 10, request
+changes votes -5 ("wait for author"), comment casts no vote and leaves yours as it is. There is no "approve with
+suggestions". `--dry-run` shows the planned calls with placeholders and makes none (opening the PR does read it
+over the API).
+
+**Things to know.**
+
+- **There is no pending review on Azure DevOps.** Every comment is visible, and notifies its author, the moment it
+  is posted; nothing can be discarded or taken back as a batch. A failure part-way stops the run, casts no vote,
+  and lists the threads already posted. Nothing is rolled back.
+- Threads are posted **active**. If the repo's branch policy "Check for comment resolution" is on, they block the
+  PR's completion until resolved.
+- Pull requests from a fork, and Azure DevOps Server (on-prem), are not supported.
+- What you read goes to the model configured for each role, as for any PR (see below).
 
 ## Security and privacy
 
@@ -428,7 +478,8 @@ Only what the model roles need: the diff hunks, the PR title and body, and nearb
 worktree go to the model configured for each role (guide, critic, refute, ask, deep; the `a ?` agent reads files
 in the head worktree and sends what it reads to its model); with a local endpoint
 that is your machine. Nothing else is sent: no telemetry, no analytics. The only other network use is
-`gh` and `git`, for the PR you asked for and the review you submit. State stays under `~/.cache/prview`
+`gh` and `git`, for the PR you asked for and the review you submit; for an Azure DevOps PR, REST calls to
+`dev.azure.com` (reading the PR, posting your review), made with an Entra token from `az` or your PAT. State stays under `~/.cache/prview`
 (`$PRVIEW_HOME`) until `prview done` removes it.
 
 ## Checking the guide's intents
