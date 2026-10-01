@@ -134,7 +134,34 @@
           "at": { "type": "string" },
           "verdict": { "enum": ["approve", "request_changes", "comment"] },
           "file": { "type": "string", "description": "where the finished document was written" },
-          "posted": { "type": "object", "properties": { "platform": { "type": "string" }, "ok": { "type": "boolean" }, "url": { "type": "string" }, "error": { "type": "string" } } },
+          "head": { "type": "string", "description": "the head commit reviewed (absent in records from before it was kept)" },
+          "platform": { "type": "string", "description": "the target's platform at submit (absent in older records)" },
+          "posted": {
+            "type": "object",
+            "properties": {
+              "platform": { "type": "string" }, "ok": { "type": "boolean" }, "url": { "type": "string" }, "error": { "type": "string" },
+              "review_id": { "type": "integer", "description": "GitHub: the submitted review's id" },
+              "items": {
+                "type": "array",
+                "description": "what reached the pull request (also when the post failed part way), with the platform's ids, so a re-review can find it again",
+                "items": {
+                  "type": "object",
+                  "required": ["kind", "text"],
+                  "properties": {
+                    "kind": { "enum": ["line", "file", "summary"] },
+                    "path": { "type": "string" },
+                    "line": { "type": "integer", "minimum": 1 },
+                    "side": { "enum": ["new", "old"] },
+                    "text": { "type": "string", "description": "exactly what was posted" },
+                    "review_id": { "type": "integer", "description": "GitHub: the review a line comment or the summary is part of" },
+                    "comment_id": { "type": "integer", "description": "GitHub: the review comment or whole-file comment; Azure DevOps: the thread's first comment" },
+                    "node_id": { "type": "string", "description": "GitHub: the comment's GraphQL node id" },
+                    "thread_id": { "type": "integer", "description": "Azure DevOps: the thread" }
+                  }
+                }
+              }
+            }
+          },
           "hook": {
             "type": "object",
             "properties": {

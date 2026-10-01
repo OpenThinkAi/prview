@@ -152,8 +152,8 @@ What you get is a full-screen review, not a diff dump:
   3. **Comment**: the review's top-level comment, several lines (`Enter` adds one). The box starts with any summary comments the review already has. `Esc` stops typing,
      then `v e` writes it in your editor and brings you back here.
   4. **Send**: exactly what will be posted (the verdict, the comment, each ticked finding's comment on its file
-     and line), then what `Enter` does: write the finished document to `$PRVIEW_HOME/submitted/<name>.json`
-     (and `.md`) first, post to the PR, and run the document's `on_submit` command if you ticked it. Two
+     and line), then what `Enter` does: write the finished document to `$PRVIEW_HOME/submitted/<name>/<UTC time>.json`
+     (and `.md`; every submit is kept, none overwritten) first, post to the PR, and run the document's `on_submit` command if you ticked it. Two
      checkboxes, both off (`↑`/`↓`, `Space`): that command, shown in full, and a line saying how much you read,
      added to the posted comment.
   On Azure DevOps a submit is not one review (see [Azure DevOps](#azure-devops)). On GitHub (through `gh`) this is one review: the head commit is checked first (a PR that moved since the
@@ -399,7 +399,9 @@ with the name of the one that replaced it (`"nav.line_down" is from the old key 
 or says it was removed. `prview keys` prints the same message and exits 1.
 
 State lives under `~/.cache/prview` (`$PRVIEW_HOME`): a worktree per review and one JSON file.
-`prview done <name>` removes both.
+`prview done <name>` removes both. Every submit is kept under `submitted/<name>/<UTC time>.json` (and
+`.md`), each recording the head it reviewed and the platform ids of what it posted, for a later re-review; `done`
+leaves that history alone, and `prview done --purge <name>` removes it too.
 
 ## One document, any producer
 
@@ -507,7 +509,7 @@ in the head worktree and sends what it reads to its model); with a local endpoin
 that is your machine. Nothing else is sent: no telemetry, no analytics. The only other network use is
 `gh` and `git`, for the PR you asked for and the review you submit; for an Azure DevOps PR, REST calls to
 `dev.azure.com` (reading the PR, posting your review), made with an Entra token from `az` or your PAT. State stays under `~/.cache/prview`
-(`$PRVIEW_HOME`) until `prview done` removes it.
+(`$PRVIEW_HOME`) until `prview done` removes it (what you submitted, until `prview done --purge`).
 
 ## Checking the guide's intents
 

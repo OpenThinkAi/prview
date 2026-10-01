@@ -11,6 +11,7 @@ import { credentialSource } from "./claude-env.ts";
 import { besideIn, editor, editorArgs } from "./editor.ts";
 import { show } from "./tui.tsx";
 import { submit } from "./submit.ts";
+import { done } from "./history.ts";
 import { clean } from "./sanitize.ts";
 import type { Flow } from "./submit-flow.ts";
 import { backgroundCheck, managerOf, realDeps, runningVersion, updateCommand } from "./update.ts";
@@ -57,7 +58,7 @@ const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head
         line, Esc stops typing, then v e writes it in your editor
       4 send: exactly what posts, then checkboxes (↑/↓, Space), both off: the document's on_submit command
         (shown in full; no shell) and a line saying how much you read. Enter sends.
-      The document is written to $PRVIEW_HOME/submitted/<slug>.json (+ .md) first, then posted through the
+      The document is written to $PRVIEW_HOME/submitted/<slug>/<UTC time>.json (+ .md; every submit kept) first, then posted through the
       adapter for its target's platform (github: gh api), then the command runs if you ticked it
     y copy the content area (a finding, the summary, an answer) as clean text; with it empty, the line's path:line
       (pbcopy, wl-copy, xclip, else OSC 52; PRVIEW_CLIPBOARD=osc52 forces the terminal route)
@@ -102,7 +103,9 @@ const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head
                               restore your own export: comments, actions and verdict kept as they were
   prview show [--mine] <file | ->
                               import a document, then open it
-  prview done <name>          remove it (worktree, fetched refs, state)
+  prview done [--purge] <name>
+                              remove it (worktree, fetched refs, state); what you submitted from it is kept
+                              ($PRVIEW_HOME/submitted/<name>/, what a later re-review reads) unless --purge
   prview --version            print the version (also -V, or the word version)
   prview update [--dry-run]   check npm for a newer release now and install it (with bun or npm, whichever installed
                               prview), whatever auto_update says; a source checkout never updates itself. An installed
@@ -198,7 +201,7 @@ function versionLine(moduleDir = import.meta.dir, userHome = process.env.HOME ??
 
 async function main(args: string[]): Promise<void> {
   if (args[0] === "--version" || args[0] === "-V" || args[0] === "version") { console.log(versionLine()); return; }
-  const opts: BuildOpts & { repo?: string; blind?: boolean; dryRun?: boolean; mine?: boolean } = { context: 3, fresh: false };
+  const opts: BuildOpts & { repo?: string; blind?: boolean; dryRun?: boolean; mine?: boolean; purge?: boolean } = { context: 3, fresh: false };
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
@@ -209,6 +212,7 @@ async function main(args: string[]): Promise<void> {
     else if (a === "--no-blind") opts.blind = false;
     else if (a === "--dry-run") opts.dryRun = true;
     else if (a === "--mine") opts.mine = true;
+    else if (a === "--purge") opts.purge = true;
     else if (a === "--fresh") opts.fresh = true;
     else if (a === "--samples") {
       const n = Number(args[++i]);
@@ -226,6 +230,7 @@ async function main(args: string[]): Promise<void> {
   opts.say = (s) => process.stderr.write(`prview: ${s}\n`);
   const [cmd, a1] = rest;
   if (opts.mine && cmd !== "import" && cmd !== "show") throw new Fail("--mine only goes with import or show: prview import --mine <file>");
+  if (opts.purge && cmd !== "done") throw new Fail("--purge only goes with done: prview done --purge <name>");
   // The flag wins over the config either way; the config is only read when a screen is about to open.
   const doc = async () => { if (!a1) throw new Fail(`usage: prview ${cmd} <file | ->`); return a1 === "-" ? Bun.stdin.text() : Bun.file(resolve(a1)).text().catch(() => { throw new Fail(`cannot read ${a1}`); }); };
   switch (cmd) {
@@ -238,7 +243,7 @@ async function main(args: string[]): Promise<void> {
     case "export": { if (!a1) throw new Fail("usage: prview export <name>"); process.stdout.write(exportDocument(load(a1))); return; }
     case "import": { const r = importDocument(await doc(), opts.repo, opts.mine); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${findingCount(r)}. Open it with: prview open ${r.slug}`); return; }
     case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); const cfg = start(); return review(importDocument(await doc(), opts.repo, opts.mine), cfg, opts.blind ?? cfg.blind, opts.dryRun); }
-    case "done": { if (!a1) throw new Fail("usage: prview done <name>"); console.log(remove(a1)); return; }
+    case "done": { if (!a1) throw new Fail("usage: prview done [--purge] <name>"); console.log(done(a1, !!opts.purge)); return; }
     case "open": { if (!a1) throw new Fail("usage: prview open <name> (prview list)"); const cfg = start(); return review(await reopen(a1, opts), cfg, opts.blind ?? cfg.blind, opts.dryRun); }
     case "prepare": { const r = await build(repoFor(a1, opts.repo), a1, opts); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${findingCount(r)}. Open it with: prview open ${r.slug}`); return; }
   }

@@ -17,7 +17,7 @@ import { azureHttp, redact, type Http } from "../azure-auth.ts";
 import { getIterations, lastIteration, prApi } from "../azure-api.ts";
 import { azure as azureSource } from "../azure.ts";
 import { loadConfig, realLookups } from "../config.ts";
-import type { Target, Verdict } from "../document.ts";
+import { PostError, type PostedItem, type Target, type Verdict } from "../document.ts";
 import type { Adapter, Posting, Runner } from "../platform.ts";
 
 /** Azure's vote for each verdict; `comment` casts none (writing 0 would reset a vote the reader already gave). */
@@ -166,19 +166,21 @@ export function azureAdapter(deps: AzureDeps = { http: realHttp }): Adapter {
       }
 
       // Each line's end offset, from the reviewed commits. A comment Azure cannot place still reaches the PR, in the summary under its file.
-      const folded: string[] = [], lines: Call[] = [], wholeFiles: Call[] = [];
+      // Each write goes with the item it records once posted (its ids are added from Azure's answer).
+      type Write = { call: Call; item: PostedItem };
+      const folded: string[] = [], lines: Write[] = [], wholeFiles: Write[] = [];
       const cache = new Map<string, string[] | undefined>();
       const read = (rev: string, path: string) => { const k = `${rev}:${path}`; if (!cache.has(k)) cache.set(k, fileAt(run, cwd, rev, path)); return cache.get(k); };
       for (const c of p.comments) {
         const at = tracked.get(slash(c.path));
         const text = at && (c.side === "old" ? read(t.base, at.from ?? c.path) : read(t.head, c.path))?.[c.line - 1];
         if (!at || text === undefined || c.line < 1) { folded.push(`${c.path}:${c.line}: ${c.text}`); continue; }
-        lines.push({ method: "POST", url: r.threads, body: thread(c.text, { threadContext: lineCtx(c.path, c.side, c.line, text.length + 1), pullRequestThreadContext: prCtx(at.id, last) }) });
+        lines.push({ call: { method: "POST", url: r.threads, body: thread(c.text, { threadContext: lineCtx(c.path, c.side, c.line, text.length + 1), pullRequestThreadContext: prCtx(at.id, last) }) }, item: { kind: "line", path: c.path, line: c.line, side: c.side, text: c.text } });
       }
       for (const x of p.files ?? []) {
         const at = tracked.get(slash(x.path));
         if (!at) { folded.push(`${x.path}: ${x.text}`); continue; }
-        wholeFiles.push({ method: "POST", url: r.threads, body: thread(x.text, { threadContext: { filePath: slash(x.path) }, pullRequestThreadContext: prCtx(at.id, last) }) });
+        wholeFiles.push({ call: { method: "POST", url: r.threads, body: thread(x.text, { threadContext: { filePath: slash(x.path) }, pullRequestThreadContext: prCtx(at.id, last) }) }, item: { kind: "file", path: x.path, text: x.text } });
       }
       const summary = [p.body, ...folded, p.coverage].filter((x) => x?.trim()).join("\n\n");
 
@@ -193,23 +195,26 @@ export function azureAdapter(deps: AzureDeps = { http: realHttp }): Adapter {
       }
 
       // ---- 2. the writes, in order; 3. a failure stops them and says what is already on the PR.
-      const posted: string[] = [];
+      // `items` is the record of what is on the PR, with Azure's ids: kept on success and carried by a failure alike.
+      const posted: string[] = [], items: PostedItem[] = [];
       const fail = (what: string, err: string): never => {
         const list = posted.length ? `already posted (left in place): ${posted.join("; ")}` : "nothing was posted";
-        throw new Error(redact(`${what} failed: ${err}. ${list}. No vote was cast.`));
+        throw new PostError(redact(`${what} failed: ${err}. ${list}. No vote was cast.`), items);
       };
-      const send = async (c: Call, what: string) => {
+      const send = async ({ call: c, item }: Write, what: string) => {
         let res;
         try { res = await http({ method: c.method, url: c.url, headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(c.body) }); }
         catch (e) { return fail(what, (e as Error).message); }
         if (!ok(res.status)) return fail(what, reason(res));
-        const id = (res.json as any)?.id;
+        const j = res.json as any, id = j?.id, first = Array.isArray(j?.comments) ? j.comments[0]?.id : undefined;
+        const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
+        items.push({ ...item, ...(whole(id) ? { thread_id: id } : {}), ...(whole(first) ? { comment_id: first } : {}) });
         posted.push(`thread ${id ?? "?"} (${what}${typeof id === "number" ? `, ${r.pr.url}?discussionId=${id}` : ""})`);
       };
       const where = (c: Call) => { const x = (c.body as Thread).threadContext!; const s = x.rightFileStart ?? x.leftFileStart; return `${x.filePath.slice(1)}${s ? `:${s.line}${x.leftFileStart ? " (old side)" : ""}` : ""}`; };
-      for (const c of lines) await send(c, `line comment on ${where(c)}`);
-      for (const c of wholeFiles) await send(c, `whole-file comment on ${where(c)}`);
-      if (summary) await send({ method: "POST", url: r.threads, body: thread(summary) }, "summary");
+      for (const w of lines) await send(w, `line comment on ${where(w.call)}`);
+      for (const w of wholeFiles) await send(w, `whole-file comment on ${where(w.call)}`);
+      if (summary) await send({ call: { method: "POST", url: r.threads, body: thread(summary) }, item: { kind: "summary", text: summary } }, "summary");
 
       if (vote !== undefined) {
         if (me) {
@@ -222,7 +227,7 @@ export function azureAdapter(deps: AzureDeps = { http: realHttp }): Adapter {
           if (v.exit !== 0) fail("the vote (az repos pr set-vote)", (v.stderr || v.stdout).trim().split("\n")[0] || `exit ${v.exit ?? "?"}`);
         }
       }
-      return { url: r.pr.url };
+      return { url: r.pr.url, items };
     },
   };
 }

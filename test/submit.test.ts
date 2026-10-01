@@ -101,14 +101,24 @@ test("what is posted is the human's words only: verdict, summary as the body, li
 
 // A fake gh: answers the calls the adapter makes, and remembers them.
 type Call = { argv: string[]; body?: any };
-function fakeGh(head = B, over: { submit?: { exit: number; stdout: string; stderr: string } } = {}) {
+// The review's comments, as GitHub lists them after the submit, carry ids 501, 502, … in the order they were created
+// (`listed` reorders or replaces that list, `comments` makes the read fail).
+function fakeGh(head = B, over: { submit?: { exit: number; stdout: string; stderr: string }; listed?: (made: any[]) => any[]; comments?: { exit: number; stdout: string; stderr: string } } = {}) {
   const calls: Call[] = [];
+  let made: any[] = [];
   const run: Runner = (argv, o) => {
     const body = o.stdin === undefined ? undefined : JSON.parse(o.stdin);
     calls.push({ argv, body });
     const path = argv[4]!, method = argv[3]!;
+    if (method === "GET" && path.includes("/reviews/99/comments?")) {
+      if (over.comments) return over.comments;
+      const page = Number(path.match(/page=(\d+)$/)![1]);
+      const all = (over.listed ?? ((x) => x))(made.map((c, i) => ({ id: 501 + i, node_id: `PRRC_${501 + i}`, pull_request_review_id: 99, path: c.path, line: c.line, side: c.side, body: c.body })));
+      return { exit: 0, stdout: JSON.stringify(all.slice((page - 1) * 100, page * 100)), stderr: "" };
+    }
     if (method === "GET") return { exit: 0, stdout: JSON.stringify({ head: { sha: head } }), stderr: "" };
-    if (path.endsWith("/reviews")) return { exit: 0, stdout: JSON.stringify({ id: 99, state: "PENDING" }), stderr: "" };
+    if (path.endsWith("/reviews")) { made = body.comments; return { exit: 0, stdout: JSON.stringify({ id: 99, state: "PENDING" }), stderr: "" }; }
+    if (path.endsWith("/pulls/7/comments")) return { exit: 0, stdout: JSON.stringify({ id: 801, node_id: "PRRC_801" }), stderr: "" };
     if (path.endsWith("/events")) return over.submit ?? { exit: 0, stdout: JSON.stringify({ html_url: `${PR}#pullrequestreview-99` }), stderr: "" };
     return { exit: 0, stdout: "{}", stderr: "" };
   };
@@ -123,11 +133,16 @@ test("github: checks the head, makes a pending review with the line comments, th
     { hunk: h1!.id, side: "new", line: 12, text: "why two?", at: "now" },
     { hunk: null, side: "new", line: null, text: "Mostly fine.", at: "now" },
   ], () => "src/a.rs");
-  expect(await github.post(t, p, run, "/wt")).toEqual({ url: `${PR}#pullrequestreview-99` });
+  expect(await github.post(t, p, run, "/wt")).toEqual({ url: `${PR}#pullrequestreview-99`, review_id: 99, items: [
+    { kind: "line", path: "src/a.rs", line: 11, side: "old", text: "was this used?", review_id: 99, comment_id: 501, node_id: "PRRC_501" },
+    { kind: "line", path: "src/a.rs", line: 12, side: "new", text: "why two?", review_id: 99, comment_id: 502, node_id: "PRRC_502" },
+    { kind: "summary", text: "Mostly fine.", review_id: 99 },
+  ] });
   expect(calls.map((c) => c.argv.slice(0, 5).join(" "))).toEqual([
     "gh api --method GET repos/o/r/pulls/7",
     "gh api --method POST repos/o/r/pulls/7/reviews",
     "gh api --method POST repos/o/r/pulls/7/reviews/99/events",
+    "gh api --method GET repos/o/r/pulls/7/reviews/99/comments?per_page=100&page=1",
   ]);
   // No event on the create: GitHub keeps it pending. Sides: old is LEFT, new is RIGHT. Anchored on the document's head.
   expect(calls[1]!.body).toEqual({ commit_id: B, comments: [
@@ -207,12 +222,12 @@ test("dry run: prints the API calls, writes nothing, posts nothing, records noth
 
 test("no platform and no hook: submit writes the document and its markdown, and says where", async () => {
   const r = review();
-  const res = await submit(r, files, { allowHook: false, run: noNet, hook: noHook });
-  const file = join(tmp, "home", "submitted", `${r.slug}.json`);
+  const res = await submit(r, files, { allowHook: false, run: noNet, hook: noHook, now: () => new Date("2026-10-01T09:08:07.006Z") });
+  const file = join(tmp, "home", "submitted", r.slug, "2026-10-01T090807.006Z.json");
   expect(res.ok).toBe(true);
   expect(res.summary).toBe(`Submitted (Approve): wrote ${file} · no platform to post to, the file is the review`);
   const written = parseDocument(readFileSync(file, "utf8"));
-  expect(written.submissions).toEqual([{ at: expect.any(String), verdict: "approve", file }]);
+  expect(written.submissions).toEqual([{ at: "2026-10-01T09:08:07.006Z", verdict: "approve", file, head: B }]);
   expect(readFileSync(file.replace(/\.json$/, ".md"), "utf8")).toContain("# A change");
   expect(r.doc.submissions).toHaveLength(1);
   // The review in the store carries the record too.
@@ -253,7 +268,7 @@ test("a failing hook, a missing command, or a failed post is in the summary and 
 
   const posted = await submit(review({}, { url: PR, platform: "github" }), files, { allowHook: false, run: fakeGh().run });
   expect(posted.summary).toContain(`posted to ${PR}#pullrequestreview-99`);
-  expect(posted.submission.posted).toEqual({ platform: "github", ok: true, url: `${PR}#pullrequestreview-99` });
+  expect(posted.submission.posted).toEqual({ platform: "github", ok: true, url: `${PR}#pullrequestreview-99`, review_id: 99 }); // an approve with no words posted no items
 });
 
 test("a hook that runs too long is stopped and reported as timed out", async () => {
@@ -407,7 +422,7 @@ test("submit with a selection: a ticked whole-file finding posts as a file comme
   expect(postPreview(p, (v) => v)).toContain("Whole-file comments (1):\n  src/a.rs\n    This file needs a header.");
   const { calls, run } = fakeGh();
   expect((await submit(r, files, { allowHook: false, run, selection: sel })).ok).toBe(true); // a file comment is words enough for request changes
-  expect(calls.map((c) => c.argv[4])).toEqual(["repos/o/r/pulls/7", "repos/o/r/pulls/7/reviews", "repos/o/r/pulls/7/comments", "repos/o/r/pulls/7/reviews/99/events"]);
+  expect(calls.map((c) => c.argv[4])).toEqual(["repos/o/r/pulls/7", "repos/o/r/pulls/7/reviews", "repos/o/r/pulls/7/comments", "repos/o/r/pulls/7/reviews/99/events", "repos/o/r/pulls/7/reviews/99/comments?per_page=100&page=1"]);
   expect(calls[2]!.body).toEqual({ commit_id: B, path: "src/a.rs", subject_type: "file", body: "This file needs a header." });
   expect(r.doc.human.comments.filter((c) => c.text === "Derive this.")).toHaveLength(1);
 });

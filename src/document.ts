@@ -42,10 +42,28 @@ export type Human = { comments: Comment[]; visited: string[]; decisions?: Decisi
  * command and runs it only when the human allows it, that time (see src/submit.ts).
  */
 export type OnSubmit = { run: string[] };
-/** What one submit did: the file written, where it was posted, and what the hook did if it ran. */
+/**
+ * One thing a submit put on the pull request, with the platform's ids for it, so a later re-review can find it again:
+ * a line comment, a whole-file comment, or the summary (the review body on GitHub, a PR-level thread on Azure DevOps).
+ * GitHub: `review_id` (the review a line comment or the summary is part of), `comment_id` and `node_id` (the review
+ * comment, or the whole-file comment). Azure DevOps: `thread_id` and `comment_id` (the thread's first comment).
+ */
+export type PostedItem = {
+  kind: "line" | "file" | "summary"; path?: string; line?: number; side?: "new" | "old"; text: string;
+  review_id?: number; comment_id?: number; node_id?: string; thread_id?: number;
+};
+/** A post that failed part way: `items` is what had already reached the PR (and stays there), with its ids. */
+export class PostError extends Error {
+  constructor(message: string, readonly items: PostedItem[]) { super(message); }
+}
+/**
+ * What one submit did: the file written, where it was posted, and what the hook did if it ran. `head` is the commit
+ * reviewed and `platform` the target's; `posted.items` is what reached the PR (also after a partial failure), with ids.
+ * All four are optional: submissions recorded before they existed have none.
+ */
 export type Submission = {
-  at: string; verdict?: Verdict; file: string;
-  posted?: { platform: string; ok: boolean; url?: string; error?: string };
+  at: string; verdict?: Verdict; file: string; head?: string; platform?: string;
+  posted?: { platform: string; ok: boolean; url?: string; error?: string; review_id?: number; items?: PostedItem[] };
   hook?: { argv: string[]; cwd: string; ran: boolean; exit?: number | null; output?: string; error?: string; timed_out?: boolean };
 };
 export type Doc = { schema: typeof SCHEMA; target: Target; plan: Plan; findings: Finding[]; human: Human; on_submit?: OnSubmit; submissions?: Submission[] };
@@ -185,14 +203,35 @@ export function splitArgs(s: string): string[] | null {
   return out;
 }
 
+/** A platform id as stored: a positive whole number, else nothing. */
+const idOf = (v: unknown): number | undefined => typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : undefined;
+const KINDS_POSTED = new Set(["line", "file", "summary"]);
+
+function postedItemOf(x: Obj): PostedItem[] {
+  if (!KINDS_POSTED.has(x.kind as string) || typeof x.text !== "string") return [];
+  const item: PostedItem = { kind: x.kind as PostedItem["kind"], text: clip(clean(x.text), 20000) };
+  if (str(x.path, 1000)) item.path = str(x.path, 1000);
+  if (Number.isInteger(x.line) && (x.line as number) > 0) item.line = x.line as number;
+  if (x.side === "new" || x.side === "old") item.side = x.side;
+  for (const k of ["review_id", "comment_id", "thread_id"] as const) { const id = idOf(x[k]); if (id) item[k] = id; }
+  if (str(x.node_id, 200)) item.node_id = str(x.node_id, 200);
+  return [item];
+}
+
 function submissionOf(s: Obj): Submission[] {
   const file = str(s.file, 1000), at = str(s.at, 40);
   if (!file || !at) return [];
   const out: Submission = { at, file };
   if (VERDICTS.has(s.verdict as Verdict)) out.verdict = s.verdict as Verdict;
+  if (typeof s.head === "string" && /^[0-9a-f]{7,64}$/i.test(s.head)) out.head = s.head;
+  if (str(s.platform, 40)) out.platform = str(s.platform, 40);
   if (isObj(s.posted) && str(s.posted.platform, 40)) {
     const p = s.posted;
-    out.posted = { platform: str(p.platform, 40), ok: p.ok === true, ...(str(p.url, 500) ? { url: str(p.url, 500) } : {}), ...(str(p.error, 1000) ? { error: str(p.error, 1000) } : {}) };
+    const items = arr(p.items).filter(isObj).flatMap(postedItemOf).slice(0, 500);
+    out.posted = {
+      platform: str(p.platform, 40), ok: p.ok === true, ...(str(p.url, 500) ? { url: str(p.url, 500) } : {}), ...(str(p.error, 1000) ? { error: str(p.error, 1000) } : {}),
+      ...(idOf(p.review_id) ? { review_id: idOf(p.review_id) } : {}), ...(items.length ? { items } : {}),
+    };
   }
   if (isObj(s.hook)) {
     const k = s.hook, argv = argvOf(k.argv);
