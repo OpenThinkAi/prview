@@ -25,10 +25,12 @@ import {
 import { loadConfig, realLookups, resolveRoles, type Resolved, type Role } from "./config.ts";
 import { complete, modelLabel, pool, type Usage } from "./llm.ts";
 import { reviveAsks, type Asks } from "./deep.ts";
-import { git, prSlug, remoteFor, run, type ResolveCtx, type Source } from "./pr.ts";
+import { git, hasCommit, prSlug, remoteFor, run, type ResolveCtx, type Source } from "./pr.ts";
 import type { Http } from "./azure-auth.ts";
 import { isPR, parseRef, prIn, sourceOf } from "./registry.ts";
 import { carry, type Carried } from "./carryover.ts";
+import { rereviewOf } from "./rereview.ts";
+import { sinceOf, type Since } from "./since.ts";
 
 export { Fail };
 /** One model call: which role, how long, what it cost where the provider reports it. */
@@ -56,7 +58,7 @@ export type Pos = { item: number; line: number };
 /** `ref` is what was asked for (a PR's canonical URL, a PR number in a review stored before URLs were, or a range), so the review can be rebuilt at a newer head. */
 /** `suggested`: the verdicts of documents imported at this head, shown in the opening summary as information only. */
 /** `asks`: the `a ?` conversations, by subject, kept on this machine only (never in the document). */
-export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; /** The severity filter (`f h`/`f m`/`f a`), kept here with the reader's place, never in the document; absent means all. */ filter?: Filter; ai?: Ai; doc: Doc; suggested?: Suggested[]; asks?: Asks; /** Where the reader's carried-over comments came from (carryover.ts), kept with the review, never in the document. */ carried?: Carried };
+export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; /** The severity filter (`f h`/`f m`/`f a`), kept here with the reader's place, never in the document; absent means all. */ filter?: Filter; ai?: Ai; doc: Doc; suggested?: Suggested[]; asks?: Asks; /** Where the reader's carried-over comments came from (carryover.ts), kept with the review, never in the document. */ carried?: Carried; /** A re-review (rereview.ts): the head last submitted at and what changed since; never in the document. */ since?: Since; /** `v s`: only the blocks changed since that review are shown, kept like the filter. */ sinceOnly?: true };
 
 export const home = () => process.env.PRVIEW_HOME ?? join(homedir(), ".cache", "prview");
 const metaOf = (slug: string) => join(home(), `${slug}.json`);
@@ -205,7 +207,7 @@ function revive(j: any): Review | undefined {
     typeof v?.by === "string" && v.by && ["approve", "request_changes", "comment"].includes(v.verdict) ? [{ by: v.by.slice(0, 40), verdict: v.verdict, ...(typeof v.reason === "string" && v.reason.trim() ? { reason: v.reason.trim().slice(0, 240) } : {}) }] : []);
   try {
     const asks = reviveAsks(j.asks);
-    return { slug: j.slug, repo: j.repo, ref: j.ref ?? j.target, worktree: j.worktree, context: j.context ?? 3, created: j.created, pos: j.pos ?? { item: 0, line: 0 }, ...(filterOf(j.filter) !== "all" ? { filter: filterOf(j.filter) } : {}), ai: j.ai, doc: parseDocument(raw), ...(suggested.length ? { suggested } : {}), ...(asks ? { asks } : {}), ...(carriedOf(j.carried) ? { carried: carriedOf(j.carried) } : {}) };
+    return { slug: j.slug, repo: j.repo, ref: j.ref ?? j.target, worktree: j.worktree, context: j.context ?? 3, created: j.created, pos: j.pos ?? { item: 0, line: 0 }, ...(filterOf(j.filter) !== "all" ? { filter: filterOf(j.filter) } : {}), ...(sinceOf(j.since) ? { since: sinceOf(j.since) } : {}), ...(j.sinceOnly === true ? { sinceOnly: true as const } : {}), ai: j.ai, doc: parseDocument(raw), ...(suggested.length ? { suggested } : {}), ...(asks ? { asks } : {}), ...(carriedOf(j.carried) ? { carried: carriedOf(j.carried) } : {}) };
   } catch { return undefined; }
 }
 
@@ -238,7 +240,7 @@ export function remove(slug: string): string {
     Bun.spawnSync(["git", "worktree", "remove", "--force", r.worktree], { cwd: r.repo });
     rmSync(r.worktree, { recursive: true, force: true });
     const pr = r.slug.match(/-pr-(\d+)$/);
-    if (pr) for (const end of ["head", "base", "merge"]) Bun.spawnSync(["git", "update-ref", "-d", `refs/prview/pr-${pr[1]}/${end}`], { cwd: r.repo });
+    if (pr) for (const end of ["head", "base", "merge", "reviewed"]) Bun.spawnSync(["git", "update-ref", "-d", `refs/prview/pr-${pr[1]}/${end}`], { cwd: r.repo });
     Bun.spawnSync(["git", "worktree", "prune"], { cwd: r.repo });
   }
   rmSync(metaOf(slug), { force: true });
@@ -314,6 +316,10 @@ export async function build(repo: string, target: string | undefined, opts: Buil
       r.suggested = [suggestVerdict(r.doc.findings), ...(prior && prior.doc.target.head === t.head ? prior.suggested ?? [] : []).filter((v) => v.by !== IN_HOUSE)];
     }
   }
+  // A re-review: the layer is worked out on every open (the head reviewed is the latest submission's), and `v s` stays
+  // on while the head does, like the filter.
+  const since = rereviewOf(repo, slug, t, files, say);
+  if (since) { r.since = since; if (same && prior.sinceOnly && since.files) r.sinceOnly = true; }
   save(r);
   return r;
 }
@@ -332,7 +338,7 @@ export async function reopen(slug: string, opts: BuildOpts): Promise<Review> {
  * so fetching the head brings it too (in any clone that is not shallow).
  */
 function haveCommits(repo: string, t: Target): void {
-  const has = (c: string) => Bun.spawnSync(["git", "cat-file", "-e", `${c}^{commit}`], { cwd: repo }).exitCode === 0;
+  const has = (c: string) => hasCommit(repo, c);
   const pr = parseRef(t.url);
   if (!has(t.head) && pr) sourceOf(pr.platform)!.fetch(repo, pr, true, t.head);
   for (const c of [t.base, t.head]) if (!has(c)) throw new Fail(`commit ${c.slice(0, 8)} is not in ${repo}: fetch it, then import again`);

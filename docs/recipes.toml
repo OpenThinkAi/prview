@@ -128,6 +128,11 @@ actions = ["view.zen"]
 why = "Hides or shows the table of contents so the code has the room."
 
 [[recipe]]
+q = ["what changed since my last review", "show only the new changes after the author pushed again", "re-review only what is different since I submitted", "see the whole pull request again"]
+actions = ["view.since"]
+why = "In a re-review, shows only the blocks changed since the head you last submitted on (marked with a dot), or the whole PR again."
+
+[[recipe]]
 q = ["how do I make the content area full screen", "read an answer with the whole screen", "enlarge the panel"]
 actions = ["view.fullscreen"]
 why = "Makes the content area full-screen; Esc or the same key restores it."

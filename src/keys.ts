@@ -39,11 +39,12 @@ export type Action = {
    * Submit only: the steps it is pressed in; in the comment step, whether only while typing (true) or only while not
    * (false); and `needs: "boxes"`, in the send step only when the submit has a checkbox (a command, a coverage line).
    * Inside a finding, `needs: "answer"`: only while an answer about it waits for `a a` / `a x`. In the code,
-   * `needs: "comment"`: only on a line with a comment of the reader's that is not a finding's.
+   * `needs: "comment"`: only on a line with a comment of the reader's that is not a finding's. `needs: "since"`: only in
+   * a re-review that has its "since your review" layer (rereview.ts).
    */
   steps?: readonly SubmitStep[];
   typing?: boolean;
-  needs?: "boxes" | "answer" | "comment";
+  needs?: "boxes" | "answer" | "comment" | "since";
 };
 
 /** The submit flow's steps (submit-flow.ts): the findings checklist, the verdict, the top-level comment, then send. */
@@ -57,8 +58,11 @@ export type PromptKind = "ask" | "comment" | "reason" | "docs" | "severity" | "f
  * comment step `typing` is whether the box takes the keys; in its send step `boxes` is whether there is a checkbox.
  */
 export type KeyState =
-  /** `comment`: in the code, the cursor line has a comment of the reader's that is not a finding's (carried over, say). */
-  | { state: "toc" | "code" | "settings"; comment?: boolean }
+  /**
+   * `comment`: in the code, the cursor line has a comment of the reader's that is not a finding's (carried over, say).
+   * `since`: a re-review with its "since your review" layer, where `v s` acts.
+   */
+  | { state: "toc" | "code" | "settings"; comment?: boolean; since?: boolean }
   /** `answer`: an answer about this finding is waiting to be accepted or discarded. */
   | { state: "finding"; answer?: boolean }
   | { state: "content"; results?: boolean }
@@ -134,6 +138,8 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "view.fullscreen", states: [...READING, "content"], prefix: "v", key: "c", label: "full-screen content", description: "Make the content area full-screen, where the arrows scroll it, or restore it; Esc restores it too." },
   { id: "view.editor", states: READING, prefix: "v", key: "e", label: "editor", description: "Open the file in your editor at the cursor line." },
   { id: "view.wrap", states: READING, prefix: "v", key: "w", label: "wrap", description: "Wrap long lines onto more rows, or cut them again." },
+  // Outside a finding only (the table of contents and the code): the toggle can take the open finding's block off the screen.
+  { id: "view.since", states: OUTSIDE, needs: "since", prefix: "v", key: "s", label: "since your review", description: "In a re-review, show only the blocks that changed since the head you last submitted on, or the whole PR again." },
 
   // ---- g: go to
   { id: "go.next_finding", states: READING, prefix: "g", key: "f", label: "next finding", description: "Go to the next finding anywhere in the review and open it, wrapping round at the end." },
@@ -263,6 +269,7 @@ const inState = (ks: KeyState) => (a: Action): boolean => {
   if (!a.states.includes(ks.state)) return false;
   if (a.needs === "answer") return ks.state === "finding" && !!ks.answer;
   if (a.needs === "comment") return ks.state === "code" && !!ks.comment;
+  if (a.needs === "since") return (ks.state === "toc" || ks.state === "code") && !!ks.since;
   if (ks.state !== "submit") return true;
   if (!a.steps?.includes(ks.step)) return false;
   if (ks.step === "comment" && a.typing !== undefined && a.typing !== ks.typing) return false;
@@ -371,8 +378,9 @@ const where = (a: Action, slot: "primary" | "secondary") => `${a.id}${slot === "
 
 /** Two bindings on one key in one state, per layer: the keys pressed first, and each prefix's second keys. */
 function checkConflicts(km: Keymap): void {
-  // A finding with an answer waiting has two keys more (a a, a x): it is checked as a state of its own.
-  const variants: KeyState[] = [...REMAPPABLE_STATES.map((state) => ({ state }) as KeyState), { state: "finding", answer: true }];
+  // A finding with an answer waiting has two keys more (a a, a x), a re-review's table of contents and code one (v s),
+  // a code line with a comment of the reader's one (x): each is checked as a state of its own.
+  const variants: KeyState[] = [...REMAPPABLE_STATES.map((state) => ({ state }) as KeyState), { state: "finding", answer: true }, { state: "toc", since: true }, { state: "code", comment: true, since: true }];
   for (const ks of variants) {
     const state = ks.state;
     const layers: [string, Action[]][] = [["", rowsOf(ks, km)], ...prefixesOf(ks, km).map((p): [string, Action[]] => [p, prefixRows(ks, p, km)])];

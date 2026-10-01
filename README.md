@@ -187,6 +187,12 @@ tables with your own bindings.
   that line of the file (the nearest line shown); `g c 3 g` to that chapter's first block. `g f`, `g h` and the
   line jumps land in the code; `g c` lands in the table of contents. The filter (`f h`, `f m`, `f a`) is for reading:
   it shows in the status area and is kept with the review, and the submit checklist still lists every finding.
+- **Re-review.** Opening a PR you already submitted on, at a newer head, is a re-review: the status area shows
+  `re-review · since <sha> <date>` (the head you last submitted at) and the blocks changed since then are marked `●`
+  in the table of contents and the gutter. `v s` shows only those blocks, or the whole PR again (`view since review`
+  / `whole PR` in the status area; kept with the review like the filter). The document is still the whole PR. If
+  the head you reviewed was rebased away, the changes are still diffed old head to new head, with a note that
+  upstream changes may show as new; if it can no longer be fetched, the whole PR is shown with a note.
 - **No** undo, counts, hunk-to-hunk keys, horizontal panning, separate "withdrawn" view or note key: pressing
   `b`, `c` or `i` again changes a finding's action, the submit flow's comment step is the review's summary comment,
   and a finding the second look dropped is shown as ignored.
@@ -280,6 +286,7 @@ tables with your own bindings.
 | `v c` |  | `view.fullscreen` | Make the content area full-screen, where the arrows scroll it, or restore it; Esc restores it too. |
 | `v e` |  | `view.editor` | Open the file in your editor at the cursor line. |
 | `v w` |  | `view.wrap` | Wrap long lines onto more rows, or cut them again. |
+| `v s` |  | `view.since` | In a re-review, show only the blocks that changed since the head you last submitted on, or the whole PR again. |
 
 **`g` go to**
 

@@ -1562,10 +1562,12 @@ test("status area: the title on its own line, then separate labelled fields; the
 });
 
 test("status fields (pure): a PR shows its number and commits, a range its branches; narrow widths drop whole fields in order", () => {
-  const base: StatusInput = { label: "acme/app#1016", base: "a".repeat(40), head: "b".repeat(40), read: { seen: 1, total: 5 }, findings: { high: 2, medium: 1, low: 0 }, hidden: false, comments: 3, filter: "medium", suggested: "Comment" };
+  const base: StatusInput = { label: "acme/app#1016", base: "a".repeat(40), head: "b".repeat(40), read: { seen: 1, total: 5 }, findings: { high: 2, medium: 1, low: 0 }, hidden: false, comments: 3, filter: "medium", suggested: "Comment", rereview: { label: "abc1234 2026-09-30", view: "since" } };
   const all = statusFields(base);
-  expect(all.map((f) => `${f.label} ${f.value}`)).toEqual(["PR #1016", "commits aaaaaaa ← bbbbbbb", "read 1/5", "findings ▲ 2 high · 1 medium", "filter high and medium", "comments 3", "suggested Comment"]);
-  expect(statusFields({ ...base, label: "main..feature", suggested: undefined }).map((f) => f.key)).toEqual(["branch", "read", "findings", "filter", "comments"]);
+  expect(all.map((f) => `${f.label} ${f.value}`)).toEqual(["PR #1016", "commits aaaaaaa ← bbbbbbb", "read 1/5", "findings ▲ 2 high · 1 medium", "filter high and medium", "comments 3", "re-review · since abc1234 2026-09-30", "view since review", "suggested Comment"]);
+  expect(statusFields({ ...base, label: "main..feature", suggested: undefined, rereview: undefined }).map((f) => f.key)).toEqual(["branch", "read", "findings", "filter", "comments"]);
+  // A re-review whose reviewed head is gone has no view to toggle.
+  expect(statusFields({ ...base, rereview: { label: "abc1234 2026-09-30" } }).map((f) => f.key)).not.toContain("view");
   expect(statusFields({ ...base, findings: { high: 0, medium: 0, low: 0 }, hidden: true }).find((f) => f.key === "findings")!.value).toBe("none · more hidden ▲?");
   const w = (fs: ReturnType<typeof statusFields>) => fs.map((f) => `${f.label} ${f.value}`).join("   ").length;
   expect(fitFields(all, 200)).toEqual(all);

@@ -54,6 +54,7 @@ export const QUESTIONS: [string, string][] = [
   ["look up how to do something in prview", "review.search_docs"],
   ["fold up a chapter in the sidebar", "toc.collapse"],
   ["I want to comment on the file as a whole, not a line", "go.top"],
+  ["the author pushed fixes, which parts are new since I reviewed", "view.since"],
 ];
 
 /** Runs every question; `rank` is 1-based, 0 when the answer is not in the top 10. */
