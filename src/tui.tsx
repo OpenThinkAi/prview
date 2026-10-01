@@ -49,6 +49,7 @@ import { fitFields, GAP, statusFields } from "./status.ts";
 import { visible as printable } from "./sanitize.ts";
 import { MIN_COLS, MIN_ROWS, tooSmall, useTerminalSize } from "./resize.ts";
 import { configPath, parseConfig, type Config } from "./config.ts";
+import { changedBlocks, GONE_NOTE, lineChanged, REBASED_NOTE, sinceFile, sinceLabel } from "./since.ts";
 import { openSettings, saveSettings, settingsAct, settingsKey, type Out as SettingsOut, type Settings } from "./settings.ts";
 import { SettingsScreen } from "./settings-view.tsx";
 
@@ -112,15 +113,26 @@ export type AppProps = {
   update?: Promise<string | null>;
 };
 
-/** What the content area opens on: the summary, the suggested verdicts and who prepared it. `a i` shows exactly this again; null when a review has neither. */
-export function summaryContent(review: Review): Content | null {
+/** What the content area opens on: a re-review's note (`changed`: its blocks changed since), the summary, the suggested verdicts and who prepared it. `a i` shows exactly this again; null when a review has neither. */
+export function summaryContent(review: Review, changed = 0): Content | null {
   const d = review.doc;
+  const again = rereviewText(review, changed);
   // An imported review's verdict is only ever information here: submit never starts from it.
   const verdicts = (review.suggested ?? []).map((v) => `${v.by === "imported" ? "An imported review" : `${v.by}'s review`} suggested ${VERDICT[v.verdict]}${v.reason ? `: ${v.reason.replace(/[.\s]+$/, "")}` : ""}.`);
   const suggested = verdicts.length ? [...verdicts, "That is information only: you pick your own verdict at submit."].join("\n") : "";
-  if (!d.plan.summary && !suggested) return null;
+  if (!d.plan.summary && !suggested && !again) return null;
   const hint = `Esc closes this; ${keyOf("ai.info")} brings it back. The key panel lists the keys for where you are.`;
-  return { title: "Summary of this change · not a finding", color: "magenta", copy: d.plan.summary || suggested, body: [d.plan.summary, suggested, preparedBy(review.ai?.runs), hint].filter(Boolean).join("\n\n") };
+  return { title: "Summary of this change · not a finding", color: "magenta", copy: d.plan.summary || suggested || again, body: [again, d.plan.summary, suggested, preparedBy(review.ai?.runs), hint].filter(Boolean).join("\n\n") };
+}
+
+/** A re-review, said where the review opens: the head you last submitted at, what changed since, and the notes that qualify it. */
+function rereviewText(review: Review, n: number): string {
+  const s = review.since;
+  if (!s) return "";
+  const head = `Re-review: you last submitted on this at ${sinceLabel(s)}.`;
+  if (!s.files) return `${head} ${GONE_NOTE[0]!.toUpperCase()}${GONE_NOTE.slice(1)}.`;
+  const what = n ? `${n} block${n === 1 ? "" : "s"} changed since then, marked ● in the table of contents and the gutter; ${keyOf("view.since")} shows only those.` : "No block of the PR changed since then.";
+  return `${head} ${what}${s.rebased ? ` ${REBASED_NOTE[0]!.toUpperCase()}${REBASED_NOTE.slice(1)}.` : ""}`;
 }
 
 export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig, resume, draft: draftAtStart, askDeps, update }: AppProps) {
@@ -129,7 +141,14 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const cols = term.cols, rows = term.rows - 1;
   const r = useRef(review).current;
   const d = r.doc, h = d.human;
-  const items = useMemo(() => itemsOf(d, files), [d, files]);
+  // A re-review's "since your review" layer (since.ts): the blocks changed since the head last submitted at. `v s`
+  // shows only those (kept with the review, like the filter); every list the keys walk is then those blocks, while the
+  // reading progress, the blind gate and the submit stay on the whole PR (`allItems`).
+  const allItems = useMemo(() => itemsOf(d, files), [d, files]);
+  const changed = useMemo(() => changedBlocks(allItems, r.since), [allItems, r.since]);
+  const [sinceOnly, setSinceOnly] = useState(() => !!r.sinceOnly && changed.size > 0);
+  const items = useMemo(() => sinceOnly ? allItems.filter((x) => changed.has(x.id)) : allItems, [allItems, changed, sinceOnly]);
+  const since = r.since?.files ? r.since : undefined;
   // What earlier submits of this review posted (read once), and the reader's comments that are not a finding's: the
   // submit checklist lists those beside the findings and the code labels them (carryover.ts).
   const earlier = useMemo(() => postedBefore(r.slug, d), []);
@@ -139,7 +158,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const redraw = () => { save(r); bump((n) => n + 1); };
   const [pos, setPosRaw] = useState<Pos>(() => ({ item: Math.min(r.pos.item, Math.max(0, items.length - 1)), line: r.pos.line }));
   const setPos = (p: Pos) => { r.pos = p; setPosRaw(p); };
-  const opening = () => summaryContent(review);
+  const opening = () => summaryContent(review, changed.size);
   const [content, setContentRaw] = useState<Content | null>(() => opening());
   const [scroll, setScroll] = useState(0);
   // Tab moves focus into the content area and back (to the open finding, the code or the table of contents, whichever
@@ -255,11 +274,11 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     : mode.kind === "results" ? { state: "content", results: true }
     : mode.kind !== "nav" ? { state: "prompt", kind: mode.kind, decide: mode.kind === "comment" && !!mode.decide }
     : (full || focus === "content") && view ? { state: "content" }
-    : content?.finding ? { state: "finding", answer: !!pendingTurn(r.asks, content.finding) } : tree === "code" ? { state: "code", comment: ownHere().length > 0 } : { state: tree };
+    : content?.finding ? { state: "finding", answer: !!pendingTurn(r.asks, content.finding) } : tree === "code" ? { state: "code", comment: ownHere().length > 0, since: !!since } : { state: tree, since: !!since };
 
   // Blind: what the critic found is not shown, counted or reachable until the chapter has been read. Everything below that
   // draws or steps through a finding goes through `unhidden`, so the gate cannot be bypassed by one key.
-  const chapters = items.reduce<string[][]>((acc, x) => { (acc[x.chapter] ??= []).push(x.id); return acc; }, []).filter(Boolean);
+  const chapters = allItems.reduce<string[][]>((acc, x) => { (acc[x.chapter] ??= []).push(x.id); return acc; }, []).filter(Boolean);
   const hidden = hiddenHunks(blind, chapters, h);
   const unhidden = (f: Finding) => !hidden.has(f.hunk);
   // What the gutter marks, the counts count and the go-to keys step through: every finding the reader may see, those the
@@ -278,6 +297,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const findingsAt = (l: DiffLine) => findingsHere.filter((f) => !f.file && (f.side === "new" ? l.n !== null && f.line === l.n : l.o !== null && f.line === l.o));
   // A finding on a whole file is shown on the row where it was written, the one that starts the file's diff or the one that ends it.
   const findingsOnFile = (r: "start" | "end") => findingsHere.filter((f) => f.file && f.line === (r === "end" ? 1 : 0));
+  const sinceHere = item ? sinceFile(since, item.path) : undefined;
 
   // Seeing a hunk is reading it.
   useEffect(() => { if (item && !h.visited.includes(item.id)) { h.visited.push(item.id); redraw(); } }, [item?.id]);
@@ -350,6 +370,24 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     const gone = d.findings.filter((f) => unhidden(f) && !filtered([f], next).length).length;
     setNote(`filter: ${filterLabel(next)}${gone ? ` (${gone} hidden by the filter)` : ""}`);
   };
+  // `v s`: only the blocks changed since your review, or the whole PR. The cursor stays on its block when the other view
+  // has it, else goes to the nearest changed block after it in reading order (the last one when none is after it).
+  const toggleSince = () => {
+    if (!since) return;
+    if (!sinceOnly && !changed.size) { setNote("no block of the PR changed since your review"); return; }
+    const next = !sinceOnly, list = next ? allItems.filter((x) => changed.has(x.id)) : allItems;
+    const cur = items[pos.item], here = cur ? list.findIndex((x) => x.id === cur.id) : -1;
+    const from = cur ? allItems.findIndex((x) => x.id === cur.id) : -1;
+    const after = list.findIndex((x) => allItems.indexOf(x) > from);
+    const i = here >= 0 ? here : after >= 0 ? after : list.length - 1;
+    if (next) r.sinceOnly = true; else delete r.sinceOnly;
+    setSinceOnly(next);
+    if (content?.finding && here < 0) setContent(null);
+    setPos({ item: Math.max(0, i), line: here >= 0 ? pos.line : 0 });
+    setOnChapter(false);
+    save(r);
+    setNote(next ? `since your review: ${changed.size} block${changed.size === 1 ? "" : "s"} changed since ${sinceLabel(since)}` : "the whole PR");
+  };
   // After an action is picked the finding stays open, showing its new action; `g f` goes on to the next one.
   const decided = (f: Finding, next: Human) => { Object.assign(h, next); redraw(); showFinding(f); };
   const land = (hit: (Pos & { finding: Finding }) | undefined) => {
@@ -357,7 +395,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     setPos({ item: hit.item, line: hit.line });
     showFinding(hit.finding);
   };
-  const place = (id: string, l: number | null) => `${printable(items.find((x) => x.id === id)?.path ?? id)}${l !== null ? `:${l}` : ""}`;
+  const place = (id: string, l: number | null) => `${printable(allItems.find((x) => x.id === id)?.path ?? id)}${l !== null ? `:${l}` : ""}`;
 
   // Fast typing or a paste can deliver several plain characters in one chunk ("g12"): take them one at a time. An escape
   // sequence Ink did not read as a key (it hands those over with the ESC stripped) stays whole, for tokenOf to read.
@@ -603,6 +641,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       }
       case "view.wrap": setWrap(!wrap); return;
       case "view.zen": setZen(!zen); return;
+      case "view.since": toggleSince(); return;
       case "view.fullscreen":
         if (full) setFull(false); else if (view) setFull(true); else setNote("the content area is empty");
         return;
@@ -683,7 +722,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const L = flowFull ? layoutOf(cols, rows, { zen, full: true }) : L0;
   const { railW, mainW, gutterW, codeW, boxW, boxInner } = L;
   const codeCols = codeW - 1; // the +/- sign takes the first column
-  const total = items.filter((i) => !i.mechanical).length, seen = items.filter((i) => !i.mechanical && h.visited.includes(i.id)).length;
+  const total = allItems.filter((i) => !i.mechanical).length, seen = allItems.filter((i) => !i.mechanical && h.visited.includes(i.id)).length;
   const anyHidden = d.findings.some((f) => !unhidden(f));
 
   // The status area's second line: separate fields, each whole or dropped, in the order status.ts documents.
@@ -692,6 +731,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     label: printable(d.target.label), base: d.target.base, head: d.target.head, read: { seen, total },
     findings: bySeverity(visible()), hidden: anyHidden,
     comments: h.comments.length, filter: level, suggested: inHouse ? VERDICT[inHouse.verdict] : undefined,
+    ...(r.since ? { rereview: { label: sinceLabel(r.since), ...(since ? { view: sinceOnly ? "since" as const : "whole" as const } : {}) } } : {}),
   }), cols - 4);
 
   // The content area: one thing at a time, scrolled within its rows. A finding's title is bold above its detail.
@@ -761,7 +801,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     switch (mode.kind) {
       // Your own finding: the severity (arrows, then Enter), then the comment, which can run to several lines.
       case "severity": case "finding": {
-        const where = "file" in mode.spot ? `${printable(items.find((x) => x.id === mode.spot.hunk)?.path ?? "")} (whole file)` : place(mode.spot.hunk, mode.spot.line);
+        const where = "file" in mode.spot ? `${printable(allItems.find((x) => x.id === mode.spot.hunk)?.path ?? "")} (whole file)` : place(mode.spot.hunk, mode.spot.line);
         if (mode.kind === "severity") return <>
           <Text bold color="cyan" wrap="truncate">New finding at {where} · pick its severity</Text>
           {SEVERITIES.map((s, i) => <Text key={s} wrap="truncate" color={i === mode.sel ? SEV[s] : undefined} bold={i === mode.sel}>{i === mode.sel ? "▸" : " "} {s}<Text dimColor>{` · starts as ${LABEL[defaults[s]]}`}</Text></Text>)}
@@ -830,16 +870,17 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
                 if (row.kind === "block") {
                   // While the cursor is on the chapter's row, its first block (which the code shows) is not marked as well.
                   const x = items[row.item]!, cur = row.item === pos.item && !(tree === "toc" && onChapter), sel = cur && tree === "toc";
-                  return <Text key={`b${row.item}`} color={cur ? "cyan" : undefined} inverse={sel} dimColor={!cur && h.visited.includes(x.id)} wrap="truncate">{L.narrow ? ` ${cur ? "›" : " "}${mine.indexOf(x) + 1}` : `   ${cur ? "›" : " "} ${printable(x.path.split("/").pop()!)}:${x.hunk.newStart}`}{mark(visible().filter((f) => f.hunk === x.id), " ▲")}</Text>;
+                  return <Text key={`b${row.item}`} color={cur ? "cyan" : undefined} inverse={sel} dimColor={!cur && h.visited.includes(x.id)} wrap="truncate">{L.narrow ? ` ${cur ? "›" : " "}${mine.indexOf(x) + 1}` : `   ${cur ? "›" : " "} ${printable(x.path.split("/").pop()!)}:${x.hunk.newStart}`}{mark(visible().filter((f) => f.hunk === x.id), " ▲")}{changed.has(x.id) ? <Text color="magenta"> ●</Text> : null}</Text>;
                 }
                 const title = c < d.plan.chapters.length ? d.plan.chapters[c]!.title : `Mechanical (${d.plan.mechanical.length})`;
                 const done = mine.every((x) => h.visited.includes(x.id));
                 const fs = visible().filter((f) => mine.some((x) => x.id === f.hunk));
                 const blindFs = chapterHidden(blind, chapters[c] ?? [], h) && d.findings.some((f) => mine.some((x) => x.id === f.hunk));
+                const moved = mine.filter((x) => changed.has(x.id)).length;
                 // ▾ expanded, ▸ collapsed; ✓ every block read.
                 return (
                   <Text key={`c${c}`} color={here ? "cyan" : done ? "green" : undefined} bold={here} inverse={here && tree === "toc" && onChapter} wrap="truncate">
-                    {L.narrow ? "" : done ? "✓" : " "}{expanded ? "▾" : "▸"}{L.narrow ? "" : " "}{c + 1}{L.narrow ? "" : ` ${printable(title)}`}{fs.length ? mark(fs, `${L.narrow ? "" : " "}▲${fs.length}`) : blindFs ? <Text color="yellow">{L.narrow ? "" : " "}▲?</Text> : null}
+                    {L.narrow ? "" : done ? "✓" : " "}{expanded ? "▾" : "▸"}{L.narrow ? "" : " "}{c + 1}{L.narrow ? "" : ` ${printable(title)}`}{fs.length ? mark(fs, `${L.narrow ? "" : " "}▲${fs.length}`) : blindFs ? <Text color="yellow">{L.narrow ? "" : " "}▲?</Text> : null}{moved && !L.narrow ? <Text color="magenta"> ●{moved}</Text> : null}
                   </Text>
                 );
               })}
@@ -872,6 +913,8 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
                     );
                   }
                   const fs = findingsAt(l), ns = notesAt(l);
+                  // ● after the line number: new or changed since the head you last submitted at (a re-review).
+                  const moved = lineChanged(sinceHere, l.n);
                   const worst = fs.filter((f) => !ignored(f)).sort(worstFirst)[0];
                   // ▲ in its severity's colour, △ dim when every finding on the line is ignored.
                   const mark = worst ? <Text color={SEV[worst.severity]}>▲</Text> : fs.length ? <Text dimColor>△</Text> : ns.length ? <Text color="cyan">»</Text> : <Text> </Text>;
@@ -886,7 +929,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
                         return (
                           <Text key={k} wrap="truncate">
                             {k === 0
-                              ? <><Text dimColor={!cur} color={cur ? "cyan" : undefined}>{num}</Text> {mark} <Text color={color} inverse={lit}>{l.t}</Text></>
+                              ? <><Text dimColor={!cur} color={cur ? "cyan" : undefined}>{num}</Text>{moved ? <Text color="magenta">●</Text> : " "}{mark} <Text color={color} inverse={lit}>{l.t}</Text></>
                               : <Text dimColor>{" ".repeat(gutterW + 3)}↪</Text>}
                             {row.map((sp, j) => { const st = styleOf(sp.kind, changed); return <Text key={j} color={st.color ?? color} bold={st.bold} italic={st.italic} dimColor={st.dim} inverse={lit}>{sp.text}</Text>; })}
                             {lit ? <Text color={color} inverse>{" ".repeat(Math.max(0, codeCols - used))}</Text> : null}

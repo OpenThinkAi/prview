@@ -7,10 +7,14 @@
 import { filterLabel, type Filter } from "./filter.ts";
 import type { Severity } from "./guide.ts";
 
-export type Field = { key: "pr" | "branch" | "read" | "findings" | "filter" | "comments" | "suggested"; label: string; value: string; color?: string };
+export type Field = { key: "pr" | "branch" | "read" | "findings" | "filter" | "comments" | "suggested" | "rereview" | "view"; label: string; value: string; color?: string };
 
-/** The order fields leave a narrow line in: the suggested verdict first, then the branches, the comments, the PR number, the reading progress. The severity filter goes last of all. The findings stay. */
-export const DROP_ORDER: readonly Field["key"][] = ["suggested", "branch", "comments", "pr", "read", "filter"];
+/**
+ * The order fields leave a narrow line in: the suggested verdict first, then the branches, the comments, the PR number,
+ * the reading progress. The severity filter goes after those, then a re-review's view (`v s`), then the re-review itself.
+ * The findings stay.
+ */
+export const DROP_ORDER: readonly Field["key"][] = ["suggested", "branch", "comments", "pr", "read", "filter", "view", "rereview"];
 export const GAP = "   ";
 
 export type StatusInput = {
@@ -24,6 +28,11 @@ export type StatusInput = {
   filter?: Filter;
   /** The in-house review's suggested verdict, worded, when there is one. */
   suggested?: string;
+  /**
+   * A re-review: `label` is the head last submitted at and the day (`abc1234 2026-09-30`); `view` is what `v s` shows
+   * (only the blocks changed since, or the whole PR), absent when there is no layer (the reviewed head is gone).
+   */
+  rereview?: { label: string; view?: "since" | "whole" };
 };
 
 const SEVERITY: readonly Severity[] = ["high", "medium", "low"];
@@ -40,6 +49,10 @@ export function statusFields(s: StatusInput): Field[] {
   out.push({ key: "findings", label: "findings", value: `${shown}${s.hidden ? " · more hidden ▲?" : ""}`, color: counts.length ? "yellow" : undefined });
   if (s.filter) out.push({ key: "filter", label: "filter", value: filterLabel(s.filter), color: s.filter === "all" ? undefined : "cyan" });
   out.push({ key: "comments", label: "comments", value: String(s.comments) });
+  if (s.rereview) {
+    out.push({ key: "rereview", label: "re-review ·", value: `since ${s.rereview.label}`, color: "magenta" });
+    if (s.rereview.view) out.push({ key: "view", label: "view", value: s.rereview.view === "since" ? "since review" : "whole PR", color: s.rereview.view === "since" ? "magenta" : undefined });
+  }
   if (s.suggested) out.push({ key: "suggested", label: "suggested", value: s.suggested });
   return out;
 }

@@ -280,6 +280,7 @@ tables with your own bindings.
 | `v c` |  | `view.fullscreen` | Make the content area full-screen, where the arrows scroll it, or restore it; Esc restores it too. |
 | `v e` |  | `view.editor` | Open the file in your editor at the cursor line. |
 | `v w` |  | `view.wrap` | Wrap long lines onto more rows, or cut them again. |
+| `v s` |  | `view.since` | In a re-review, show only the blocks that changed since the head you last submitted on, or the whole PR again. |
 
 **`g` go to**
 

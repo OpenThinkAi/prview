@@ -5,6 +5,8 @@ import { Fail } from "./document.ts";
 import { git, prSlug, remoteFor, run, type PrRef, type PrSource } from "./pr.ts";
 import { clean } from "./sanitize.ts";
 
+const has = (repo: string, c: string) => Bun.spawnSync(["git", "cat-file", "-e", `${c}^{commit}`], { cwd: repo, stdin: "ignore" }).exitCode === 0;
+
 const PR_URL = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/;
 
 /** Fetch the head (and the base branch, when named) into refs/prview/pr-<n>; the namespace it used. */
@@ -40,5 +42,11 @@ export const github: PrSource = {
       target: { repo: pr.repoKey, base: git(["merge-base", `${ns}/base`, headSha], repo), head: headSha, url: j.url, platform: "github", title: clean(String(j.title ?? "")), body: clean(String(j.body ?? "")), label: `${pr.repoKey}#${j.number}` },
     };
   },
-  fetch(repo, ref, known) { fetchHead(repo, ref, undefined, known); },
+  // `head`: a commit the PR's head ref may no longer reach (the head a re-review reviewed, before a force-push). GitHub
+  // serves a commit of the repository by id, so it is fetched by id into …/reviewed when the head ref did not bring it.
+  fetch(repo, ref, known, head) {
+    fetchHead(repo, ref, undefined, known);
+    if (!head || has(repo, head)) return;
+    git(["fetch", "-q", remoteFor(repo, github, ref) ?? `https://github.com/${ref.repoKey}.git`, `+${head}:refs/prview/pr-${ref.number}/reviewed`], repo);
+  },
 };

@@ -17,7 +17,7 @@ afterEach(() => installKeymap(DEFAULT_KEYMAP));
 const CODE: KeyState = { state: "code" }, TOC: KeyState = { state: "toc" }, FINDING: KeyState = { state: "finding" }, CONTENT: KeyState = { state: "content" };
 /** Every state a key can be pressed in, with each variant that changes what is listed. */
 const ALL_STATES: KeyState[] = [
-  TOC, CODE, { state: "code", comment: true }, FINDING, { state: "finding", answer: true }, CONTENT, { state: "content", results: true }, { state: "settings" },
+  TOC, CODE, { state: "code", comment: true }, { state: "toc", since: true }, { state: "code", since: true }, { state: "code", comment: true, since: true }, FINDING, { state: "finding", answer: true }, CONTENT, { state: "content", results: true }, { state: "settings" },
   { state: "prompt", kind: "ask" }, { state: "prompt", kind: "comment" }, { state: "prompt", kind: "comment", decide: true }, { state: "prompt", kind: "reason" }, { state: "prompt", kind: "docs" }, { state: "prompt", kind: "severity" }, { state: "prompt", kind: "finding" },
   { state: "submit", step: "findings" }, { state: "submit", step: "verdict" },
   { state: "submit", step: "comment", typing: true }, { state: "submit", step: "comment", typing: false },
