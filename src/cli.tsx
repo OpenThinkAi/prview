@@ -12,6 +12,7 @@ import { show } from "./tui.tsx";
 import { submit } from "./submit.ts";
 import { clean } from "./sanitize.ts";
 import type { Flow } from "./submit-flow.ts";
+import { backgroundCheck, realDeps, updateCommand } from "./update.ts";
 
 const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [--context N] [--ai MODEL | --no-ai] [--samples N] [--blind | --no-blind] [--fresh] [--dry-run]
   Opens the change in a full-screen review: a guide (a model) has ordered the hunks into chapters,
@@ -100,16 +101,35 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
                               restore your own export: comments, actions and verdict kept as they were
   prview show [--mine] <file | ->
                               import a document, then open it
-  prview done <name>          remove it (worktree, fetched refs, state)`;
+  prview done <name>          remove it (worktree, fetched refs, state)
+  prview update [--dry-run]   check npm for a newer release now and install it (with bun or npm, whichever installed
+                              prview), whatever auto_update says; a source checkout never updates itself. An installed
+                              prview also checks once a day by itself (not under --dry-run or PRVIEW_NO_UPDATE=1): it says
+                              when one is out, or installs it in the background with auto_update = true (\\ settings)`;
 
-async function review(r: Review, cfg: Config, blind: boolean, dryRun = false): Promise<void> {
+/**
+ * The daily update check, started as a screen is about to open and never waited for: the footer shows what it ends
+ * with. An install it starts is the one thing quitting waits for, so a global install is never cut short.
+ */
+function updates(dryRun: boolean, cfg: Config): { note: Promise<string | null>; finish: () => Promise<void> } {
+  let installing: string | null = null;
+  const note = backgroundCheck(realDeps(home()), { dryRun, autoUpdate: () => cfg.autoUpdate, installing: (v) => { installing = v; } });
+  return { note, finish: async () => { if (!installing) return; installing = null; process.stderr.write(`prview: finishing the update…\n`); const t = await note; if (t) process.stderr.write(`prview: ${t}\n`); } };
+}
+
+async function review(r: Review, cfg: Config, blind: boolean, dryRun = false, upd = updates(dryRun, cfg)): Promise<void> {
+  // `open` and `show` let the check start here; the default command passes the one it started before the build.
+  try { await reviewLoop(r, cfg, blind, dryRun, upd.note); } finally { await upd.finish(); }
+}
+
+async function reviewLoop(r: Review, cfg: Config, blind: boolean, dryRun: boolean, update: Promise<string | null>): Promise<void> {
   checkHead(r);
   const files = filesOf(r);
   let blindNow = blind;
   let resume: Flow | undefined;
   for (;;) {
     // A save in the settings view updates `cfg` in place, so the editor and the defaults below are the saved ones.
-    const o = await show(r, files, besideIn(r.worktree, process.env, () => cfg.editor), blindNow, dryRun, cfg.defaults, cfg, (c) => { if (c.blind !== cfg.blind) blindNow = c.blind; Object.assign(cfg, c); }, resume);
+    const o = await show(r, files, besideIn(r.worktree, process.env, () => cfg.editor), blindNow, dryRun, cfg.defaults, cfg, (c) => { if (c.blind !== cfg.blind) blindNow = c.blind; Object.assign(cfg, c); }, resume, undefined, update);
     resume = undefined;
     if (o.kind === "edit") {
       const cmd = editor(process.env, cfg.editor);
@@ -204,6 +224,7 @@ async function main(args: string[]): Promise<void> {
     case "-h": case "--help": case "help": console.log(USAGE); return;
     case "models": return models();
     case "keys": console.log(describeKeymap(loadConfig().keymap)); return;
+    case "update": { const u = await updateCommand(realDeps(home()), { dryRun: opts.dryRun }); for (const l of u.lines) (u.ok ? console.log : (t: string) => console.error(`prview: ${t}`))(l); if (!u.ok) process.exitCode = 1; return; }
     case "list": console.log(all().map(({ slug, doc: { target: t, human: h } }) => `${slug}\t${t.label}\t${h.visited.length} read · ${h.comments.length} notes\t${t.title}`).join("\n")); return;
     case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r.doc, filesOf(r), loadConfig().defaults)); const by = preparedBy(r.ai?.runs); if (by) process.stderr.write(`${by}\n`); return; }
     case "export": { if (!a1) throw new Fail("usage: prview export <name>"); process.stdout.write(exportDocument(load(a1))); return; }
@@ -215,7 +236,10 @@ async function main(args: string[]): Promise<void> {
   }
   const cfg = start();
   if (!process.stdout.isTTY) throw new Fail("prview needs a terminal");
-  return review(await build(repoFor(cmd, opts.repo), cmd, opts), cfg, opts.blind ?? cfg.blind, opts.dryRun);
+  // Started before the build (which can take minutes), so its answer is usually in by the time the screen opens.
+  const upd = updates(!!opts.dryRun, cfg);
+  // finish() is idempotent: this one covers a build that fails while an install is already running.
+  try { return await review(await build(repoFor(cmd, opts.repo), cmd, opts), cfg, opts.blind ?? cfg.blind, opts.dryRun, upd); } finally { await upd.finish(); }
 }
 
 main(process.argv.slice(2)).then(() => process.exit(Number(process.exitCode ?? 0)), (e) => {

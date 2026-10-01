@@ -10,6 +10,14 @@ npm install -g @openthink/prview
 
 prview runs on [Bun](https://bun.sh), which must be installed; without it the command says so and exits.
 
+`prview update` checks npm for a newer release and installs it with the package manager that installed prview
+(`bun add -g` when it lives under `~/.bun/install/global`, else `npm install -g`), printing `0.1.3 → 0.1.4` or
+"already on the latest (0.1.3)". An installed prview also checks by itself, at most once a day and never holding up
+the screen: with `auto_update = false` (the default) the footer says a newer release is out; with `auto_update = true`
+(top level of the config, or `\` settings → Updates) it installs it in the background and the footer says to restart.
+Only a plain `1.2.3` release newer than the running one is ever installed (never a downgrade or a pre-release). The
+check is skipped under `--dry-run`, with `PRVIEW_NO_UPDATE=1`, and in a source checkout, which never updates itself.
+
 ```sh
 prview 42                      # a PR in this repo
 prview main..my-branch         # any range
@@ -336,21 +344,22 @@ The panel, the hints in the content area, docs search and `prview keys` all show
 ### Settings view
 
 `\` opens the settings full-screen: every action (its states, description, primary and secondary
-key), the default action per severity, the model per role, the editor command and the display defaults (`wrap`,
-`blind`). `↓`/`↑` move, `→`/`←` pick a key's primary or secondary, `Enter` edits: on a key the next keypress becomes
+key), the default action per severity, the model per role, the editor command, the display defaults (`wrap`,
+`blind`) and updates (`auto_update`). `↓`/`↑` move, `→`/`←` pick a key's primary or secondary, `Enter` edits: on a key the next keypress becomes
 the binding (Backspace clears a secondary; Esc and Tab cannot be bound, and a key another action already has in the
 same state is refused, naming it), a choice steps to its next value, the editor takes a line. `Esc` leaves, asking
 "Save changes? y / n / Esc to keep editing" when something changed. `y` writes the config file (`$PRVIEW_CONFIG`)
 and the changes apply at once, no restart. The save is checked exactly as prview checks the file at startup, so it
 never writes a config prview would refuse. It rewrites only the lines of the settings you changed, keeping each
 line's trailing comment; a new line goes at the end of its table (`[keys]`, `[defaults]`, `[roles]`, created at the
-end of the file if missing; `editor`, `wrap` and `blind` before the first table). A key put back to its default, a
+end of the file if missing; `editor`, `wrap`, `blind` and `auto_update` before the first table). A key put back to its default, a
 role put back to the default model and an emptied editor lose their line. Comments, blank lines, `[models.*]` and
 tables prview does not know are left as they were.
 
 ```toml
 editor = "zed"   # v e runs this ($PRVIEW_EDITOR still wins)
 wrap = true      # long lines wrap from the start; v w still toggles
+auto_update = true  # install a newer release in the background (default false: only say it is out)
 ```
 
 A key is one printable character or a name: `up`, `down`, `left`, `right`, `shift-up` (and the other

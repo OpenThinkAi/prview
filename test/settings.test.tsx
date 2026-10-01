@@ -37,14 +37,29 @@ const open = (text = "", path = "/nowhere/config.toml") => openSettings(parseCon
 
 // ---------------------------------------------------------------- the fields
 
-test("fields: every action (fixed ones too), then the defaults by severity, the model per role, the editor and the display", () => {
+test("fields: every action (fixed ones too), then the defaults by severity, the model per role, the editor, the display and updates", () => {
   const f = fieldsOf();
   expect(f.filter((x) => x.kind === "key").map((x) => (x as { id: string }).id)).toEqual(DEFAULT_ACTIONS.map((a) => a.id));
-  expect(f.slice(DEFAULT_ACTIONS.length).map((x) => x.kind)).toEqual(["default", "default", "default", "role", "role", "role", "role", "role", "editor", "wrap", "blind"]);
+  expect(f.slice(DEFAULT_ACTIONS.length).map((x) => x.kind)).toEqual(["default", "default", "default", "role", "role", "role", "role", "role", "editor", "wrap", "blind", "auto_update"]);
   const s = open(`editor = "nvim"\nwrap = true\n[keys]\n"code.down" = { primary = "down", secondary = "n" }\n[defaults]\nlow = "ignore"`);
   expect(s.values.keys["code.down"]).toEqual({ primary: "down", secondary: "n" });
   expect(s.values.defaults).toEqual({ high: "block", medium: "comment", low: "ignore" });
-  expect([s.values.editor, s.values.wrap, s.values.blind]).toEqual(["nvim", true, false]);
+  expect([s.values.editor, s.values.wrap, s.values.blind, s.values.autoUpdate]).toEqual(["nvim", true, false, false]);
+});
+
+test("auto_update: read and checked like wrap, off by default; Enter toggles it and the save writes one top-level line", () => {
+  expect(parseConfig("").autoUpdate).toBe(false);
+  expect(parseConfig("auto_update = true").autoUpdate).toBe(true);
+  expect(() => parseConfig(`auto_update = "yes"`)).toThrow("auto_update must be true or false");
+  const s = settingsAct(at(open(), (f) => f.kind === "auto_update"), "settings.edit").s;
+  expect(s.values.autoUpdate).toBe(true);
+  expect(editsOf(s.initial, s.values)).toEqual([{ table: null, key: "auto_update", value: "true" }]);
+  expect(editToml(`wrap = true  # mine\n\n[keys]\n"view.wrap" = "W"\n`, editsOf(s.initial, s.values))).toBe(`wrap = true  # mine\nauto_update = true\n\n[keys]\n"view.wrap" = "W"\n`);
+  expect(editToml("auto_update = true # yes\n", editsOf(open("auto_update = true").values, open().values))).toBe("auto_update = false # yes\n");
+  const path = freshConfig("# mine\n");
+  const cfg = saveSettings({ ...s, path });
+  expect(cfg.autoUpdate).toBe(true);
+  expect(readFileSync(path, "utf8")).toBe("# mine\nauto_update = true\n");
 });
 
 test("config: editor and wrap are read and checked like the rest; $PRVIEW_EDITOR beats the config, which beats $EDITOR", () => {
@@ -272,9 +287,10 @@ test("screen: \\ opens the settings full-screen with every section, the cursor's
   for (let i = 0; i < DEFAULT_ACTIONS.length; i++) await t.press(DOWN);
   expect(t.frame()).toContain("Default actions by severity");
   expect(t.frame()).toMatch(/high\s+ block /);
-  for (let i = 0; i < 10; i++) await t.press(DOWN);
-  for (const s of ["Models per role", "Editor command", "Display"]) expect(t.frame()).toContain(s);
-  expect(t.frame()).toMatch(/blind\s+ off /);
+  for (let i = 0; i < 12; i++) await t.press(DOWN);
+  for (const s of ["Models per role", "Editor command", "Display", "Updates"]) expect(t.frame()).toContain(s);
+  expect(t.frame()).toMatch(/blind\s+ off$/m);
+  expect(t.frame()).toMatch(/auto_update\s+ off /); // the cursor's row: lit
 });
 
 test("screen: rebinding a key, a refused conflict, then Esc → y saves to the config and the new key acts at once", async () => {
