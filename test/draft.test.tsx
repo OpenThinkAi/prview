@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import React from "react";
 import { cleanup, render } from "ink-testing-library";
+import { inkTestHooks } from "./ink-hooks.ts";
 import { parseDiff } from "../src/diff.ts";
 import { FENCE, hunksOf, type Finding } from "../src/guide.ts";
 import type { Review } from "../src/build.ts";
@@ -18,6 +19,7 @@ import { App, type Outcome } from "../src/tui.tsx";
 
 let tmp = "", saved: string | undefined;
 beforeAll(() => { saved = process.env.PRVIEW_HOME; tmp = mkdtempSync(join(tmpdir(), "prview-draft-")); process.env.PRVIEW_HOME = tmp; });
+inkTestHooks();
 afterAll(() => { cleanup(); rmSync(tmp, { recursive: true, force: true }); if (saved === undefined) delete process.env.PRVIEW_HOME; else process.env.PRVIEW_HOME = saved; });
 
 const DIFF = `diff --git a/src/a.rs b/src/a.rs

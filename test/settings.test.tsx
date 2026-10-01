@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import React from "react";
 import { cleanup, render } from "ink-testing-library";
+import { inkTestHooks } from "./ink-hooks.ts";
 import { parseDiff } from "../src/diff.ts";
 import { hunksOf, type Finding } from "../src/guide.ts";
 import type { Review } from "../src/build.ts";
@@ -20,6 +21,7 @@ let tmp = "";
 const savedEnv = { home: process.env.PRVIEW_HOME, config: process.env.PRVIEW_CONFIG };
 let n = 0;
 const freshConfig = (text?: string) => { const p = join(tmp, `config-${++n}.toml`); if (text !== undefined) writeFileSync(p, text); process.env.PRVIEW_CONFIG = p; return p; };
+inkTestHooks();
 beforeAll(() => { tmp = mkdtempSync(join(tmpdir(), "prview-settings-")); process.env.PRVIEW_HOME = join(tmp, "home"); });
 afterEach(() => installKeymap(DEFAULT_KEYMAP));
 afterAll(() => {

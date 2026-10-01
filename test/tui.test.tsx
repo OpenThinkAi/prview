@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import React from "react";
 import { cleanup, render } from "ink-testing-library";
+import { inkTestHooks } from "./ink-hooks.ts";
 import { parseDiff } from "../src/diff.ts";
 import { criticPrompt, hunksOf, type Finding } from "../src/guide.ts";
 import { visible } from "../src/sanitize.ts";
@@ -28,6 +29,7 @@ import type { Flow } from "../src/submit-flow.ts";
 // goes, so each test gets a scratch one; there is no terminal, so the size is passed in.
 let tmp = "", saved: string | undefined;
 beforeAll(() => { saved = process.env.PRVIEW_HOME; tmp = mkdtempSync(join(tmpdir(), "prview-tui-")); process.env.PRVIEW_HOME = tmp; });
+inkTestHooks();
 afterAll(() => { cleanup(); rmSync(tmp, { recursive: true, force: true }); if (saved === undefined) delete process.env.PRVIEW_HOME; else process.env.PRVIEW_HOME = saved; });
 
 const DIFF = `diff --git a/src/a.rs b/src/a.rs
