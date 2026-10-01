@@ -63,6 +63,7 @@ test("the approved map: primary and secondary keys as specified", () => {
   expect(k("toc.expand")).toBe("right l");
   expect(k("toc.collapse")).toBe("left h");
   expect(k("code.focus_content")).toBe("tab");
+  expect(["toc.focus_content", "finding.focus_content", "content.back"].map(k)).toEqual(["tab", "tab", "tab"]);
   expect(k("code.new_finding")).toBe("enter");
   for (const [id, key] of [["review.submit", "s"], ["review.copy", "y"], ["review.search_docs", "?"], ["review.settings", "\\"], ["review.quit", "q"]]) expect(k(id!)).toBe(key!);
   expect(["ai.info", "ai.ask", "ai.draft"].map(k)).toEqual(["a i", "a ?", "a s"]);
@@ -225,6 +226,15 @@ test("chords: a remap moves the chord, and a key freed by a remap acts no more",
   expect(press(CODE, ["g", "f"], km).out).toEqual({ kind: "act", id: "go.next_finding" });
   expect(press(CODE, ["v", "r"], km).out).toEqual({ kind: "act", id: "view.wrap" });
   expect(press(CODE, ["v", "w"], km).out).toEqual({ kind: "cancel" });
+});
+
+test("Tab focuses the content area from the table of contents, the code and an open finding; Tab or Esc comes back", () => {
+  expect(press(TOC, ["tab"]).out).toEqual({ kind: "act", id: "toc.focus_content" });
+  expect(press(CODE, ["tab"]).out).toEqual({ kind: "act", id: "code.focus_content" });
+  for (const ks of [FINDING, { state: "finding", answer: true }] as KeyState[]) expect(press(ks, ["tab"]).out, name(ks)).toEqual({ kind: "act", id: "finding.focus_content" });
+  expect(press(CONTENT, ["tab"]).out).toEqual({ kind: "act", id: "content.back" });
+  expect(press(CONTENT, ["esc"]).out).toEqual({ kind: "escape" });
+  expect(() => parseConfig(`[keys]\n"finding.focus_content" = "c"`)).toThrow(/finding\.focus_content is fixed \(Tab\)/);
 });
 
 test("steps with Esc of their own (a prompt's cancel, leaving the submit flow, stopping typing) act on it", () => {

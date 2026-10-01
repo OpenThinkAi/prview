@@ -45,7 +45,8 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
       Enter a finding of your own on this line, or on a file's "whole file" row (its diff starts and ends with one):
         pick a severity (↑/↓, Enter), write the comment (ctrl-n a new line, Enter saves, Esc cancels); it has its
         severity's default action, carried out as your own comment, and then acts like any finding
-    Tab into the content area to scroll it, and back
+    Tab into the content area (from the table of contents, the code or an open finding) to scroll it;
+      Tab or Esc comes back to where you were
     s submit, four steps (Tab next, ⇧Tab back, Esc leaves and sends nothing):
       1 findings: every finding with its action; block and comment ticked, ignore not (Space ticks one, a all).
         A ticked finding posts its comment on its line: yours from b/c, else the finding's text.
@@ -76,6 +77,7 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
         edit, Enter saves (ctrl-u clears the line, Esc cancels); submit then defaults to request changes
       c comment: the same, not blocking   i ignore, with an optional private note (never posted)
       pressing b, c or i again changes the action   x or ← close it   y copy it   PgUp/PgDn page it
+      Tab focuses its detail to scroll it; Tab or Esc comes back, the finding still open
     \\ settings: every key (primary and secondary), the default action per severity, the model per role, the
       editor and wrap/blind defaults; Enter edits, Esc leaves and asks to save to the config (applied at once)
     a s asks the model for a draft submission (findings to include, a verdict, a comment) and opens the submit flow

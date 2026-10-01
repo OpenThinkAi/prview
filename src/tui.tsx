@@ -134,7 +134,8 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const opening = () => summaryContent(review);
   const [content, setContentRaw] = useState<Content | null>(() => opening());
   const [scroll, setScroll] = useState(0);
-  // Tab moves focus into the content area and back; `v c` makes it the whole screen, `v z` hides the rail.
+  // Tab moves focus into the content area and back (to the open finding, the code or the table of contents, whichever
+  // it left); `v c` makes it the whole screen, `v z` hides the rail.
   const [focus, setFocus] = useState<"code" | "content">("code");
   // Out of the content area the arrows act in the table of contents (where a review opens) or in the code. In the
   // table of contents the cursor is on a block or (`onChapter`) on its chapter's row; the mechanical chapter starts collapsed.
@@ -145,7 +146,8 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const [zen, setZen] = useState(false);
   // What `y` just did, or why a key did nothing, shown in the footer until the next key.
   const [note, setNote] = useState<string | null>(null);
-  const setContent = (f: Content | null) => { setScroll(0); setContentRaw(f); if (!f || f.finding) setFocus("code"); if (!f) setFull(false); };
+  // Something new in the content area leaves it unfocused: a finding opens with its own keys, and Tab focuses its detail.
+  const setContent = (f: Content | null) => { setScroll(0); setContentRaw(f); setFocus("code"); if (!f) setFull(false); };
   const [mode, setMode] = useState<Mode>(resume ? { kind: "submit", flow: resume } : { kind: "nav" });
   // The submit flow changes through the mode's own state, so several keys in one chunk (typing) build on each other.
   const setFlow = (fn: (f: Flow) => Flow) => setMode((m) => m.kind === "submit" ? { kind: "submit", flow: fn(m.flow) } : m);
@@ -226,14 +228,13 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     });
   };
 
-  // Where a key is pressed: the submit steps, a prompt, the docs results, the content area (full-screen, or Tab), an
-  // open finding, the table of contents or the code.
+  // Where a key is pressed: the submit steps, a prompt, the docs results, the content area (full-screen, or Tab, an
+  // open finding's detail included), an open finding, the table of contents or the code.
   const keyState: KeyState = settings ? { state: "settings" } : mode.kind === "submit" ? submitState(mode.flow)
     : mode.kind === "results" ? { state: "content", results: true }
     : mode.kind !== "nav" ? { state: "prompt", kind: mode.kind, decide: mode.kind === "comment" && !!mode.decide }
-    : full && view ? { state: "content" }
-    : content?.finding ? { state: "finding", answer: !!pendingTurn(r.asks, content.finding) }
-    : focus === "content" && view ? { state: "content" } : { state: tree };
+    : (full || focus === "content") && view ? { state: "content" }
+    : content?.finding ? { state: "finding", answer: !!pendingTurn(r.asks, content.finding) } : { state: tree };
 
   // Blind: what the critic found is not shown, counted or reachable until the chapter has been read. Everything below that
   // draws or steps through a finding goes through `unhidden`, so the gate cannot be bypassed by one key.
@@ -494,8 +495,8 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
         return;
       }
       case "code.to_toc": if (item) toToc({ item: pos.item, line }); return;
-      case "code.focus_content": case "toc.focus_content":
-        if (view && !view.finding) setFocus("content"); else setNote("the content area is empty");
+      case "code.focus_content": case "toc.focus_content": case "finding.focus_content":
+        if (view) setFocus("content"); else setNote("the content area is empty");
         return;
 
       // ---- the table of contents
@@ -768,7 +769,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       <Text dimColor>Nothing here. {keyOf("ai.info")} shows the summary; {keyOf("review.search_docs")} searches the docs.</Text>
     </>;
     const more = contentLines.length > L.contentRows;
-    const scrollHint = focused ? "" : view.finding ? ` ${keyOf("finding.page_up")}/${keyOf("finding.page_down")}` : ` ${keyOf("code.focus_content")} to scroll`;
+    const scrollHint = focused ? "" : ` ${keyOf(view.finding ? "finding.focus_content" : "code.focus_content")} to scroll`;
     return <>
       <Text wrap="truncate"><Text bold color={view.color}>{view.title}</Text>{view.tag ? <Text dimColor>{view.tag}</Text> : null}{busy ? <Text dimColor> · {busy}</Text> : null}{more ? <Text dimColor> · {sc + 1}-{Math.min(contentLines.length, sc + L.contentRows)}/{contentLines.length}{scrollHint}</Text> : null}{focused ? <Text color="cyan"> · focused</Text> : null}</Text>
       {shownContent.map((t, j) => <Text key={j} bold={sc + j < leadLines.length} wrap="truncate">{t || " "}</Text>)}

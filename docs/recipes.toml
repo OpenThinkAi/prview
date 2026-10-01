@@ -58,8 +58,8 @@ why = "Collapses the chapter under the cursor in the table of contents; on a blo
 
 [[recipe]]
 q = ["how do I scroll the content area", "read the rest of a long answer", "move into the panel at the bottom", "the summary is cut off"]
-actions = ["code.focus_content", "toc.focus_content", "content.down", "content.up"]
-why = "Moves focus into the content area, where the arrows scroll it; the same key or Esc comes back."
+actions = ["code.focus_content", "toc.focus_content", "finding.focus_content", "content.down", "content.up"]
+why = "Moves focus into the content area, where the arrows scroll it; the same key or Esc comes back to where you were."
 
 [[recipe]]
 q = ["how do I page through a long answer", "jump a screen at a time in the content area", "page down the text in the panel"]
@@ -69,7 +69,7 @@ why = "With focus in the content area, pages it a screen at a time."
 [[recipe]]
 q = ["how do I leave the content area", "go back to the code from the panel", "stop scrolling the answer"]
 actions = ["content.back"]
-why = "Moves focus back out of the content area; Esc does the same."
+why = "Moves focus back out of the content area, to the open finding, the code or the table of contents; Esc does the same."
 
 [[recipe]]
 q = ["how do I copy the text of the content area", "copy what the panel says", "grab the summary text", "copy a search result"]
@@ -208,8 +208,8 @@ why = "Open the finding, then copy: its text goes to the clipboard."
 
 [[recipe]]
 q = ["how do I scroll a long finding", "read the rest of the finding", "page through the finding's evidence"]
-actions = ["finding.page_down", "finding.page_up"]
-why = "Pages the open finding's text a screen at a time."
+actions = ["finding.page_down", "finding.page_up", "finding.focus_content"]
+why = "Pages the open finding's text a screen at a time; Tab moves focus into it to scroll line by line, and Tab or Esc comes back with the finding still open."
 
 # ---- triaging a whole review
 
