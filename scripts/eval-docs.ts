@@ -38,6 +38,7 @@ export const QUESTIONS: [string, string][] = [
   ["only show me the high severity stuff", "filter.high"],
   ["take me to line 42", "go.line"],
   ["show the overview of the PR again", "ai.info"],
+  ["did they reply to what I said last round", "go.previous"],
   ["hide the sidebar so the code is wider", "view.zen"],
   ["how do I rebind a key", "review.settings"],
   ["what's the most serious problem here", "go.next_severity"],

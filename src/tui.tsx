@@ -52,6 +52,8 @@ import { configPath, parseConfig, type Config } from "./config.ts";
 import { changedBlocks, GONE_NOTE, lineChanged, REBASED_NOTE, sentence, sinceFile, sinceLabel } from "./since.ts";
 import { openSettings, saveSettings, settingsAct, settingsKey, type Out as SettingsOut, type Settings } from "./settings.ts";
 import { SettingsScreen } from "./settings-view.tsx";
+import { itemText, overviewText, prevMove, rowText, type Part, type PrevMove, type Remote } from "./previous.ts";
+import { readRemote, type RemoteDeps } from "./previous-read.ts";
 
 /**
  * `submit`: send what the submit flow chose; `hook`: the human ticked the document's on_submit command for this submit;
@@ -78,7 +80,7 @@ const SEV = { high: "red", medium: "yellow", low: "blue" } as const;
  * `body`. `finding` is the id of the finding shown: while it is set the finding is open, drawn as a short box on its line
  * (its header, its title and at most two lines of `claim`) with its whole detail here, and the action keys act on it.
  */
-type Content = { title: string; tag?: string; lead?: string; body: string; color?: string; copy?: string; finding?: string; claim?: string };
+type Content = { title: string; tag?: string; lead?: string; body: string; color?: string; copy?: string; finding?: string; claim?: string; /** An item of the previous-comments chapter: drawn from it each time, so replies read later show up. */ prev?: number; /** `body` in stretches, code kept line for line (previous.ts Part). */ parts?: Part[] };
 /**
  * `decide`: this comment carries out a block or comment action on that finding. `reason`: the optional private note of an ignore.
  * `docs`: the question typed for the offline docs search (`ask` is the one for the model); `results`: its answers, `sel` the selected one.
@@ -111,6 +113,8 @@ export type AppProps = {
   askDeps?: AskDeps;
   /** The background update check (update.ts): the footer shows what it ends with, once it does. */
   update?: Promise<string | null>;
+  /** How the previous-comments chapter reads the platform's replies (gh, an Azure Http); tests pass fakes. Unset, the real ones. */
+  remote?: RemoteDeps;
 };
 
 /** What the content area opens on: a re-review's note (`changed`: its blocks changed since), the summary, the suggested verdicts and who prepared it. `a i` shows exactly this again; null when a review has neither. */
@@ -135,7 +139,7 @@ function rereviewText(review: Review, n: number): string {
   return `${head} ${what}${s.rebased ? ` ${sentence(REBASED_NOTE)}` : ""}`;
 }
 
-export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig, resume, draft: draftAtStart, askDeps, update }: AppProps) {
+export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig, resume, draft: draftAtStart, askDeps, update, remote: remoteDeps }: AppProps) {
   const { exit } = useApp();
   const term = useTerminalSize(size);
   const cols = term.cols, rows = term.rows - 1;
@@ -204,6 +208,19 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const live = useRef<Config>(config ?? parseConfig("")).current;
   const [defaults, setDefaults] = useState<Defaults>(defaultsAtStart);
   const [blind, setBlind] = useState(blindAtStart);
+  // A re-review's previous comments (previous.ts): a chapter above the others in the table of contents. `prevAt` is
+  // the cursor in it (-1 its own row, else an item), null when the cursor is elsewhere. The platform's replies are
+  // read once the screen is up; opening never waits for them.
+  const prev = r.previous?.items.length ? r.previous : undefined;
+  const [prevAt, setPrevAt] = useState<number | null>(null);
+  const [prevCollapsed, setPrevCollapsed] = useState(false);
+  const [remote, setRemote] = useState<Remote | undefined>(undefined);
+  useEffect(() => {
+    if (!prev?.platform) return;
+    let on = true;
+    readRemote(prev, { cwd: r.repo, ...remoteDeps }).then((x) => { if (on) setRemote(x); }, () => {});
+    return () => { on = false; };
+  }, []);
 
   const item = items[pos.item];
   const hunk = item?.hunk ?? null;
@@ -226,7 +243,15 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     const body = item.mechanical ? `${MECHANICAL_INTENT}\n\nMechanical: ${item.mechanical}. Classified by rule, not by a model.` : `${chapter?.intent ? chapter.intent + "\n\n" : ""}${why}`;
     return { title: `${item.chapter + 1} · ${chapterTitle}`, body, copy: item.mechanical ? body : whyText(chapterTitle, chapter?.intent, why) };
   };
-  const view: Content | null = content ?? (tree === "toc" && mode.kind === "nav" ? chapterView() : null);
+  const inPrev = tree === "toc" && prevAt !== null && !!prev;
+  // In the previous-comments chapter: its overview on its own row, an item on an item's.
+  const prevView = (at: number): Content | null => {
+    if (!prev) return null;
+    if (at < 0) return { title: `Your previous comments · ${prev.items.length}`, color: "magenta", body: overviewText(prev, remote, { open: keyOf("toc.expand"), copy: keyOf("review.copy") }), copy: prev.items.map((i) => i.text).join("\n\n") };
+    const i = prev.items[at];
+    return i ? { ...itemText(i, at, prev, remote), color: "magenta", prev: at } : null;
+  };
+  const view: Content | null = content?.prev !== undefined ? prevView(content.prev) : content ?? (tree === "toc" && mode.kind === "nav" ? (inPrev ? prevView(prevAt!) : chapterView()) : null);
 
   // ---- the submit flow (submit-flow.ts has the rules). The send step's plan is the one submit posts from, so its
   // preview is exactly what goes out; its checkboxes are the ones this submit has.
@@ -319,15 +344,56 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const toToc = (at: Pos) => {
     const c = items[at.item]?.chapter;
     if (c !== undefined && collapsed.has(c)) setCollapsed(new Set([...collapsed].filter((x) => x !== c)));
-    setTree("toc"); setOnChapter(false); setContent(null); setPos(at);
+    setTree("toc"); setOnChapter(false); setPrevAt(null); setContent(null); setPos(at);
   };
   // One key in the table of contents (nav.ts). Every move shows the cursor's chapter in the content area; → on a block enters its code.
   const tocGo = (move: TocMove) => {
+    if (inPrev) { prevGo(move); return; }
+    // ↑ (or ⇧↑) from the first row goes up into the previous-comments chapter, at its last row (or its own).
+    if (prev && (move === "up" || move === "prev_chapter") && tocIndex(tocRows(items, collapsed), items, { item: pos.item, onChapter }) <= 0) {
+      setPrevAt(move === "up" && !prevCollapsed ? prev.items.length - 1 : -1); setContent(null); placePrev(move === "up" && !prevCollapsed ? prev.items.length - 1 : -1);
+      return;
+    }
     const res = tocMove(items, collapsed, { item: pos.item, onChapter }, move);
     if (res.enter) { setTree("code"); return; }
     setCollapsed(res.collapsed); setOnChapter(res.at.onChapter); setContent(null);
     if (res.at.item !== pos.item) setPos({ item: res.at.item, line: 0 });
   };
+  // Where an earlier comment is now, as a cursor position in the code: its line (the nearest one shown), or its file's first row.
+  const locate = (to: { path: string; line?: number; side?: "new" | "old" } | undefined): Pos | undefined => {
+    if (!to) return undefined;
+    const first = items.findIndex((x) => x.path === to.path);
+    if (first < 0) return undefined;
+    if (to.line === undefined) return fileEdge(items, first, "top");
+    if (to.side === "old") {
+      for (let i = 0; i < items.length; i++) { const k = items[i]!.path === to.path ? items[i]!.hunk.lines.findIndex((l) => l.o === to.line && l.n === null) : -1; if (k >= 0) return { item: i, line: k }; }
+    }
+    return gotoLine(items, first, to.line);
+  };
+  // The code shows where the item under the chapter's cursor is now, as the table of contents shows a block's code.
+  const placePrev = (at: number) => { const to = at >= 0 ? locate(prev?.items[at]?.to) : undefined; if (to) setPos(to); };
+  // One key in the previous-comments chapter (previous.ts prevMove): ↓ off its end goes on to the first chapter.
+  const prevGo = (move: TocMove) => {
+    if (!prev || prevAt === null) return;
+    if (move === "next_chapter") { leavePrev(); return; }
+    if (move === "prev_chapter") { setPrevAt(-1); return; }
+    const res = prevMove(prev.items.length, prevCollapsed, prevAt, move as PrevMove);
+    setPrevCollapsed(res.collapsed);
+    if (res.out) { leavePrev(); return; }
+    if (res.enter) {
+      const i = prev.items[res.at]!, to = locate(i.to);
+      if (!to) {
+        const hiddenBySince = sinceOnly && i.to && allItems.some((x) => x.path === i.to!.path);
+        setNote(i.kind === "summary" ? "a summary has no line to go to" : i.status === "file removed" ? "its file is gone at this head" : hiddenBySince ? `its block did not change since your review: ${keyOf("view.since")} shows the whole PR` : "its place is not in this PR's diff now");
+        return;
+      }
+      setTree("code"); setPrevAt(null); setPos(to); setContent({ title: "", body: "", prev: res.at });
+      return;
+    }
+    setPrevAt(res.at); placePrev(res.at);
+  };
+  const leavePrev = () => { setPrevAt(null); setOnChapter(true); setContent(null); if (items.length) setPos({ item: 0, line: 0 }); };
+
   // Where a new finding goes: the cursor's line, or the file when the cursor is on a "whole file" row.
   const spotHere = (): Spot | undefined => {
     if (!item) return undefined;
@@ -653,6 +719,11 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       case "go.top": case "go.end": { const at = fileEdge(items, pos.item, id === "go.top" ? "top" : "end"); if (at) { setTree("code"); goTo(at); } return; }
       case "go.line": { const at = n !== undefined ? gotoLine(items, pos.item, n) : undefined; if (at) { setTree("code"); setContent(null); setPos(at); } return; }
       case "go.chapter": { const at = n !== undefined ? chapterStart(items, n) : undefined; if (at) toToc(at); else setNote(`there is no chapter ${n}`); return; }
+      // The previous-comments chapter, on its own row: its overview in the content area.
+      case "go.previous":
+        if (!prev) { setNote("no previous comments: this is not a re-review (nothing you submitted on this PR was at another head)"); return; }
+        setTree("toc"); setContent(null); setPrevCollapsed(false); setPrevAt(-1);
+        return;
 
       // ---- a line being typed
       case "prompt.send": send(); return;
@@ -736,7 +807,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
 
   // The content area: one thing at a time, scrolled within its rows. A finding's title is bold above its detail.
   const leadLines = view?.lead ? wrapText(view.lead, L.contentInner) : [];
-  const contentLines = view ? [...leadLines, ...wrapText(view.body, L.contentInner)] : [];
+  const contentLines = view ? [...leadLines, ...(view.parts ? view.parts.flatMap((p, k) => [...(k ? [""] : []), ...(p.pre ? p.text.split("\n") : wrapText(p.text, L.contentInner))]) : wrapText(view.body, L.contentInner))] : [];
   const sc = clampScroll(scroll, contentLines.length, L.contentRows);
   const shownContent = contentLines.slice(sc, sc + L.contentRows);
   const focused = keyState.state === "content";
@@ -754,8 +825,11 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const heights = Array.from({ length: nRows }, (_, i) => { const l = lines[rowLine(i)]; return l ? (wrap ? rowsFor(lengthOf(spans[rowLine(i)] ?? []), codeCols) : 1) + notesAt(l).length : 1; });
   const { start, end } = windowOf(heights, line + off, Math.max(1, bodyRows - boxH));
   // The table of contents: every chapter, the blocks of the expanded ones, windowed round the cursor's row like the code.
-  const railRows = tocRows(items, collapsed);
-  const railWin = windowOf(railRows.map(() => 1), Math.max(0, tocIndex(railRows, items, { item: pos.item, onChapter: tree === "toc" && onChapter })), Math.max(1, L.middleH - 1));
+  // The previous-comments chapter's rows come first: its own row, then its items while it is expanded.
+  const prevRows = prev ? [-1, ...(prevCollapsed ? [] : prev.items.map((_, k) => k))].map((at) => ({ kind: "prev" as const, at })) : [];
+  const tocShown = tocRows(items, collapsed), railRows = [...prevRows, ...tocShown];
+  const railAt = inPrev ? prevRows.findIndex((x) => x.at === prevAt) : prevRows.length + Math.max(0, tocIndex(tocShown, items, { item: pos.item, onChapter: tree === "toc" && onChapter }));
+  const railWin = windowOf(railRows.map(() => 1), Math.max(0, railAt), Math.max(1, L.middleH - 1));
   const railShown = railRows.slice(railWin.start, railWin.end);
   const shown = Array.from({ length: Math.max(0, end - start) }, (_, k) => start + k);
   const fit = (t: string) => t.length > codeW ? t.slice(0, codeW - 1) + "…" : t;
@@ -865,11 +939,16 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
             <Box width={railW} flexDirection="column" borderStyle="single" borderRight borderTop={false} borderBottom={false} borderLeft={false} borderColor="gray" paddingRight={1}>
               <Text dimColor={tree !== "toc"} color={tree === "toc" ? "cyan" : undefined} wrap="truncate">{L.narrow ? " #" : " READ IN ORDER"}</Text>
               {railShown.map((row) => {
+                if (row.kind === "prev") {
+                  const sel = inPrev && prevAt === row.at;
+                  if (row.at < 0) return <Text key="p" color="magenta" bold={inPrev} inverse={sel} wrap="truncate">{L.narrow ? "" : " "}{prevCollapsed ? "▸" : "▾"}{L.narrow ? "P" : ` Your previous comments (${prev!.items.length})`}</Text>;
+                  return <Text key={`p${row.at}`} color={sel ? "magenta" : undefined} inverse={sel} dimColor={!sel} wrap="truncate">{L.narrow ? ` ${sel ? "›" : " "}${row.at + 1}` : `   ${sel ? "›" : " "} ${printable(rowText(prev!.items[row.at]!, row.at, prev!, remote))}`}</Text>;
+                }
                 const c = row.chapter, mine = items.filter((x) => x.chapter === c);
-                const here = item?.chapter === c, expanded = !collapsed.has(c);
+                const here = item?.chapter === c && !inPrev, expanded = !collapsed.has(c);
                 if (row.kind === "block") {
                   // While the cursor is on the chapter's row, its first block (which the code shows) is not marked as well.
-                  const x = items[row.item]!, cur = row.item === pos.item && !(tree === "toc" && onChapter), sel = cur && tree === "toc";
+                  const x = items[row.item]!, cur = row.item === pos.item && !(tree === "toc" && onChapter) && !inPrev, sel = cur && tree === "toc";
                   return <Text key={`b${row.item}`} color={cur ? "cyan" : undefined} inverse={sel} dimColor={!cur && h.visited.includes(x.id)} wrap="truncate">{L.narrow ? ` ${cur ? "›" : " "}${mine.indexOf(x) + 1}` : `   ${cur ? "›" : " "} ${printable(x.path.split("/").pop()!)}:${x.hunk.newStart}`}{mark(visible().filter((f) => f.hunk === x.id), " ▲")}{changed.has(x.id) ? <Text color="magenta"> ●</Text> : null}</Text>;
                 }
                 const title = c < d.plan.chapters.length ? d.plan.chapters[c]!.title : `Mechanical (${d.plan.mechanical.length})`;

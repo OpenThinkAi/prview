@@ -108,6 +108,11 @@ q = ["how do I go to a chapter by number", "jump to chapter 3", "open a chapter 
 actions = ["go.chapter"]
 why = "Type the chapter's number and confirm; you land on its first block."
 
+[[recipe]]
+q = ["did the author answer my comments from last time", "what happened to the comments I posted before", "show the replies to my earlier review", "were my previous comments addressed or resolved"]
+actions = ["go.previous"]
+why = "In a re-review, goes to the chapter of what your last submit posted: each item's status (unchanged, line changed, moved, file removed), the replies and whether its thread is resolved."
+
 # ---- filters
 
 [[recipe]]

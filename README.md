@@ -164,6 +164,20 @@ What you get is a full-screen review, not a diff dump:
   review is refused), a pending review gets the line comments (right side for lines in the new file, left for
   the old), whole-file comments follow one by one, then it is submitted with your verdict and comment. A failed post or command is reported, and the
   file is kept. `--dry-run` prints the API calls a submit would make and does nothing else.
+- **Re-review: your previous comments.** Reopen a PR you already submitted on after its head moved and the table of
+  contents starts with a chapter, **Your previous comments**: every item your last submit posted (line comments,
+  whole-file comments, the summary), from its kept record (a record from before ids were kept falls back to its
+  document's comments). Each has a status worked out on your machine, `unchanged`, `line changed`, `moved to L<n>`
+  (its old line followed through the diff from the head you reviewed to the new one) or `file removed`, and, once
+  the platform has been read in the background (opening never waits for it), the author's replies and whether the
+  thread is resolved: `2 replies · resolved`, or `replies unavailable (<reason>)` when the read fails. GitHub reads
+  the PR's review comments with `gh api` (replies are the comments answering yours; resolved is the review
+  thread's, through GraphQL); Azure DevOps reads the PR's threads (replies are the thread's later comments; resolved
+  is a status of fixed, closed, won't fix or by design). Moving onto an item shows your text, the code then and
+  now, and the replies (the author's text, cleaned of control characters) in the content area, and the code shows
+  where it is now; `→` goes into the code there, `y` copies the item, and `g p` comes back to the chapter. These
+  items are not carried into the new head's review as comments of yours, so nothing already posted posts again;
+  a carried comment that never posted is still yours, ticked at submit.
 - **Blind first pass.** With `blind = true` in the config (or `--blind` for a run, `--no-blind` to turn
   it off) findings stay hidden in a chapter until you have visited every hunk in it, so you read the
   code before you read the critic. The gutter shows no `▲`, `→` and `g f` find nothing there, and the
@@ -185,7 +199,7 @@ tables with your own bindings.
   closes a finding.
 - **Prefixes.** Press `a`, `f`, `v` or `g` and the key panel shows that prefix's second keys. `g 120 g` goes to (or `g 120 Enter`)
   that line of the file (the nearest line shown); `g c 3 g` to that chapter's first block. `g f`, `g h` and the
-  line jumps land in the code; `g c` lands in the table of contents. The filter (`f h`, `f m`, `f a`) is for reading:
+  line jumps land in the code; `g c` and `g p` (a re-review's previous comments) land in the table of contents. The filter (`f h`, `f m`, `f a`) is for reading:
   it shows in the status area and is kept with the review, and the submit checklist still lists every finding.
 - **Re-review.** Opening a PR you already submitted on, at a newer head, is a re-review: the status area shows
   `re-review · since <sha> <date>` (the head you last submitted at) and the blocks changed since then are marked `●`
@@ -299,6 +313,7 @@ tables with your own bindings.
 | `g g` |  | `go.top` | Go to the first line of this file's first block. |
 | `g e` |  | `go.end` | Go to the last line of this file's last block. |
 | `g <n> g` | `g <n> Enter` | `go.line` | Type a line number, then close it with the go prefix key again or Enter, to go to that line of this file, or the nearest line shown. |
+| `g p` |  | `go.previous` | In a re-review, go to the chapter of your previous comments: what your last submit posted, where each line is now, and the author's replies. |
 | `g c <n> g` | `g c <n> Enter` | `go.chapter` | Type a chapter number, then close it with the go prefix key again or Enter, to go to that chapter's first block. |
 
 <!-- keys:end -->
