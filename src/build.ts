@@ -28,6 +28,7 @@ import { reviveAsks, type Asks } from "./deep.ts";
 import { git, prSlug, remoteFor, run, type ResolveCtx, type Source } from "./pr.ts";
 import type { Http } from "./azure-auth.ts";
 import { isPR, parseRef, prIn, sourceOf } from "./registry.ts";
+import { carry, type Carried } from "./carryover.ts";
 
 export { Fail };
 /** One model call: which role, how long, what it cost where the provider reports it. */
@@ -55,7 +56,7 @@ export type Pos = { item: number; line: number };
 /** `ref` is what was asked for (a PR's canonical URL, a PR number in a review stored before URLs were, or a range), so the review can be rebuilt at a newer head. */
 /** `suggested`: the verdicts of documents imported at this head, shown in the opening summary as information only. */
 /** `asks`: the `a ?` conversations, by subject, kept on this machine only (never in the document). */
-export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; /** The severity filter (`f h`/`f m`/`f a`), kept here with the reader's place, never in the document; absent means all. */ filter?: Filter; ai?: Ai; doc: Doc; suggested?: Suggested[]; asks?: Asks };
+export type Review = { slug: string; repo: string; ref?: string; worktree: string; context: number; created: string; pos: Pos; /** The severity filter (`f h`/`f m`/`f a`), kept here with the reader's place, never in the document; absent means all. */ filter?: Filter; ai?: Ai; doc: Doc; suggested?: Suggested[]; asks?: Asks; /** Where the reader's carried-over comments came from (carryover.ts), kept with the review, never in the document. */ carried?: Carried };
 
 export const home = () => process.env.PRVIEW_HOME ?? join(homedir(), ".cache", "prview");
 const metaOf = (slug: string) => join(home(), `${slug}.json`);
@@ -204,8 +205,15 @@ function revive(j: any): Review | undefined {
     typeof v?.by === "string" && v.by && ["approve", "request_changes", "comment"].includes(v.verdict) ? [{ by: v.by.slice(0, 40), verdict: v.verdict, ...(typeof v.reason === "string" && v.reason.trim() ? { reason: v.reason.trim().slice(0, 240) } : {}) }] : []);
   try {
     const asks = reviveAsks(j.asks);
-    return { slug: j.slug, repo: j.repo, ref: j.ref ?? j.target, worktree: j.worktree, context: j.context ?? 3, created: j.created, pos: j.pos ?? { item: 0, line: 0 }, ...(filterOf(j.filter) !== "all" ? { filter: filterOf(j.filter) } : {}), ai: j.ai, doc: parseDocument(raw), ...(suggested.length ? { suggested } : {}), ...(asks ? { asks } : {}) };
+    return { slug: j.slug, repo: j.repo, ref: j.ref ?? j.target, worktree: j.worktree, context: j.context ?? 3, created: j.created, pos: j.pos ?? { item: 0, line: 0 }, ...(filterOf(j.filter) !== "all" ? { filter: filterOf(j.filter) } : {}), ai: j.ai, doc: parseDocument(raw), ...(suggested.length ? { suggested } : {}), ...(asks ? { asks } : {}), ...(carriedOf(j.carried) ? { carried: carriedOf(j.carried) } : {}) };
   } catch { return undefined; }
+}
+
+/** A stored `carried` map: post keys to commit ids, anything else dropped. */
+function carriedOf(v: unknown): Carried | undefined {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return undefined;
+  const out = Object.fromEntries(Object.entries(v).filter(([, h]) => typeof h === "string" && /^[0-9a-f]{7,64}$/.test(h)));
+  return Object.keys(out).length ? out as Carried : undefined;
 }
 
 export function load(slug: string): Review {
@@ -281,15 +289,21 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   const files = filesOf({ repo, context, doc: blank(t) });
   const prior = existsSync(metaOf(slug)) ? revive(JSON.parse(readFileSync(metaOf(slug), "utf8"))) : undefined;
   // The document is anchored on its head: while the head is the same it is reused whole (whoever
-  // produced it); once the head moves only the reader's own comments carry over.
+  // produced it); once the head moves only the reader's own comments carry over (re-anchored where their line still is,
+  // marked with the head they came from: carryover.ts), with the record of what was submitted before.
   const same = !!prior && prior.doc.target.head === t.head && !opts.fresh;
   const r: Review = { slug, repo, ref: isPR(target) ? t.url ?? target!.replace(/^#/, "") : target, worktree, context, created: new Date().toISOString(), pos: { item: 0, line: 0 }, doc: fit(blank(t), files) };
   if (same) {
     // The conversations are about blocks and findings of this head, so they carry over only while it is the same.
-    Object.assign(r, { pos: prior.pos, ...(prior.filter ? { filter: prior.filter } : {}), ai: prior.ai, doc: fit(prior.doc, files), ...(prior.suggested ? { suggested: prior.suggested } : {}), ...(prior.asks ? { asks: prior.asks } : {}) });
+    Object.assign(r, { pos: prior.pos, ...(prior.filter ? { filter: prior.filter } : {}), ai: prior.ai, doc: fit(prior.doc, files), ...(prior.suggested ? { suggested: prior.suggested } : {}), ...(prior.asks ? { asks: prior.asks } : {}), ...(prior.carried ? { carried: prior.carried } : {}) });
     say(`reusing the review document from ${prior.ai?.at.slice(0, 16).replace("T", " ") ?? "before"} (--fresh redoes it)`);
   } else {
-    if (prior) r.doc.human.comments = prior.doc.human.comments;
+    if (prior) {
+      const c = carry({ human: prior.doc.human, head: prior.doc.target.head, ...(prior.carried ? { carried: prior.carried } : {}) }, files);
+      r.doc.human.comments = c.comments;
+      if (c.comments.length) r.carried = c.carried;
+      if (prior.doc.submissions?.length) r.doc.submissions = prior.doc.submissions;
+    }
     if (models) {
       const samples = Math.max(1, Math.floor(opts.samples ?? 2));
       const { doc, errors, runs } = await guideAndCritic(t, files, worktree, models, samples, say);

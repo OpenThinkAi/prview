@@ -80,7 +80,7 @@ test("an installed copy is told from a source checkout by its path; bun's global
 });
 
 test("install argv is fixed per package manager, and refuses anything but a release version", () => {
-  expect(installArgv("bun", "0.1.4")).toEqual(["bun", "add", "-g", "@openthink/prview@0.1.4"]);
+  expect(installArgv("bun", "0.1.4")).toEqual(["bun", "add", "-g", "--no-cache", "@openthink/prview@0.1.4"]);
   expect(installArgv("npm", "0.1.4")).toEqual(["npm", "install", "-g", "@openthink/prview@0.1.4"]);
   expect(() => installArgv("npm", "0.1.4 --registry=evil")).toThrow();
 });
@@ -103,7 +103,7 @@ test("on: a newer release installs in the background with the manager that insta
   expect(existsSync(join(npm.deps.home, "update.lock"))).toBe(false); // released
   const bun = stub({ latest: "0.1.4", dir: BUN_DIR });
   await backgroundCheck(bun.deps, on);
-  expect(bun.ran).toEqual([["bun", "add", "-g", "@openthink/prview@0.1.4"]]);
+  expect(bun.ran).toEqual([["bun", "add", "-g", "--no-cache", "@openthink/prview@0.1.4"]]);
 });
 
 test("on: a failed install says so, with the installer's last line (control characters removed)", async () => {
@@ -167,7 +167,7 @@ test("the registry is untrusted: errors, bad JSON, older, pre-release and odd ve
 
 test("prview update: installs a newer release whatever the setting, printing current → new", async () => {
   const s = stub({ latest: "0.1.4", dir: BUN_DIR });
-  expect(await updateCommand(s.deps)).toEqual({ ok: true, lines: ["0.1.3 → 0.1.4: bun add -g @openthink/prview@0.1.4", "updated to 0.1.4 — restart prview to use it"] });
+  expect(await updateCommand(s.deps)).toEqual({ ok: true, lines: ["0.1.3 → 0.1.4: bun add -g --no-cache @openthink/prview@0.1.4", "updated to 0.1.4 — restart prview to use it"] });
   expect(s.ran).toHaveLength(1);
   expect(JSON.parse(readFileSync(join(s.deps.home, "update.json"), "utf8")).latest).toBe("0.1.4");
 });

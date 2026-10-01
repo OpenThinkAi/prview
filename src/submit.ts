@@ -101,7 +101,13 @@ export function planOf(r: Review, files: FileDiff[], choices: Choices = {}): Pla
  * the top-level comment (and the coverage line when chosen), each line comment on its file and line, and each comment
  * on a whole file.
  */
-export function postPreview(p: Plan, label: (v: Posting["verdict"]) => string): string {
+/**
+ * `marks`: what is known of the reader's own comments (carryover.ts): `tag` labels a comment that posts ("carried over
+ * from …", "posted … (round 1)" when ticked again), `left` counts the ones posted before and left out.
+ */
+export type Marks = { tag: (path: string, side: "new" | "old" | "file", line: number | null, text: string) => string | undefined; left: number };
+
+export function postPreview(p: Plan, label: (v: Posting["verdict"]) => string, marks?: Marks): string {
   const where = !p.platform ? "nothing is posted (the document has no platform): this is what the review records"
     : !p.adapter ? `nothing is posted (no ${p.platform} adapter yet): this is what the review records`
     : `what posts to ${p.target.url ?? p.platform}`;
@@ -113,11 +119,13 @@ export function postPreview(p: Plan, label: (v: Posting["verdict"]) => string): 
   out.push(...(body ? body.split("\n").map((l) => `  ${l}`) : ["  (none)"]));
   out.push("", `Line comments (${q.comments.length}):`);
   if (!q.comments.length) out.push("  (none)");
-  for (const c of q.comments) { out.push(`  ${c.path}:${c.line}${c.side === "old" ? " (old side)" : ""}`); out.push(...c.text.split("\n").map((l) => `    ${l}`)); }
+  const tag = (path: string, side: "new" | "old" | "file", line: number | null, text: string) => { const t = marks?.tag(path, side, line, text); return t ? ` · ${t}` : ""; };
+  for (const c of q.comments) { out.push(`  ${c.path}:${c.line}${c.side === "old" ? " (old side)" : ""}${tag(c.path, c.side, c.line, c.text)}`); out.push(...c.text.split("\n").map((l) => `    ${l}`)); }
   if (q.files?.length) {
     out.push("", `Whole-file comments (${q.files.length}):`);
-    for (const x of q.files) { out.push(`  ${x.path}`); out.push(...x.text.split("\n").map((l) => `    ${l}`)); }
+    for (const x of q.files) { out.push(`  ${x.path}${tag(x.path, "file", null, x.text)}`); out.push(...x.text.split("\n").map((l) => `    ${l}`)); }
   }
+  if (marks?.left) out.push("", `Left out: ${marks.left} of your comment${marks.left === 1 ? "" : "s"} an earlier submit already posted (unticked in step 1).`);
   return out.join("\n");
 }
 

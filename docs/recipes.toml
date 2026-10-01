@@ -230,6 +230,11 @@ q = ["how do I comment on a whole file", "leave a comment about the file rather 
 actions = ["go.top", "go.end", "code.new_finding"]
 why = "Each file's diff starts and ends with a whole-file row; go to the top or end of the file, then write a finding there. It posts as a file comment just before the review is submitted."
 
+[[recipe]]
+q = ["how do I delete my old comment", "remove a comment carried over from the last round", "my comment from before should not be posted again"]
+actions = ["code.delete_comment"]
+why = "On a line with a comment of yours that no finding owns (carried over when the head moved, say), deletes it so it is not posted. The submit checklist lists such comments too, to untick instead."
+
 # ---- help and settings
 
 [[recipe]]
