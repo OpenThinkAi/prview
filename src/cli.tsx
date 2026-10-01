@@ -50,7 +50,7 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
       1 findings: every finding with its action; block and comment ticked, ignore not (Space ticks one, a all).
         A ticked finding posts its comment on its line: yours from b/c, else the finding's text.
       2 verdict: the platform's verdicts (↑/↓), starting on what the ticks imply; suggestions shown beside it
-      3 comment: the review's top-level comment (this is where the old N summary comment went); Enter adds a
+      3 comment: the review's top-level comment (it starts with any summary comments the review has); Enter adds a
         line, Esc stops typing, then v e writes it in your editor
       4 send: exactly what posts, then checkboxes (↑/↓, Space), both off: the document's on_submit command
         (shown in full; no shell) and a line saying how much you read. Enter sends.

@@ -234,7 +234,7 @@ export function describeField(s: Settings, f: Field): { label: string; value: st
       return {
         label: f.id, value: "", changed: ch(`keys.${f.id}.primary`, `keys.${f.id}.secondary`), fixed: a.fixed,
         states: `${a.states.join(", ")}${a.prefix ? ` · ${a.prefix}` : ""}`, primary: b.primary ? shown(a, b.primary) : "(unbound)", secondary: shown(a, b.secondary),
-        description: `${a.description}${a.coming ? ` (coming: ${a.coming})` : ""}`,
+        description: a.description,
       };
     }
     case "default": return { label: f.severity, value: LABEL[s.values.defaults[f.severity]], changed: ch(`defaults.${f.severity}`), description: `The action a ${f.severity} finding starts with until you pick one (built-in: ${LABEL[DEFAULTS[f.severity]]}). Enter steps through block, comment and ignore.` };

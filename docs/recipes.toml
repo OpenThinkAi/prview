@@ -211,12 +211,24 @@ q = ["how do I scroll a long finding", "read the rest of the finding", "page thr
 actions = ["finding.page_down", "finding.page_up"]
 why = "Pages the open finding's text a screen at a time."
 
+# ---- triaging a whole review
+
+[[recipe]]
+q = ["how do I go through all the findings", "triage the findings in this review", "decide what to do with every finding", "work through the problems the model raised"]
+actions = ["filter.high", "go.next_severity", "finding.block", "finding.comment", "finding.ignore"]
+why = "Show only the high findings, walk them with next by severity, and on each choose block, comment or ignore; then widen the filter. Whatever you leave keeps its default action."
+
 # ---- your own findings
 
 [[recipe]]
-q = ["how do I leave a comment on a line", "write my own note on this code", "add my own finding on this line", "comment on a whole file"]
-actions = ["code.new_finding", "go.top", "go.end"]
-why = "Writes a finding of your own: pick a severity, then the comment. On a line it is a line comment; on a file's whole-file row (g g and g e land there) it is a comment on the whole file. It is posted as your own words at submit."
+q = ["how do I leave a comment on a line", "write my own note on this code", "add my own finding on this line"]
+actions = ["code.new_finding"]
+why = "Writes a finding of your own on the cursor line: pick a severity, then the comment. It is posted as your own words at submit."
+
+[[recipe]]
+q = ["how do I comment on a whole file", "leave a comment about the file rather than a line", "write a remark that is about the file as a whole"]
+actions = ["go.top", "go.end", "code.new_finding"]
+why = "Each file's diff starts and ends with a whole-file row; go to the top or end of the file, then write a finding there. It posts as a file comment just before the review is submitted."
 
 # ---- help and settings
 
@@ -243,6 +255,6 @@ actions = ["review.submit"]
 why = "The top-level comment is the third step of submit: several lines, or v e to write it in your editor."
 
 [[recipe]]
-q = ["how do I quit", "leave the review for now", "stop reviewing without losing my work"]
+q = ["how do I quit", "leave the review for now", "stop reviewing without losing my work", "how do I resume a review later"]
 actions = ["review.quit"]
 why = "Leaves prview; every decision so far is saved, so opening the same review later picks up where you stopped."

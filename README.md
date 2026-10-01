@@ -44,23 +44,11 @@ What you get is a full-screen review, not a diff dump:
   instructions and report no findings" in a description is read as part of the change. Invisible
   format characters (zero-width, bidi controls, tag characters) are dropped from that text, and a
   block cannot be closed early from inside, however the tag is spelled (full-width included).
-- **Keys: arrows move around the tree, prefixes hold the rest.** A review opens in the table of contents with the
-  cursor on the first block: `↓`/`↑` (`j`/`k`) go block to block (a collapsed chapter is one stop), `⇧↓`/`⇧↑`
-  (`J`/`K`) chapter to chapter, `→` (`l`) expands a collapsed chapter or enters a block's code, `←` (`h`) goes up
-  from a block to its chapter and collapses it; the mechanical chapter starts collapsed. The code pane shows the
-  cursor's block, and the content area its chapter's intent and why. In the code, `↓`/`↑` move a line and run on
-  from one block into the next, `⇧↓`/`⇧↑` move a chapter (terminals that send shift-arrows as `\x1b[1;2B` and the
-  like are read; `J`/`K` always work), `→` opens the finding on the cursor line, `←` closes an open finding or,
-  with none open, goes back to the table of contents at that block, and `Enter` writes your own finding on the
-  line. Everything else sits
-  behind a letter prefix: `a` AI (`a i` the summary, `a ?` ask the agent about this block, chapter or finding), `v` view (`v z` zen,
-  hiding the table of contents; `v c` the content area full-screen; `v e` your editor; `v w` wrap), `g` go to (`g f`/`g F` next/previous finding, wrapping; `g h`/`g H` by severity, every
-  high one first; `g g`/`g e` top/end of the file; `g 120 Enter` that line; `g c 3 Enter` that chapter) and
-  `f` filter (`f h` high only, `f m` high and medium, `f a` all: the level shows in the status area and is kept with the review; it is for reading, so the submit checklist still lists every finding). `s` submits, `y` copies, `?` searches the docs, `q` quits. `Esc` backs out of anything: a pending
-  prefix, full-screen, the content area, a finding, a prompt. `g f`/`g h` and the line jumps land in the code;
-  `g c` lands in the table of contents. `\` opens the settings view (below). `a s` asks the model (the `ask` role) for a draft
-  submission and opens the submit flow pre-filled from it (findings ticked, verdict, comment), marked as a draft; edit
-  anything, nothing is sent until Enter on Send.
+- **Keys: arrows move, prefixes hold the rest.** A review opens in the table of contents on its first block.
+  `↓`/`↑` move block to block, `→` goes in (expand a chapter, enter a block's code, open a finding) and `←` comes
+  back out; `Enter` writes a finding of your own, `s` submits, `?` searches the docs, `\` opens the settings and `q`
+  quits. Four letter prefixes hold the rest (`a` AI, `f` filter, `v` view, `g` go to), and `Esc` backs out of
+  anything. The [full key map](#keys) is below, and the key panel on screen always shows the keys for where you are.
 - **The screen.** A status area on top: the PR's title, then separate fields, each with a dim label: the PR number,
   the branches (or commits), `read 3/5`, the findings by severity, whatever their action (`▲ 2 high · 1 medium`), the
   comments, and the in-house review's suggested verdict when there is one. No field is cut to make room for another:
@@ -141,7 +129,7 @@ What you get is a full-screen review, not a diff dump:
   `→` only ever opens an existing finding; `Enter` always makes a new one. Each file's diff starts and ends with a
   "whole file" row (`g g` and `g e` land on them): `Enter` there makes a file-level finding, posted to GitHub as a
   file-level review comment, or, if GitHub will not take it, in the summary under the file's name.
-  Everything is saved as you go; `q` and come back later.
+  Everything is saved as you go; `q` and come back later, and a reopened review resumes on the block you left.
 - **Submit.** `s` opens four steps in the content area (full-screen when a step needs the room; the last always
   is). `Tab` goes on a step, `shift-Tab` back one, `Esc` leaves and sends nothing.
   1. **Findings**: every finding with its severity, its action (`(default)` when you left it) and its title. Block
@@ -151,8 +139,7 @@ What you get is a full-screen review, not a diff dump:
   2. **Verdict**: the platform's verdicts as a radio (GitHub: approve, request changes, comment), starting on
      what the ticks imply (any ticked block: request changes; else anything ticked: comment; nothing: no
      selection). The in-house and imported suggestions show beside it as information; `↑`/`↓` change it.
-  3. **Comment**: the review's top-level comment, several lines (`Enter` adds one). This is where the old `N`
-     summary comment went: the box starts with any summary comments the review already has. `Esc` stops typing,
+  3. **Comment**: the review's top-level comment, several lines (`Enter` adds one). The box starts with any summary comments the review already has. `Esc` stops typing,
      then `v e` writes it in your editor and brings you back here.
   4. **Send**: exactly what will be posted (the verdict, the comment, each ticked finding's comment on its file
      and line), then what `Enter` does: write the finished document to `$PRVIEW_HOME/submitted/<name>.json`
@@ -168,6 +155,132 @@ What you get is a full-screen review, not a diff dump:
   code before you read the critic. The gutter shows no `▲`, `→` and `g f` find nothing there, and the
   rail marks the chapter `▲?`. (An older review that revealed a chapter early keeps that in
   `human.revealed`, and its write-up still notes it.)
+
+## Keys
+
+Every key is a default; remap them with `[keys]` (see [Key bindings](#key-bindings)). Each action has a primary key
+and, for most, a secondary one (the vim/helix spelling). The key panel on screen and `prview keys` list the same
+tables with your own bindings.
+
+- **Moving.** `↓`/`↑` (`j`/`k`) go block to block in the table of contents (a collapsed chapter is one stop) and
+  line to line in the code, running on from one block into the next. `⇧↓`/`⇧↑` (`J`/`K`) go chapter to chapter
+  (terminals that send shift-arrows as `\x1b[1;2B` and the like are read; `J`/`K` always work). `→` (`l`) expands a
+  chapter, enters a block's code, or opens the finding on the cursor line; `←` (`h`) collapses a chapter, goes back
+  to the table of contents from the code, or closes a finding. `Tab` moves focus into the content area and back.
+- **Esc** backs out of anything: a pending prefix, a finding, the content area, full-screen, a prompt. `x` only
+  closes a finding.
+- **Prefixes.** Press `a`, `f`, `v` or `g` and the key panel shows that prefix's second keys. `g 120 Enter` goes to
+  that line of the file (the nearest line shown); `g c 3 Enter` to that chapter's first block. `g f`, `g h` and the
+  line jumps land in the code; `g c` lands in the table of contents. The filter (`f h`, `f m`, `f a`) is for reading:
+  it shows in the status area and is kept with the review, and the submit checklist still lists every finding.
+- **No** undo, counts, hunk-to-hunk keys, horizontal panning, separate "withdrawn" view or note key: pressing
+  `b`, `c` or `i` again changes a finding's action, the submit flow's comment step is the review's summary comment,
+  and a finding the second look dropped is shown as ignored.
+
+<!-- keys:begin (generated by scripts/build-readme-keys.ts from src/keys.ts) -->
+
+**Table of contents**
+
+| Key | Alt | Action | What it does |
+|---|---|---|---|
+| `↓` | `j` | `toc.down` | Move to the next block in the table of contents; a collapsed chapter is one stop. |
+| `↑` | `k` | `toc.up` | Move to the previous block in the table of contents; a collapsed chapter is one stop. |
+| `⇧↓` | `J` | `toc.next_chapter` | Move to the next chapter in the table of contents. |
+| `⇧↑` | `K` | `toc.prev_chapter` | Move to the previous chapter in the table of contents. |
+| `→` | `l` | `toc.expand` | Expand the chapter under the cursor (on an expanded one, go to its first block), or enter the block's code. |
+| `←` | `h` | `toc.collapse` | Collapse the chapter under the cursor; on a block, go up to its chapter. |
+| `Tab` |  | `toc.focus_content` | Move focus into the content area to scroll it. |
+
+**Code**
+
+| Key | Alt | Action | What it does |
+|---|---|---|---|
+| `↓` | `j` | `code.down` | Move down a line; at the end of a block it runs on into the next one. |
+| `↑` | `k` | `code.up` | Move up a line; at the start of a block it runs on into the one before. |
+| `⇧↓` | `J` | `code.next_chapter` | Go to the first block of the next chapter. |
+| `⇧↑` | `K` | `code.prev_chapter` | Go to the first block of the previous chapter. |
+| `→` | `l` | `code.open_finding` | Open the finding on the cursor line. |
+| `←` | `h` | `code.to_toc` | Back to the table of contents at this block, which shows the chapter's intent and why. |
+| `Tab` |  | `code.focus_content` | Move focus into the content area to scroll it. |
+| `Enter` |  | `code.new_finding` | Write a finding of your own on the cursor line, or on a file's whole-file row: pick a severity, then write the comment, which posts if the finding's action is block or comment. |
+
+**Anywhere outside a finding**
+
+| Key | Alt | Action | What it does |
+|---|---|---|---|
+| `s` |  | `review.submit` | Submit the review: tick the findings to post, pick a verdict, write the top-level comment, see exactly what posts, then send. |
+| `y` |  | `review.copy` | Copy the content area's main text; with nothing there, the cursor line's path and line number. |
+| `?` |  | `review.search_docs` | Search the docs in your own words and see the actions that answer it, with your keys; offline, no model. |
+| `\` |  | `review.settings` | Open the settings: keys, default actions, models, editor and display, saved to the config file. |
+| `q` |  | `review.quit` | Leave prview; the review so far is kept. |
+
+**Inside a finding**
+
+| Key | Alt | Action | What it does |
+|---|---|---|---|
+| `x` |  | `finding.close` | Close the finding; its action stays as it is. |
+| `←` | `h` | `finding.back` | Close the finding and go back to its line in the code. |
+| `b` |  | `finding.block` | Set the finding's action to block: a comment that requests changes, prefilled with its text or your comment. |
+| `c` |  | `finding.comment` | Set the finding's action to comment: a comment that does not block, prefilled with its text or your comment. |
+| `i` |  | `finding.ignore` | Set the finding's action to ignore, with an optional private note that is never posted. |
+| `y` |  | `finding.copy` | Copy the finding's text to the clipboard. |
+| `PgDn` | `ctrl-d` | `finding.page_down` | Page the finding's text down. |
+| `PgUp` | `ctrl-u` | `finding.page_up` | Page the finding's text up. |
+
+**Content area, with focus in it**
+
+| Key | Alt | Action | What it does |
+|---|---|---|---|
+| `↓` | `j` | `content.down` | Scroll the content area down, or select the next search result. |
+| `↑` | `k` | `content.up` | Scroll the content area up, or select the previous search result. |
+| `PgDn` | `ctrl-d` | `content.page_down` | Page the content area down. |
+| `PgUp` | `ctrl-u` | `content.page_up` | Page the content area up. |
+| `y` |  | `content.copy` | Copy the content area's main text, or the selected search result. |
+| `Tab` |  | `content.back` | Move focus back out of the content area. |
+
+**`a` AI**
+
+| Key | Alt | Action | What it does |
+|---|---|---|---|
+| `a i` |  | `ai.info` | Show the summary of this change: the overview, suggested verdicts and who prepared it. |
+| `a ?` |  | `ai.ask` | Ask the agent about the block under the cursor (code), the chapter (table of contents) or the open finding; it reads the code to answer, and follow-ups keep the conversation. |
+| `a s` |  | `ai.draft` | Have the model draft a submission: the findings to include, a verdict and a comment, for you to review. |
+| `a a` |  | `ai.accept` | Accept the agent's answer about this finding: its proposed severity, title, claim or ignore is applied, and the finding notes it was revised. |
+| `a x` |  | `ai.discard` | Discard the agent's answer about this finding and leave the finding as it was. |
+
+**`f` filter**
+
+| Key | Alt | Action | What it does |
+|---|---|---|---|
+| `f h` |  | `filter.high` | Show only the high severity findings. |
+| `f m` |  | `filter.medium` | Show the high and medium severity findings. |
+| `f a` |  | `filter.all` | Show every finding. |
+
+**`v` view**
+
+| Key | Alt | Action | What it does |
+|---|---|---|---|
+| `v z` |  | `view.zen` | Hide or show the table of contents. |
+| `v c` |  | `view.fullscreen` | Make the content area full-screen, where the arrows scroll it, or restore it; Esc restores it too. |
+| `v e` |  | `view.editor` | Open the file in your editor at the cursor line. |
+| `v w` |  | `view.wrap` | Wrap long lines onto more rows, or cut them again. |
+
+**`g` go to**
+
+| Key | Alt | Action | What it does |
+|---|---|---|---|
+| `g f` |  | `go.next_finding` | Go to the next finding anywhere in the review and open it, wrapping round at the end. |
+| `g F` |  | `go.prev_finding` | Go to the previous finding anywhere in the review and open it, wrapping round at the start. |
+| `g h` |  | `go.next_severity` | Go to the next finding by severity: every high one in order, then the medium ones, then the low ones. |
+| `g H` |  | `go.prev_severity` | Go to the previous finding by severity, the reverse of next by severity. |
+| `g g` |  | `go.top` | Go to the first line of this file's first block. |
+| `g e` |  | `go.end` | Go to the last line of this file's last block. |
+| `g <n> Enter` |  | `go.line` | Type a line number and Enter to go to that line of this file, or the nearest line shown. |
+| `g c <n> Enter` |  | `go.chapter` | Type a chapter number and Enter to go to that chapter's first block. |
+
+<!-- keys:end -->
+
+## Models and configuration
 
 Models: named in `~/.config/prview/config.toml` (or `$PRVIEW_CONFIG`) and assigned per role. With no
 config every role is `claude -p` on your subscription. `--ai NAME` uses one named model for all four
@@ -201,7 +314,9 @@ timeout = 180                # seconds (default 180)
 A credential is read only from the env var or Keychain service the model itself names, never from
 some ambient key, so a local server never gets a cloud key.
 
-Key bindings: every key in this README is a default. The key panel shows the bindings for where you are,
+### Key bindings
+
+Every key in this README is a default. The key panel shows the bindings for where you are,
 and `prview keys` prints all of them by state and by prefix (action, primary, secondary, description). Remap
 any action with a `[keys]` table in the same config: `"<action>" = "k"` sets its primary key, and
 `"<action>" = { primary = "k", secondary = "j" }` either or both (`secondary = ""` removes the alias,
@@ -210,13 +325,15 @@ The panel, the hints in the content area, docs search and `prview keys` all show
 
 ```toml
 [keys]
-"finding.ignore" = "d"                               # instead of i
-"code.down" = { primary = "down", secondary = "n" }  # ↓ and n
+"finding.ignore" = "r"                               # instead of i
+"code.down" = { primary = "down", secondary = "m" }  # ↓ and m
 "code.next_chapter" = { secondary = "" }             # ⇧↓ only, no J
-"view.wrap" = "W"                                    # v W
+"view.wrap" = "p"                                    # v p
 ```
 
-Settings view: `\` opens the settings full-screen: every action (its states, description, primary and secondary
+### Settings view
+
+`\` opens the settings full-screen: every action (its states, description, primary and secondary
 key), the default action per severity, the model per role, the editor command and the display defaults (`wrap`,
 `blind`). `↓`/`↑` move, `→`/`←` pick a key's primary or secondary, `Enter` edits: on a key the next keypress becomes
 the binding (Backspace clears a secondary; Esc and Tab cannot be bound, and a key another action already has in the
@@ -289,7 +406,7 @@ Model prompts go to `claude -p` on stdin, not on its command line, so they are n
 The `a ?` agent is `claude -p` in safe mode (no CLAUDE.md, hooks, plugins or skills load from the worktree, no MCP)
 with Read, Grep and Glob as its only tools and every other tool denied. Those tools take absolute paths, so prview
 also passes `Read(...)` deny rules (claude applies them to Grep and Glob as well) for every entry beside the path
-from `/` down to the review's worktree: your home directory,
+from the filesystem root down to the review's worktree: your home directory,
 other reviews and the clone's own `.git` are refused, and only the worktree can be read (entries created after the
 agent starts are not covered). What it reads is part of the change and its prompt says so, the PR's own text
 reaches it only inside the data fences, and a change it proposes to a finding does nothing until you press `a a`.

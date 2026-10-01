@@ -41,6 +41,19 @@ export const QUESTIONS: [string, string][] = [
   ["hide the sidebar so the code is wider", "view.zen"],
   ["how do I rebind a key", "review.settings"],
   ["what's the most serious problem here", "go.next_severity"],
+  ["only the high and medium findings please", "filter.medium"],
+  ["I want to see everything the model found again", "filter.all"],
+  ["give the code the whole screen so I can read the answer", "view.fullscreen"],
+  ["take me to the last line of this file", "go.end"],
+  ["go to chapter 3", "go.chapter"],
+  ["I want to question the model about this finding", "ai.ask"],
+  ["the model's reply about the finding was wrong, drop it", "ai.discard"],
+  ["apply what the model suggested to the finding", "ai.accept"],
+  ["have the model write my review for me", "ai.draft"],
+  ["open the preferences", "review.settings"],
+  ["look up how to do something in prview", "review.search_docs"],
+  ["fold up a chapter in the sidebar", "toc.collapse"],
+  ["I want to comment on the file as a whole, not a line", "go.top"],
 ];
 
 /** Runs every question; `rank` is 1-based, 0 when the answer is not in the top 10. */
