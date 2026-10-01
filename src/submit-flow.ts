@@ -34,6 +34,8 @@ export type Flow = {
   verdicts: Verdict[]; verdict?: Verdict; picked: boolean;
   comment: string; typing: boolean;
   hook: boolean; coverage: boolean; box: number;
+  /** Pre-filled by `a s`: marked in the step header until the reader sends or leaves. */
+  drafted?: boolean;
 };
 
 /** What `a s` drafts for the reader to review here: the findings to include, a verdict and a comment. Any part may be missing. */
@@ -55,6 +57,7 @@ export function startFlow(listed: Finding[], h: Pick<Human, "comments" | "decisi
   return {
     step: "findings", listed: ids, ticked, at: 0, verdicts, ...(verdict ? { verdict } : {}), picked: !!verdict,
     comment: draft?.comment ?? generalText(h), typing: false, hook: false, coverage: false, box: 0,
+    ...(draft ? { drafted: true } : {}),
   };
 }
 
@@ -185,7 +188,8 @@ export function stepLines(fl: Flow, s: Show): Line[] {
   const byId = new Map(s.findings.map((f) => [f.id, f]));
   switch (fl.step) {
     case "findings": {
-      const out: Line[] = [{ text: `Ticked findings post their comment on their line; the rest are left out. ${s.keys.tick} ticks one, ${s.keys.all} ticks all.`, dim: true, wrap: true }];
+      const out: Line[] = fl.drafted ? [{ text: "A draft: the ticks, the verdict and the comment are suggestions to review and change. Nothing is sent until Enter on Send.", wrap: true }] : [];
+      out.push({ text: `Ticked findings post their comment on their line; the rest are left out. ${s.keys.tick} ticks one, ${s.keys.all} ticks all.`, dim: true, wrap: true });
       if (s.note) out.push({ text: s.note, wrap: true });
       if (!fl.listed.length) out.push({ text: `No findings to include. ${s.keys.next} goes on to the verdict.` });
       fl.listed.forEach((id, i) => {

@@ -37,6 +37,7 @@ import { coverageLine, describe, planOf, postPreview, shown as shownArgv, type P
 import { clampLine, edgesOf, inputLines, ownFinding, rowKind, SEVERITIES, stepLine, type Spot } from "./rows.ts";
 import { actionOf, bySeverity, decide, decisionOf, DEFAULTS, IN_HOUSE, LABEL, linkedComment, suggestionHint, type Defaults } from "./triage.ts";
 import * as flows from "./submit-flow.ts";
+import { draftSubmission } from "./draft.ts";
 import { FLOW_STEPS, STEP_NAMES, type Box as CheckBox, type Draft, type Flow, type Selection } from "./submit-flow.ts";
 import { verdictsFor } from "./platform.ts";
 import { installKeymap, type KeyState, keyOf, rowById } from "./keys.ts";
@@ -119,7 +120,7 @@ export function summaryContent(review: Review): Content | null {
   return { title: "Summary of this change · not a finding", color: "magenta", copy: d.plan.summary || suggested, body: [d.plan.summary, suggested, preparedBy(review.ai?.runs), hint].filter(Boolean).join("\n\n") };
 }
 
-export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig, resume, draft, askDeps }: AppProps) {
+export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig, resume, draft: draftAtStart, askDeps }: AppProps) {
   const { exit } = useApp();
   const term = useTerminalSize(size);
   const cols = term.cols, rows = term.rows - 1;
@@ -154,6 +155,8 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const [, tick] = useState(0);
   const setPending = (p: Pending | null) => { if (p !== pendingRef.current) { pendingRef.current = p; tick((n) => n + 1); } };
   const [busy, setBusy] = useState<string | null>(null);
+  // A drafted submission (`a s`) waits here for the submit flow to start from it.
+  const [draft, setDraft] = useState<Draft | undefined>(draftAtStart);
   // An `a ?` run in progress: Esc cancels it (the only key that does anything while it runs).
   const abortRef = useRef<AbortController | null>(null);
   // Long lines are cut with an ellipsis, or wrap onto more rows (v w).
@@ -620,8 +623,28 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       case "filter.all": setFilter("all"); return;
 
       // ---- keys whose behaviour comes with a later change: each says so
-      case "ai.draft":
-        coming(id); return;
+      // `a s`: one call to the ask role over every finding (the filter is for reading, not for what gets posted), then the
+      // submit flow opens pre-filled from the reply. The reader reviews and edits it; nothing is sent from here.
+      case "ai.draft": {
+        const ctl = new AbortController();
+        abortRef.current = ctl;
+        setBusy("drafting a submission…"); setScroll(0);
+        const verdicts = verdictsFor(d.target.platform);
+        const call = askDeps?.call ? { call: askDeps.call } : {};
+        const deps = { ...(askDeps?.cfg ? { cfg: askDeps.cfg } : {}), ...(askDeps?.lookups ? { lookups: askDeps.lookups } : {}), ...call };
+        const asked = draftSubmission(r, unfiltered(), verdicts, defaults, deps);
+        // Esc stops waiting; the call itself cannot be interrupted, and its reply is dropped.
+        const stopped = new Promise<never>((_, no) => ctl.signal.addEventListener("abort", () => no(new Error("cancelled"))));
+        Promise.race([asked, stopped]).then((dr) => {
+          save(r);
+          setDraft(dr);
+          setContent(null); setMode({ kind: "submit", flow: flows.startFlow(unfiltered(), h, verdicts, defaults, dr) });
+        }, (e) => {
+          setNote(ctl.signal.aborted ? "Cancelled; no draft was made." : `Drafting failed: ${String((e as Error).message)}`);
+        }).finally(() => { abortRef.current = null; setBusy(null); });
+        asked.catch(() => {});
+        return;
+      }
     }
   };
 
@@ -737,7 +760,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
         const top = fl.step === "send" ? clampScroll(scroll, ls.length, L.contentRows) : Math.max(0, Math.min(Math.max(0, ls.length - L.contentRows), focus - Math.floor(L.contentRows / 2)));
         const more = ls.length > L.contentRows;
         return <>
-          <Text wrap="truncate"><Text bold color="green">Submit</Text>{FLOW_STEPS.map((st, i) => <Text key={st} dimColor={st !== fl.step} bold={st === fl.step} color={st === fl.step ? "green" : undefined}>{i ? " › " : " · "}{i + 1} {STEP_NAMES[st]}</Text>)}{dryRun ? <Text color="yellow"> · dry run</Text> : null}{more ? <Text dimColor> · {top + 1}-{Math.min(ls.length, top + L.contentRows)}/{ls.length}</Text> : null}</Text>
+          <Text wrap="truncate"><Text bold color="green">Submit</Text>{FLOW_STEPS.map((st, i) => <Text key={st} dimColor={st !== fl.step} bold={st === fl.step} color={st === fl.step ? "green" : undefined}>{i ? " › " : " · "}{i + 1} {STEP_NAMES[st]}</Text>)}{fl.drafted ? <Text color="magenta"> · draft</Text> : null}{dryRun ? <Text color="yellow"> · dry run</Text> : null}{more ? <Text dimColor> · {top + 1}-{Math.min(ls.length, top + L.contentRows)}/{ls.length}</Text> : null}</Text>
           {ls.slice(top, top + L.contentRows).map((l, j) => <Text key={j} wrap="truncate" inverse={l.cursor && fl.step !== "comment"} bold={l.head} dimColor={l.dim} color={l.on ? "green" : undefined}>{l.text || " "}{l.cursor && fl.step === "comment" ? <Text inverse> </Text> : null}</Text>)}
         </>;
       }

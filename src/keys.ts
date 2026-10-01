@@ -118,7 +118,7 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   // ---- a: AI
   { id: "ai.info", states: OUTSIDE, prefix: "a", key: "i", label: "info", description: "Show the summary of this change: the overview, suggested verdicts and who prepared it." },
   { id: "ai.ask", states: READING, prefix: "a", key: "?", label: "ask", description: "Ask the agent about the block under the cursor (code), the chapter (table of contents) or the open finding; it reads the code to answer, and follow-ups keep the conversation." },
-  { id: "ai.draft", states: OUTSIDE, prefix: "a", key: "s", label: "draft submission", description: "Have the model draft a submission: the findings to include, a verdict and a comment, for you to review.", coming: "drafted submissions" },
+  { id: "ai.draft", states: OUTSIDE, prefix: "a", key: "s", label: "draft submission", description: "Have the model draft a submission: the findings to include, a verdict and a comment, for you to review." },
   { id: "ai.accept", states: FINDING, needs: "answer", prefix: "a", key: "a", label: "accept answer", description: "Accept the agent's answer about this finding: its proposed severity, title, claim or ignore is applied, and the finding notes it was revised." },
   { id: "ai.discard", states: FINDING, needs: "answer", prefix: "a", key: "x", label: "discard answer", description: "Discard the agent's answer about this finding and leave the finding as it was." },
 
