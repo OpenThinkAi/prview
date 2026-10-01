@@ -148,7 +148,7 @@
                   "type": "object",
                   "required": ["kind", "text"],
                   "properties": {
-                    "kind": { "enum": ["line", "file", "summary"] },
+                    "kind": { "enum": ["line", "file", "summary", "reply", "resolve"], "description": "reply and resolve: a re-review's answer on an earlier thread (path, line and side are the comment answered; a resolve's text is empty)" },
                     "path": { "type": "string" },
                     "line": { "type": "integer", "minimum": 1 },
                     "side": { "enum": ["new", "old"] },
@@ -156,7 +156,9 @@
                     "review_id": { "type": "integer", "description": "GitHub: the review a line comment or the summary is part of" },
                     "comment_id": { "type": "integer", "description": "GitHub: the review comment or whole-file comment; Azure DevOps: the thread's first comment" },
                     "node_id": { "type": "string", "description": "GitHub: the comment's GraphQL node id" },
-                    "thread_id": { "type": "integer", "description": "Azure DevOps: the thread" }
+                    "thread_id": { "type": "integer", "description": "Azure DevOps: the thread" },
+                    "reply_to": { "type": "integer", "description": "a reply: the id of the comment it answers (GitHub the review comment; Azure DevOps the thread's first comment)" },
+                    "thread_node_id": { "type": "string", "description": "a resolve on GitHub: the review thread's GraphQL node id" }
                   }
                 }
               }

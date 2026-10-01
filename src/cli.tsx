@@ -86,6 +86,8 @@ const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head
       y copies it. They are not carried over as your comments, so they never post again. A comment of yours that never
       posted does carry over (ticked, labelled); x deletes it. Rebased away? The diff is still old head to new head.
       Replies are unavailable (with the reason shown) when the platform cannot be read. README: Re-review.
+      On one, r writes a reply (your words) and R marks its thread resolved: both are queued and go out with your
+      next submit, before the new review (listed under "Earlier threads" in its checklist and send step).
     Findings are high, medium or low severity, and each has an action: block, comment or ignore. Until you pick
     one it is its severity's default ([defaults] in the config: high = "block", medium and low = "comment"), shown
     as "(default)"; a finding the second look (refute) dropped is shown too, ignored by default, with its reason.

@@ -113,6 +113,16 @@ q = ["did the author answer my comments from last time", "what happened to the c
 actions = ["go.previous"]
 why = "In a re-review, goes to the chapter of what your last submit posted: each item's status (unchanged, line changed, moved, file removed), the replies and whether its thread is resolved."
 
+[[recipe]]
+q = ["how do I answer the author's reply to my comment", "respond to a thread from my last review", "write back on an earlier comment thread", "reply to the author on my old comment"]
+actions = ["review.reply"]
+why = "In a re-review, on one of your previous comments: writes a reply in your own words, queued and sent with your next submit before the new review; using it again edits it."
+
+[[recipe]]
+q = ["how do I resolve my earlier comment", "mark a thread as resolved now that it is fixed", "close the conversation on my old comment", "the author fixed it, resolve the thread"]
+actions = ["review.resolve"]
+why = "In a re-review, on one of your previous comments: marks its thread resolved (fixed on Azure DevOps) with your next submit, before the new review; using it again undoes it."
+
 # ---- filters
 
 [[recipe]]

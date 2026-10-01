@@ -229,6 +229,8 @@ tables with your own bindings.
 | `?` |  | `review.search_docs` | Search the docs in your own words and see the actions that answer it, with your keys; offline, no model. |
 | `\` |  | `review.settings` | Open the settings: keys, default actions, models, editor and display, saved to the config file. |
 | `q` |  | `review.quit` | Leave prview; the review so far is kept. |
+| `r` |  | `review.reply` | In a re-review, on one of your previous comments: write a reply to its thread in your own words, sent with your next submit before the new review; using it again edits the reply, and an empty one removes it. |
+| `R` |  | `review.resolve` | In a re-review, on one of your previous comments: mark its thread resolved (fixed on Azure DevOps) with your next submit, before the new review; using it again undoes that. |
 
 **Inside a finding**
 
@@ -336,7 +338,21 @@ comments; resolved is a status of fixed, closed, won't fix or by design). Replie
 control characters. When it cannot be read, the item says `replies unavailable (<reason>)` and the local status
 still shows: you are offline, `gh` or your Azure credential fails, the submit was a local range with no platform
 (`not on this platform yet`), or the PR's URL is not one prview reads. A submission made before platform ids were
-kept is matched to the thread by path, line and text. Replying and resolving from prview are not built yet.
+kept is matched to the thread by path, line and text. To answer them, see "Answer earlier threads" below.
+
+**Answer earlier threads (`r`, `R`).** On an item of the chapter (or in the code after `→` from one), `r` writes a
+reply in your own words and `R` marks its thread resolved. Neither goes out at once: both are queued with the review
+(`r` again edits the reply, empty removes it; `R` again undoes the resolve) and sent with your next submit,
+**before** the new review's comments. The submit checklist lists them under "Earlier threads", ticked (untick one to
+keep it for later), and the send step shows them first. GitHub: a reply to the review comment, and the review thread
+resolved through GraphQL (`resolveReviewThread`, the thread found from the comment). Azure DevOps: a comment on the
+thread under your first comment, and the thread's status set to `fixed`. A failure stops there, says what already
+went out, and posts no review, verdict or vote after it. Your reply passes the same posted-text check as any comment;
+with a comment verdict and nothing else to say, only the earlier threads go out (and that submit does not replace
+the one the chapter reads). On GitHub the summary is the review's body, which has no thread to answer; an item
+recorded before ids were kept can be answered only once the background read has found its thread, and a local range
+has no platform to answer on. Each reply and resolve is recorded in the submission (`posted.items`, kinds `reply`
+and `resolve`, with ids). `--dry-run` prints the calls.
 
 **What carries over.**
 - What your last submit posted lives in the chapter, and is not a comment of yours at the new head: nothing already

@@ -47,10 +47,17 @@ export type OnSubmit = { run: string[] };
  * a line comment, a whole-file comment, or the summary (the review body on GitHub, a PR-level thread on Azure DevOps).
  * GitHub: `review_id` (the review a line comment or the summary is part of), `comment_id` and `node_id` (the review
  * comment, or the whole-file comment). Azure DevOps: `thread_id` and `comment_id` (the thread's first comment).
+ *
+ * A re-review also answers earlier threads (earlier.ts): a `reply` (its `text` the reader's words; `path`, `line` and
+ * `side` where the comment it answers was; `reply_to` that comment's id; `comment_id`/`node_id` the reply's own on GitHub,
+ * `thread_id`/`comment_id` on Azure DevOps) and a `resolve` (`text` empty; GitHub: `comment_id` the thread's first
+ * comment and `thread_node_id` the review thread's GraphQL id; Azure DevOps: `thread_id`, set to fixed).
  */
 export type PostedItem = {
-  kind: "line" | "file" | "summary"; path?: string; line?: number; side?: "new" | "old"; text: string;
+  kind: "line" | "file" | "summary" | "reply" | "resolve"; path?: string; line?: number; side?: "new" | "old"; text: string;
   review_id?: number; comment_id?: number; node_id?: string; thread_id?: number;
+  /** A reply: the id of the comment it answers. */ reply_to?: number;
+  /** A resolve on GitHub: the review thread's GraphQL node id. */ thread_node_id?: string;
 };
 /** A post that failed part way: `items` is what had already reached the PR (and stays there), with its ids. */
 export class PostError extends Error {
@@ -205,7 +212,7 @@ export function splitArgs(s: string): string[] | null {
 
 /** A platform id as stored: a positive whole number, else nothing. */
 const idOf = (v: unknown): number | undefined => typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : undefined;
-const KINDS_POSTED = new Set(["line", "file", "summary"]);
+const KINDS_POSTED = new Set(["line", "file", "summary", "reply", "resolve"]);
 
 function postedItemOf(x: Obj): PostedItem[] {
   if (!KINDS_POSTED.has(x.kind as string) || typeof x.text !== "string") return [];
@@ -213,8 +220,8 @@ function postedItemOf(x: Obj): PostedItem[] {
   if (str(x.path, 1000)) item.path = str(x.path, 1000);
   if (Number.isInteger(x.line) && (x.line as number) > 0) item.line = x.line as number;
   if (x.side === "new" || x.side === "old") item.side = x.side;
-  for (const k of ["review_id", "comment_id", "thread_id"] as const) { const id = idOf(x[k]); if (id) item[k] = id; }
-  if (str(x.node_id, 200)) item.node_id = str(x.node_id, 200);
+  for (const k of ["review_id", "comment_id", "thread_id", "reply_to"] as const) { const id = idOf(x[k]); if (id) item[k] = id; }
+  for (const k of ["node_id", "thread_node_id"] as const) if (str(x[k], 200)) item[k] = str(x[k], 200);
   return [item];
 }
 

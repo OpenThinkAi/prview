@@ -22,6 +22,7 @@ import { PostError, type Doc, type Human, type Submission, type Target } from ".
 import { freshStamp, historyDir, submittedDir } from "./history.ts";
 import { adapterFor, postingOf, spawn, type Adapter, type Posting, type Runner } from "./platform.ts";
 import { applySelection, type Selection } from "./submit-flow.ts";
+import { afterSubmit, earlierPosts } from "./earlier.ts";
 import type { Defaults } from "./triage.ts";
 
 export const HOOK_TIMEOUT_MS = 60_000;
@@ -92,7 +93,10 @@ export function planOf(r: Review, files: FileDiff[], choices: Choices = {}): Pla
   const d = r.doc, platform = d.target.platform, adapter = adapterFor(platform);
   const human = choices.selection ? applySelection(d.human, d.findings, choices.selection, choices.defaults, choices.at) : d.human;
   const paths = new Map(hunksOf(files).map((h) => [h.id, h.file.path]));
+  // A re-review's replies and resolves on earlier threads (earlier.ts), the ticked ones: they go out first.
+  const earlier = earlierPosts(r.earlier, choices.selection);
   const posting = human.verdict ? postingOf(human.verdict, human.comments, (id) => paths.get(id), { coverage: choices.coverage ? coverageLine(d, files) : undefined }) : undefined;
+  if (posting && earlier.length) posting.earlier = earlier;
   return { file, md, hookFile, target: d.target, platform, adapter, posting, human, ...(d.on_submit ? { hook: hookOf(d.on_submit.run, hookFile, r.worktree) } : {}) };
 }
 
@@ -114,6 +118,15 @@ export function postPreview(p: Plan, label: (v: Posting["verdict"]) => string, m
   const out = [`── ${where[0]!.toUpperCase()}${where.slice(1)}`, ""];
   const q = p.posting;
   if (!q) return [...out, "No verdict yet."].join("\n");
+  // Sent first, so listed first: what answers the threads of your last submit.
+  if (q.earlier?.length) {
+    out.push(`Earlier threads (${q.earlier.length}, sent first, before the review):`);
+    for (const e of q.earlier) {
+      if (e.kind === "resolve") { out.push(`  resolve ${e.place}`); continue; }
+      out.push(`  reply to ${e.place}`, ...e.text.split("\n").map((l) => `    ${l}`));
+    }
+    out.push("");
+  }
   out.push(`Verdict: ${label(q.verdict)}`, "", "Comment:");
   const body = [q.body, q.coverage].filter(Boolean).join("\n\n");
   out.push(...(body ? body.split("\n").map((l) => `  ${l}`) : ["  (none)"]));
@@ -206,11 +219,14 @@ export async function submit(r: Review, files: FileDiff[], opts: Choices & { all
       const { url, review_id, items } = await p.adapter.post(d.target, p.posting!, opts.run ?? spawn, r.worktree);
       sub.posted = { platform: p.adapter.platform, ok: true, ...(url ? { url } : {}), ...(review_id ? { review_id } : {}), ...(items?.length ? { items } : {}) };
       parts.push(`posted to ${url ?? p.platform}`);
+      // What went out on earlier threads leaves the queue; an unticked one stays for the next submit.
+      if (p.posting?.earlier) { const q = afterSubmit(r.earlier, p.posting.earlier, items ?? []); if (q) r.earlier = q; else delete r.earlier; }
     } catch (e) {
       const error = (e as Error).message;
       // A partial failure still records what reached the PR, with its ids: a re-review finds those comments too.
       const items = e instanceof PostError ? e.items : [];
       sub.posted = { platform: p.adapter.platform, ok: false, error, ...(items.length ? { items } : {}) };
+      if (p.posting?.earlier) { const q = afterSubmit(r.earlier, p.posting.earlier, items); if (q) r.earlier = q; else delete r.earlier; }
       parts.push(`NOT posted to ${p.platform}: ${error}`); ok = false;
     }
   }

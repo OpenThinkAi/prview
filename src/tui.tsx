@@ -52,7 +52,8 @@ import { configPath, parseConfig, type Config } from "./config.ts";
 import { changedBlocks, GONE_NOTE, lineChanged, REBASED_NOTE, sentence, sinceFile, sinceLabel } from "./since.ts";
 import { openSettings, saveSettings, settingsAct, settingsKey, type Out as SettingsOut, type Settings } from "./settings.ts";
 import { SettingsScreen } from "./settings-view.tsx";
-import { itemText, overviewText, prevMove, rowText, type Part, type PrevMove, type Remote } from "./previous.ts";
+import { itemKey, itemText, overviewText, placeOf, prevMove, rowText, type Part, type PrevMove, type Remote } from "./previous.ts";
+import { actOf, queuedText, setReply, threadOf, toggleResolve } from "./earlier.ts";
 import { readRemote, type RemoteDeps } from "./previous-read.ts";
 
 /**
@@ -85,7 +86,7 @@ type Content = { title: string; tag?: string; lead?: string; body: string; color
  * `decide`: this comment carries out a block or comment action on that finding. `reason`: the optional private note of an ignore.
  * `docs`: the question typed for the offline docs search (`ask` is the one for the model); `results`: its answers, `sel` the selected one.
  */
-type Mode = { kind: "nav" } | { kind: "comment"; decide?: { id: string; kind: "block" | "comment" } } | { kind: "severity"; sel: number; spot: Spot } | { kind: "finding"; severity: Severity; spot: Spot } | { kind: "reason"; id: string } | { kind: "ask"; subject: Subject } | { kind: "docs" } | { kind: "results"; query: string; answers: Answer[]; sel: number } | { kind: "submit"; flow: Flow };
+type Mode = { kind: "nav" } | { kind: "comment"; decide?: { id: string; kind: "block" | "comment" } } | { kind: "severity"; sel: number; spot: Spot } | { kind: "finding"; severity: Severity; spot: Spot } | { kind: "reason"; id: string } | { kind: "ask"; subject: Subject } | { kind: "docs" } | { kind: "results"; query: string; answers: Answer[]; sel: number } | { kind: "submit"; flow: Flow } | { kind: "reply"; at: number };
 
 export type AppProps = {
   review: Review; files: FileDiff[]; onDone: (o: Outcome) => void;
@@ -157,7 +158,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   // submit checklist lists those beside the findings and the code labels them (carryover.ts).
   const earlier = useMemo(() => postedBefore(r.slug, d), []);
   const ownNow = (): Own[] => ownComments(h, d.findings.map((f) => f.id), earlier, r.carried);
-  const carryNow = (): flows.Carry => ({ own: ownNow(), postedSummaries: postedSummaries(h, earlier) });
+  const carryNow = (): flows.Carry => ({ own: ownNow(), postedSummaries: postedSummaries(h, earlier), ...(r.earlier ? { earlier: r.earlier } : {}) });
   const [, bump] = useState(0);
   const redraw = () => { save(r); bump((n) => n + 1); };
   const [pos, setPosRaw] = useState<Pos>(() => ({ item: Math.min(r.pos.item, Math.max(0, items.length - 1)), line: r.pos.line }));
@@ -247,10 +248,18 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   // In the previous-comments chapter: its overview on its own row, an item on an item's.
   const prevView = (at: number): Content | null => {
     if (!prev) return null;
-    if (at < 0) return { title: `Your previous comments · ${prev.items.length}`, color: "magenta", body: overviewText(prev, remote, { open: keyOf("toc.expand"), copy: keyOf("review.copy") }), copy: prev.items.map((i) => i.text).join("\n\n") };
+    if (at < 0) return { title: `Your previous comments · ${prev.items.length}`, color: "magenta", body: overviewText(prev, remote, { open: keyOf("toc.expand"), copy: keyOf("review.copy"), reply: keyOf("review.reply"), resolve: keyOf("review.resolve") }), copy: prev.items.map((i) => i.text).join("\n\n") };
     const i = prev.items[at];
-    return i ? { ...itemText(i, at, prev, remote), color: "magenta", prev: at } : null;
+    if (!i) return null;
+    const a = queuedOn(at);
+    return { ...itemText(i, at, prev, remote, { ...(a?.reply !== undefined ? { reply: a.reply } : {}), ...(a?.resolve ? { resolve: true } : {}), keys: { reply: keyOf("review.reply"), resolve: keyOf("review.resolve") } }), color: "magenta", prev: at };
   };
+  // Replies and resolves on earlier threads (earlier.ts): queued with the review for the next submit, per item.
+  const queuedOn = (at: number) => { const i = prev?.items[at]; return i && r.earlier?.head === prev!.head ? actOf(r.earlier, itemKey(i)) : undefined; };
+  // The item the reply and resolve keys act on: the chapter's cursor on one, or the code showing one (→ from it).
+  const prevItemAt: number | undefined = !prev ? undefined : tree === "toc" && prevAt !== null && prevAt >= 0 ? prevAt : tree === "code" && content?.prev !== undefined ? content.prev : undefined;
+  // Its thread on the platform (its recorded ids, else the read's match), or why there is none.
+  const threadAt = (at: number, what: "reply to" | "resolve") => threadOf(prev!.items[at]!, remote?.ok ? remote.threads[at] : undefined, prev!.platform, !remote ? "pending" : remote.ok ? "ok" : "failed", what);
   const view: Content | null = content?.prev !== undefined ? prevView(content.prev) : content ?? (tree === "toc" && mode.kind === "nav" ? (inPrev ? prevView(prevAt!) : chapterView()) : null);
 
   // ---- the submit flow (submit-flow.ts has the rules). The send step's plan is the one submit posts from, so its
@@ -299,7 +308,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
     : mode.kind === "results" ? { state: "content", results: true }
     : mode.kind !== "nav" ? { state: "prompt", kind: mode.kind, decide: mode.kind === "comment" && !!mode.decide }
     : (full || focus === "content") && view ? { state: "content" }
-    : content?.finding ? { state: "finding", answer: !!pendingTurn(r.asks, content.finding) } : tree === "code" ? { state: "code", comment: ownHere().length > 0, since: !!since } : { state: tree, since: !!since };
+    : content?.finding ? { state: "finding", answer: !!pendingTurn(r.asks, content.finding) } : tree === "code" ? { state: "code", comment: ownHere().length > 0, since: !!since, previous: prevItemAt !== undefined } : { state: tree, since: !!since, previous: prevItemAt !== undefined };
 
   // Blind: what the critic found is not shown, counted or reachable until the chapter has been read. Everything below that
   // draws or steps through a finding goes through `unhidden`, so the gate cannot be bypassed by one key.
@@ -547,6 +556,18 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       try { showResults(text, answersFor(text), 0); } catch (e) { setMode({ kind: "nav" }); setContent({ title: "search the docs failed", body: String((e as Error).message), color: "red" }); }
       return;
     }
+    if (mode.kind === "reply") {
+      // Your own words, queued with the review; an emptied reply removes the queued one. Posted text is checked at submit.
+      const i = prev?.items[mode.at], t = i ? threadAt(mode.at, "reply to") : undefined;
+      setMode({ kind: "nav" }); setInput("");
+      if (!i || !t || "why" in t) { if (t && "why" in t) setNote(t.why); return; }
+      const had = queuedOn(mode.at)?.reply !== undefined;
+      const q = setReply(r.earlier, prev!.head, i, itemKey(i), t.ids, input);
+      if (q) r.earlier = q; else delete r.earlier;
+      redraw();
+      setNote(text ? `reply queued: it is sent with your next submit (${keyOf("review.submit")}), before the new review` : had ? "reply removed" : "an empty reply is not queued");
+      return;
+    }
     if (mode.kind === "finding") {
       // An emptied comment makes no finding; the prompt stays open.
       if (!text) { setNote("a finding needs its comment; Esc cancels"); return; }
@@ -600,6 +621,26 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       case "review.copy": case "finding.copy": case "content.copy": copy(); return;
       case "review.search_docs": setMode({ kind: "docs" }); setInput(""); return;
       case "review.settings": setSettings(openSettings(live, configPath())); return;
+      // ---- an item of a re-review's previous comments: a reply (a prompt, prefilled with the queued one) and a resolve.
+      case "review.reply": {
+        if (prevItemAt === undefined) return;
+        const t = threadAt(prevItemAt, "reply to");
+        if ("why" in t) { setNote(t.why); return; }
+        setMode({ kind: "reply", at: prevItemAt }); setInput(queuedOn(prevItemAt)?.reply ?? "");
+        return;
+      }
+      case "review.resolve": {
+        if (prevItemAt === undefined) return;
+        const at = prevItemAt, i = prev!.items[at]!, t = threadAt(at, "resolve");
+        if ("why" in t) { setNote(t.why); return; }
+        const was = !!queuedOn(at)?.resolve;
+        if (!was && remote?.ok && remote.threads[at]?.resolved) { setNote("its thread is already resolved on the PR"); return; }
+        const q = toggleResolve(r.earlier, prev!.head, i, itemKey(i), t.ids);
+        if (q) r.earlier = q; else delete r.earlier;
+        redraw();
+        setNote(was ? "resolve removed: the thread is left as it is" : `resolve queued: the thread is resolved with your next submit (${keyOf("review.submit")}), before the new review`);
+        return;
+      }
 
       // ---- the settings view
       case "settings.down": case "settings.up": case "settings.right": case "settings.left": case "settings.edit": case "settings.clear": case "settings.leave":
@@ -885,6 +926,8 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       }
       // A comment on a finding can run to several lines too (one saved with a new line in it comes back prefilled).
       case "comment": return typed(`${mode.decide?.kind === "block" ? "Block on" : "Comment on"} the finding`, mode.decide?.kind === "block" ? "block on it" : "comment on the finding", `Enter saves · ${keyOf("prompt.newline")} new line.`);
+      // A reply to an earlier thread: your words, queued for the next submit.
+      case "reply": { const i = prev?.items[mode.at]; return typed(`Reply to your comment on ${printable(i ? placeOf(i) : "")}`, "reply", `Enter queues it for your next submit (sent before the new review); empty removes it · ${keyOf("prompt.newline")} new line.`); }
       case "reason": case "ask": case "docs": {
         const label = mode.kind === "docs" ? "search the docs" : mode.kind === "ask" ? "ask" : "ignore · private note";
         const earlier = mode.kind === "ask" ? (r.asks?.[subjectKey(mode.subject)] ?? []).filter((t) => t.outcome !== "discarded").length : 0;
@@ -942,7 +985,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
                 if (row.kind === "prev") {
                   const sel = inPrev && prevAt === row.at;
                   if (row.at < 0) return <Text key="p" color="magenta" bold={inPrev} inverse={sel} wrap="truncate">{L.narrow ? "" : " "}{prevCollapsed ? "▸" : "▾"}{L.narrow ? "P" : ` Your previous comments (${prev!.items.length})`}</Text>;
-                  return <Text key={`p${row.at}`} color={sel ? "magenta" : undefined} inverse={sel} dimColor={!sel} wrap="truncate">{L.narrow ? ` ${sel ? "›" : " "}${row.at + 1}` : `   ${sel ? "›" : " "} ${printable(rowText(prev!.items[row.at]!, row.at, prev!, remote))}`}</Text>;
+                  return <Text key={`p${row.at}`} color={sel ? "magenta" : undefined} inverse={sel} dimColor={!sel} wrap="truncate">{L.narrow ? ` ${sel ? "›" : " "}${row.at + 1}` : `   ${sel ? "›" : " "} ${printable(rowText(prev!.items[row.at]!, row.at, prev!, remote, queuedText(queuedOn(row.at))))}`}</Text>;
                 }
                 const c = row.chapter, mine = items.filter((x) => x.chapter === c);
                 const here = item?.chapter === c && !inPrev, expanded = !collapsed.has(c);

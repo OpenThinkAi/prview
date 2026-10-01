@@ -49,7 +49,12 @@ export type PrevItem = PostedItem & { status?: Status; to?: { path: string; line
 export type Previous = { head: string; at: string; round: number; url?: string; platform?: string; items: PrevItem[]; note?: string };
 
 /** Did this kept submission reach the PR (or, with no platform, was it written as the review)? A post that failed with nothing through did not. */
-const reached = (s: Submitted): boolean => !!s.submission?.posted?.items?.length || !!s.submission?.posted?.ok || !s.submission?.posted;
+const reached = (s: Submitted): boolean => {
+  const items = s.submission?.posted?.items ?? [];
+  // A submit that only answered earlier threads (earlier.ts) posted no comments of its own: the chapter stays on the one before.
+  if (items.length && items.every((i) => i.kind === "reply" || i.kind === "resolve")) return false;
+  return !!items.length || !!s.submission?.posted?.ok || !s.submission?.posted;
+};
 
 /** The latest submission that reached the PR, from a newest-first list (history.ts submissionsFor), and which round it was. */
 export function lastReached(subs: Submitted[]): { sub: Submitted; round: number } | undefined {
@@ -59,7 +64,8 @@ export function lastReached(subs: Submitted[]): { sub: Submitted; round: number 
 
 /** What a submission posted: its record's items, else (a record from before them) its document's comments. */
 export function itemsOf(s: Submitted): PrevItem[] {
-  const items = s.submission?.posted?.items;
+  // Replies and resolves a submit sent on earlier threads (earlier.ts) are answers, not comments of this chapter.
+  const items = s.submission?.posted?.items?.filter((i) => i.kind !== "reply" && i.kind !== "resolve");
   if (items?.length) return items.map((i) => ({ ...i }));
   return s.doc.human.comments.map((c): PrevItem => c.hunk === null
     ? { kind: "summary", text: c.text }
@@ -105,8 +111,12 @@ export function statusText(i: PrevItem): string {
 
 /** A reply on an earlier comment's thread: who, when, what (cleaned: it is the author's text, untrusted). */
 export type Reply = { author: string; at: string; text: string };
-/** What the platform says about one item: `found` it on the PR, its replies, and whether its thread is resolved (undefined: not known). */
-export type Thread = { found: boolean; replies: Reply[]; resolved?: boolean };
+/**
+ * What the platform says about one item: `found` it on the PR, its replies, and whether its thread is resolved (undefined:
+ * not known). `ids`: the thread as found (GitHub its first comment's id and node id; Azure DevOps the thread and its
+ * first comment), which a reply or resolve uses when the submission record has none (earlier.ts).
+ */
+export type Thread = { found: boolean; replies: Reply[]; resolved?: boolean; ids?: Pick<PostedItem, "comment_id" | "node_id" | "thread_id"> };
 /** The read: per item (by index) when it worked, else why not. */
 export type Remote = { ok: true; threads: Thread[] } | { ok: false; reason: string };
 
@@ -133,7 +143,8 @@ export function matchGithub(items: PrevItem[], comments: unknown[], resolved: Ma
     const replies = all.filter((c) => c.in_reply_to_id === top.id).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
       .map((c) => reply(c.user?.login, c.created_at, c.body));
     const r = resolved?.get(top.id);
-    return { found: true, replies, ...(r !== undefined ? { resolved: r } : {}) };
+    const ids = { comment_id: top.id as number, ...(typeof top.node_id === "string" && top.node_id ? { node_id: top.node_id as string } : {}) };
+    return { found: true, replies, ...(r !== undefined ? { resolved: r } : {}), ids };
   });
 }
 
@@ -164,7 +175,8 @@ export function matchAzure(items: PrevItem[], threads: unknown[]): Thread[] {
       .filter((c: any) => c && c !== head && !c.isDeleted && c.commentType !== "system" && (i.comment_id === undefined || c.id !== i.comment_id))
       .sort((a: any, b: any) => String(a.publishedDate).localeCompare(String(b.publishedDate)))
       .map((c: any) => reply(c.author?.displayName ?? c.author?.uniqueName, c.publishedDate, c.content));
-    return { found: true, replies, ...(typeof t.status === "string" ? { resolved: CLOSED.has(t.status.toLowerCase()) } : {}) };
+    const ids = { thread_id: t.id as number, ...(typeof head?.id === "number" && head.id > 0 ? { comment_id: head.id as number } : {}) };
+    return { found: true, replies, ...(typeof t.status === "string" ? { resolved: CLOSED.has(t.status.toLowerCase()) } : {}), ids };
   });
 }
 
@@ -179,9 +191,9 @@ export function remoteText(remote: Remote | undefined, n: number, item: PrevItem
   return [k ? `${k} repl${k === 1 ? "y" : "ies"}` : "no replies", t.resolved === true ? "resolved" : t.resolved === false ? "open" : ""].filter(Boolean).join(" · ");
 }
 
-/** One row of the chapter in the table of contents: place, status, the platform's side. */
-export const rowText = (i: PrevItem, n: number, p: Previous, remote: Remote | undefined): string =>
-  [i.kind === "summary" ? "summary" : i.kind === "file" ? `${i.path?.split("/").pop()} (file)` : `${i.path?.split("/").pop()}:${i.line ?? ""}`, statusText(i), remoteText(remote, n, i, p.platform)].filter(Boolean).join(" · ");
+/** One row of the chapter in the table of contents: place, status, the platform's side, and what you queued on it (earlier.ts queuedText). */
+export const rowText = (i: PrevItem, n: number, p: Previous, remote: Remote | undefined, queued = ""): string =>
+  [i.kind === "summary" ? "summary" : i.kind === "file" ? `${i.path?.split("/").pop()} (file)` : `${i.path?.split("/").pop()}:${i.line ?? ""}`, statusText(i), remoteText(remote, n, i, p.platform), queued].filter(Boolean).join(" · ");
 
 /** Code as the content area shows it, line for line (not reflowed): the PR's text, its control characters made visible. */
 const snippetText = (s: Snippet | undefined, label: string): string => {
@@ -191,13 +203,14 @@ const snippetText = (s: Snippet | undefined, label: string): string => {
 };
 
 /** The chapter's overview, for its own row: what it holds and how to read it. */
-export function overviewText(p: Previous, remote: Remote | undefined, keys: { open: string; copy: string }): string {
+export function overviewText(p: Previous, remote: Remote | undefined, keys: { open: string; copy: string; reply?: string; resolve?: string }): string {
   const lines = p.items.map((i, n) => `- ${placeOf(i)}${statusText(i) ? ` · ${statusText(i)}` : ""}${remoteText(remote, n, i, p.platform) ? ` · ${remoteText(remote, n, i, p.platform)}` : ""}`);
   return [
     `Your last submit (${p.at.slice(0, 10)}, round ${p.round}, at ${p.head.slice(0, 7)}) posted ${p.items.length} item${p.items.length === 1 ? "" : "s"}. They are not posted again; new comments you write now are new.`,
     lines.join("\n"),
     p.note ?? "",
     `Move onto one to see your text, the code then and now, and the replies; ${keys.open} goes to where it is now in the code, ${keys.copy} copies it.`,
+    keys.reply && keys.resolve ? `On one, ${keys.reply} writes a reply and ${keys.resolve} marks its thread resolved: both are queued and go out with your next submit, before the new review.` : "",
   ].filter(Boolean).join("\n\n");
 }
 
@@ -205,7 +218,7 @@ export function overviewText(p: Previous, remote: Remote | undefined, keys: { op
 export type Part = { text: string; pre?: true };
 
 /** One item in the content area: your text, the code then and now, the replies; `copy` is the item itself (place and text). */
-export function itemText(i: PrevItem, n: number, p: Previous, remote: Remote | undefined): { title: string; body: string; copy: string; parts: Part[] } {
+export function itemText(i: PrevItem, n: number, p: Previous, remote: Remote | undefined, queued?: { reply?: string; resolve?: boolean; keys: { reply: string; resolve: string } }): { title: string; body: string; copy: string; parts: Part[] } {
   const status = statusText(i), side = remoteText(remote, n, i, p.platform);
   const thread = remote?.ok ? remote.threads[n] : undefined;
   const replies = thread?.replies.length ? ["Replies:", ...thread.replies.map((r) => `${r.author}${r.at ? ` · ${r.at.slice(0, 16).replace("T", " ")}` : ""}\n${r.text}`)].join("\n\n") : "";
@@ -218,12 +231,20 @@ export function itemText(i: PrevItem, n: number, p: Previous, remote: Remote | u
     { text: i.status === "unknown" ? p.note ?? "" : "" },
     { text: side ? `On the PR: ${side}.` : "" },
     { text: replies },
+    { text: queued ? queuedPart(queued) : "" },
   ] as Part[]).filter((x) => x.text);
   return {
     title: `Your previous comment · ${placeOf(i)}${status ? ` · ${status}` : ""}`,
     body: parts.map((x) => x.text).join("\n\n"), parts,
     copy: `${placeOf(i)}\n\n${i.text}`,
   };
+}
+
+/** What is queued on an item for the next submit (earlier.ts), and the keys that change it. */
+function queuedPart(q: { reply?: string; resolve?: boolean; keys: { reply: string; resolve: string } }): string {
+  const what = [q.reply !== undefined ? `Your reply, queued:\n${q.reply}` : "", q.resolve ? "Resolve its thread: queued." : ""].filter(Boolean);
+  if (!what.length) return `${q.keys.reply} writes a reply, ${q.keys.resolve} marks the thread resolved; both go out with your next submit, before the new review.`;
+  return [...what, `Sent with your next submit, before the new review. ${q.keys.reply} edits the reply (empty removes it), ${q.keys.resolve} ${q.resolve ? "un-queues the resolve" : "marks the thread resolved"}.`].join("\n\n");
 }
 
 // ---------------------------------------------------------------- moving in the chapter
