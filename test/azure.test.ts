@@ -121,10 +121,12 @@ test("a bare number in an Azure clone is Azure's; elsewhere GitHub's", () => {
   }
 });
 
-test("a recognised Azure URL fails cleanly (A3 not built), never falling through to a range", () => {
+test("a recognised Azure URL in a clone with no remote for it fails cleanly, never falling through to a range", async () => {
   const ref = azure.parse(E)!;
-  expect(() => azure.resolve(tmp, ref)).toThrow(Fail);
-  expect(() => azure.resolve(tmp, ref)).toThrow("Azure DevOps reviews are not supported yet");
-  expect(() => azure.fetch(tmp, ref, true)).toThrow("not supported yet");
+  const d = join(tmp, "plain");
+  Bun.spawnSync(["git", "init", "-q", d]);
+  // Refused before any request: the Http here would throw if it were called.
+  await expect(Promise.resolve().then(() => azure.resolve(d, ref, { http: () => { throw new Error("no request expected"); } }))).rejects.toThrow(Fail);
+  expect(() => azure.fetch(d, ref, true, "a".repeat(40))).toThrow("no remote in");
   expect(isPR(E)).toBe(true);
 });
