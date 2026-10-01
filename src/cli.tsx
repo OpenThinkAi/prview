@@ -78,7 +78,8 @@ const USAGE = `usage: prview <PR# | PR url | base..head | branch> [--repo DIR] [
       pressing b, c or i again changes the action   x or ← close it   y copy it   PgUp/PgDn page it
     \\ settings: every key (primary and secondary), the default action per severity, the model per role, the
       editor and wrap/blind defaults; Enter edits, Esc leaves and asks to save to the config (applied at once)
-    Coming with later changes (they say so when pressed): a s drafts.
+    a s asks the model for a draft submission (findings to include, a verdict, a comment) and opens the submit flow
+      pre-filled with it, marked as a draft; edit anything, nothing is sent until Enter on Send
 
   prview prepare <target>     build it (fetch, guide, critic) without opening the screen; open it later
   prview models               list the configured models and roles, and check each model is reachable

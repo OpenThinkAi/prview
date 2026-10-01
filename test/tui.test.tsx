@@ -1182,14 +1182,8 @@ test("g c into a collapsed chapter expands it; ← from its code comes back with
   expect(regions(t).middle).toContain("› a.rs:10");
 });
 
-test("keys that come with later changes say so, and do nothing else", async () => {
+test("a a and a x are not keys inside a finding until an answer about it is waiting; nothing says it is coming", async () => {
   const t = await open();
-  for (const [keys, id] of [["as", "ai.draft"]] as const) {
-    await t.press(keys);
-    expect(t.frame(), id).toContain(`${keyOf(id)} `);
-    expect(t.frame(), id).toContain("not built yet, coming with");
-    expect(t.r.pos, id).toEqual({ item: 0, line: 0 });
-  }
   // a a and a x are not keys inside a finding until an answer about it is waiting: the prefix is cancelled, nothing else.
   await t.press("gf" + "aa");
   expect(t.frame()).not.toContain("coming with");

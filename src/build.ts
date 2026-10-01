@@ -27,7 +27,7 @@ import { reviveAsks, type Asks } from "./deep.ts";
 
 export { Fail };
 /** One model call: which role, how long, what it cost where the provider reports it. */
-export type Run = { role: "guide" | "critic" | "refute" | "deep"; /** the configured model's name */ name?: string; /** the concrete id the model reported, or the config's */ model?: string; ms: number; cost?: number };
+export type Run = { role: "guide" | "critic" | "refute" | "deep" | "ask"; /** the configured model's name */ name?: string; /** the concrete id the model reported, or the config's */ model?: string; ms: number; cost?: number };
 
 /**
  * "Prepared by claude-opus-5-5 (guide), claude-sonnet-5-5 (critic, refute)": one short local line, never part of anything posted.
@@ -160,8 +160,8 @@ export async function guideAndCritic(src: Target, files: FileDiff[], worktree: s
   // The id each role shows: the config's own until a reply says better, `default` if neither is known yet.
   // Keyed by model name, so a role sharing a model another role has already heard from starts with the real id.
   const seen: Record<string, string> = {};
-  const tag = (role: Exclude<Run["role"], "deep">) => `${role} [${modelLabel(models[role].def.name, seen[models[role].def.name] ?? models[role].def.model)}]`;
-  const timed = (role: Exclude<Run["role"], "deep">) => (u: Usage) => {
+  const tag = (role: Exclude<Run["role"], "deep" | "ask">) => `${role} [${modelLabel(models[role].def.name, seen[models[role].def.name] ?? models[role].def.model)}]`;
+  const timed = (role: Exclude<Run["role"], "deep" | "ask">) => (u: Usage) => {
     if (u.model) seen[models[role].def.name] = u.model;
     runs.push({ role, name: models[role].def.name, ...u, model: u.model ?? models[role].def.model });
   };
