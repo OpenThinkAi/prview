@@ -284,10 +284,13 @@ paths and symlinks that leave it are refused). The copy of the document it recei
 private ignore notes. `prview import` fetches a PR head only from a remote already configured in
 your clone for that repo; if there is none it refuses instead of fetching from the repo a document names.
 Model prompts go to `claude -p` on stdin, not on its command line, so they are not in the process list.
+(The system prompts, prview's own fixed text, are on the command line.)
 The `a ?` agent is `claude -p` in safe mode (no CLAUDE.md, hooks, plugins or skills load from the worktree, no MCP)
-with Read, Grep and Glob as its only tools and every other tool denied; what it reads is part of the change and its
-prompt says so, the PR's own text reaches it only inside the data fences, and a change it proposes to a finding
-does nothing until you press `a a`.
+with Read, Grep and Glob as its only tools and every other tool denied. Those tools take absolute paths, so prview
+also passes deny rules for every entry beside the path from `/` down to the review's worktree: your home directory,
+other reviews and the clone's own `.git` are refused, and only the worktree can be read (entries created after the
+agent starts are not covered). What it reads is part of the change and its prompt says so, the PR's own text
+reaches it only inside the data fences, and a change it proposes to a finding does nothing until you press `a a`.
 
 ### What leaves your machine
 

@@ -14,7 +14,7 @@ import type { Review } from "../src/build.ts";
 import type { Doc } from "../src/document.ts";
 import { parseConfig, roleModel, type Config } from "../src/config.ts";
 import {
-  acceptAnswer, AGENT_TOOLS, agentArgs, askAbout, askPrompt, ASK_SYSTEM, conversationText, DEEP_SYSTEM, discardAnswer, pendingTurn, readAnswer,
+  acceptAnswer, AGENT_TOOLS, agentArgs, outsideRules, askAbout, askPrompt, ASK_SYSTEM, conversationText, DEEP_SYSTEM, discardAnswer, pendingTurn, readAnswer,
   deepModel, readStreamLine, reviveAsks, revisedNote, stepText, subjectData, subjectKey, type AgentRun, type AgentResult, type Runner,
 } from "../src/deep.ts";
 import { actionOf } from "../src/triage.ts";
@@ -137,6 +137,29 @@ test("the agent's argv: Read, Grep and Glob only, nothing else allowed, no MCP, 
   expect(a[a.indexOf("--model") + 1]).toBe("opus");
   expect(a.join(" ")).not.toMatch(/Bash|Edit|Write|WebFetch|WebSearch|dangerously|bypass/);
   expect(a).not.toContain("SYS\n"); // the prompt is not in argv: it goes on stdin
+});
+
+test("the agent's reads are kept to the worktree: every entry beside the path down to it is denied, on the given and the real path", () => {
+  const tree: Record<string, string[]> = {
+    "/": ["Users", "etc", "tmp", "private"], "/Users": ["me", "other"], "/Users/me": [".ssh", ".cache", "notes(1).txt"],
+    "/Users/me/.cache": ["prview"], "/Users/me/.cache/prview": ["rev", "rev.json", "old-review"],
+    "/private": ["tmp", "var"],
+  };
+  const rules = outsideRules("/Users/me/.cache/prview/rev", (d) => tree[d] ?? []);
+  for (const denied of ["//etc", "//tmp", "//Users/other", "//Users/me/.ssh", "//Users/me/.cache/prview/rev.json", "//Users/me/.cache/prview/old-review"]) {
+    expect(rules, denied).toContain(`Read(${denied})`);
+    expect(rules, denied).toContain(`Read(${denied}/**)`);
+  }
+  expect(rules).toContain("Read(//Users/me/notes?1?.txt)"); // a parenthesis cannot be in a rule: ? matches it
+  // Nothing on the way to the worktree, and nothing in it, is denied.
+  for (const kept of ["//Users", "//Users/me", "//Users/me/.cache", "//Users/me/.cache/prview", "//Users/me/.cache/prview/rev"]) expect(rules, kept).not.toContain(`Read(${kept}/**)`);
+  // A symlinked path (/tmp is /private/tmp) is walked both ways.
+  const both = outsideRules("/tmp/w", (d) => ({ "/": ["tmp", "private", "etc"], "/tmp": ["w", "x"], "/private": ["tmp", "var"], "/private/tmp": ["w", "x"] } as Record<string, string[]>)[d] ?? [], () => "/private/tmp/w");
+  for (const denied of ["//tmp/x", "//private/tmp/x", "//private/var", "//etc"]) expect(both, denied).toContain(`Read(${denied}/**)`);
+  expect(both).not.toContain("Read(//private/tmp/w/**)");
+  // They reach claude as deny rules, which win over the allowed tools.
+  const a = agentArgs(undefined, "SYS", 3, rules);
+  expect(a.slice(a.indexOf("--disallowedTools") + 1, a.indexOf("--disallowedTools") + 1 + rules.length)).toEqual(rules);
 });
 
 test("the stream: tool calls become progress lines relative to the worktree; the result carries the answer, cost and model", () => {

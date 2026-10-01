@@ -9,8 +9,8 @@
 //
 // The prompts and parsers are pure; the agent runner is a parameter so the tests drive the whole path with a stub.
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { FileDiff } from "./diff.ts";
 import { clip, DATA_RULE, fence, fitLine, hunksOf, numbered, SEVERITIES, titleOf, type Finding, type Severity } from "./guide.ts";
 import { decide } from "./triage.ts";
@@ -239,13 +239,38 @@ export const AGENT_TOOLS = ["Read", "Grep", "Glob"] as const;
  * The argv for the agent: `claude -p` with Read, Grep and Glob only (and only those allowed, anything else denied
  * without asking), no MCP, no slash commands, no hooks, plugins or CLAUDE.md from the worktree (safe mode), nothing
  * kept, and the reply streamed as JSON lines so each step can be shown as it happens. The prompt goes on stdin.
+ * `deny` are the read rules that keep the tools inside the worktree (`outsideRules`).
  */
-export function agentArgs(model: string | undefined, system: string, steps: number): string[] {
+export function agentArgs(model: string | undefined, system: string, steps: number, deny: string[] = []): string[] {
   const tools = AGENT_TOOLS.join(",");
   const args = ["claude", "-p", "--safe-mode", "--tools", tools, "--allowedTools", tools, "--permission-mode", "dontAsk", "--strict-mcp-config", "--disable-slash-commands",
     "--no-session-persistence", "--max-turns", String(steps + 1), "--output-format", "stream-json", "--verbose", "--system-prompt", system];
+  if (deny.length) args.push("--disallowedTools", ...deny);
   if (model) args.push("--model", model);
   return args;
+}
+
+/**
+ * Read, Grep and Glob take absolute paths, and claude allows them anywhere the user can read. These rules deny every
+ * entry beside the path from / down to the worktree (at each level, everything but the next step towards it), so the
+ * only tree left readable is the worktree itself: not your home directory, not other reviews, not the clone's .git.
+ * Both the path as given and its real path are walked (/tmp is /private/tmp on macOS). A rule is `//abs/path` for the
+ * entry and `//abs/path/**` for what is under it; a name with a parenthesis has it matched by `?`, since a rule cannot
+ * hold one. Entries created after the agent starts are not covered.
+ */
+export function outsideRules(dir: string, list: (d: string) => string[] = (d) => { try { return readdirSync(d); } catch { return []; } }, real: (d: string) => string = (d) => { try { return realpathSync(d); } catch { return d; } }): string[] {
+  const out = new Set<string>();
+  for (const start of new Set([dir, real(dir)])) {
+    for (let cur = start; dirname(cur) !== cur; cur = dirname(cur)) {
+      const parent = dirname(cur), keep = cur.slice(parent.length).replace(/^[/\\]+/, "");
+      for (const name of list(parent)) {
+        if (name === keep) continue;
+        const abs = `${parent === sep ? "" : parent}/${name.replace(/[()]/g, "?")}`;
+        out.add(`Read(/${abs})`); out.add(`Read(/${abs}/**)`);
+      }
+    }
+  }
+  return [...out];
 }
 
 /** A tool call as a progress line: `read src/a.ts`, `grep "parse" in src`, `glob **\/*.test.ts`. Paths are shown relative to the worktree. */
@@ -278,7 +303,7 @@ export function readStreamLine(line: string, cwd: string): { steps: string[]; re
 /** The agent as `claude -p` runs it, in the worktree. The step cap and the timeout each end it, as does `signal`. */
 export const claudeAgent: Runner = async ({ cwd, system, prompt, model, limits, onStep, signal }) => {
   if (signal?.aborted) throw new Error("cancelled"); // an abort before the start would never reach the process
-  const p = Bun.spawn(agentArgs(model, system, limits.steps), { stdin: Buffer.from(prompt), env: process.env, cwd, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(agentArgs(model, system, limits.steps, outsideRules(cwd)), { stdin: Buffer.from(prompt), env: process.env, cwd, stdout: "pipe", stderr: "pipe" });
   let steps = 0, stopped: AgentResult["stopped"];
   const stop = (why: AgentResult["stopped"]) => { stopped ??= why; p.kill(); };
   const timer = setTimeout(() => stop("timeout"), limits.timeoutMs);
