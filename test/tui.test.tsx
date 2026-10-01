@@ -598,8 +598,8 @@ test("layout: the window always holds the cursor line, centred when it can be, a
 });
 
 test("editor: per-editor line syntax, the tmux split runs in the worktree, and the side pane is offered only inside tmux", () => {
-  expect(editorArgs(["hx"], "a.rs", 7)).toEqual(["hx", "+7", "a.rs"]);
-  expect(editorArgs(["code"], "a.rs", 7)).toEqual(["code", "-g", "a.rs:7", "--wait"]);
+  expect(editorArgs(["hx"], "a.rs", 7, "/wt")).toEqual(["hx", "+7", "--", "/wt/a.rs"]);
+  expect(editorArgs(["code"], "a.rs", 7, "/wt")).toEqual(["code", "-g", "/wt/a.rs:7", "--wait"]);
   const cmd = tmuxSplit(["vim", "+7", "it's.rs"], "/wt");
   expect(cmd.slice(0, 7)).toEqual(["tmux", "split-window", "-h", "-l", "60%", "-c", "/wt"]);
   expect(cmd[7]!.startsWith("sh -c '")).toBe(true);

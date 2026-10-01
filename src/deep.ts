@@ -9,7 +9,7 @@
 //
 // The prompts and parsers are pure; the agent runner is a parameter so the tests drive the whole path with a stub.
 
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { FileDiff } from "./diff.ts";
 import { clip, DATA_RULE, fence, fitLine, hunksOf, numbered, SEVERITIES, titleOf, type Finding, type Severity } from "./guide.ts";
@@ -18,6 +18,7 @@ import { loadConfig, realLookups, resolveModel, roleModel, type Config, type Dee
 import { claudeModelId, complete } from "./llm.ts";
 import { clean, visible } from "./sanitize.ts";
 import type { Review, Run } from "./build.ts";
+import { linksIn, readInTree } from "./intree.ts";
 
 /** What a question is about. A chapter is its index in the plan; the plan's length is the mechanical chapter. */
 export type Subject = { kind: "block"; hunk: string } | { kind: "chapter"; chapter: number } | { kind: "finding"; id: string };
@@ -278,6 +279,23 @@ export function outsideRules(dir: string, list: (d: string) => string[] = (d) =>
   return [...out];
 }
 
+/**
+ * Read rules for the worktree's own symlinks (`linksIn`), the entry and what is under it, at the path as given and its
+ * real path. `outsideRules` already denies where a link leads outside the worktree; these deny the link itself, so
+ * reading through it is refused whichever path claude checks. A link inside the worktree loses nothing: its target
+ * is readable by its own name.
+ */
+export function linkRules(dir: string, links: string[], real: (d: string) => string = (d) => { try { return realpathSync(d); } catch { return d; } }): string[] {
+  const out = new Set<string>();
+  for (const start of new Set([dir, real(dir)])) {
+    for (const l of links) {
+      const abs = `${start.replace(/[/\\]+$/, "")}/${l.replace(/[()]/g, "?")}`;
+      out.add(`Read(/${abs})`); out.add(`Read(/${abs}/**)`);
+    }
+  }
+  return [...out];
+}
+
 /** A tool call as a progress line: `read src/a.ts`, `grep "parse" in src`, `glob **\/*.test.ts`. Paths are shown relative to the worktree. */
 export function stepText(name: string, input: any, cwd: string): string {
   const rel = (p: unknown) => { const s = String(p ?? ""); return isAbsolute(s) ? relative(cwd, s) || "." : s; };
@@ -308,7 +326,7 @@ export function readStreamLine(line: string, cwd: string): { steps: string[]; re
 /** The agent as `claude -p` runs it, in the worktree. The step cap and the timeout each end it, as does `signal`. */
 export const claudeAgent: Runner = async ({ cwd, system, prompt, model, limits, onStep, signal }) => {
   if (signal?.aborted) throw new Error("cancelled"); // an abort before the start would never reach the process
-  const p = Bun.spawn(agentArgs(model, system, limits.steps, outsideRules(cwd)), { stdin: Buffer.from(prompt), env: process.env, cwd, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(agentArgs(model, system, limits.steps, [...outsideRules(cwd), ...linkRules(cwd, linksIn(cwd))]), { stdin: Buffer.from(prompt), env: process.env, cwd, stdout: "pipe", stderr: "pipe" });
   let steps = 0, stopped: AgentResult["stopped"];
   const stop = (why: AgentResult["stopped"]) => { stopped ??= why; p.kill(); };
   const timer = setTimeout(() => stop("timeout"), limits.timeoutMs);
@@ -362,9 +380,11 @@ export function deepModel(r: Pick<Review, "ai">, cfg: Config, lookups: Lookups):
   return resolveModel(cfg, named ?? (recorded && cfg.models[recorded] ? recorded : roleModel(cfg, "deep")), lookups);
 }
 
-const readAround = (worktree: string) => (path: string, from: number, to: number): string => {
-  const file = join(worktree, path);
-  return existsSync(file) ? readFileSync(file, "utf8").split("\n").slice(from - 1, to).join("\n") : "";
+/** The file around a block, for a model without tools; a symlink or a path out of the worktree is not read, and says so. */
+export const readAround = (worktree: string) => (path: string, from: number, to: number): string => {
+  const got = readInTree(worktree, path);
+  if ("skipped" in got) return `(${got.skipped})`;
+  return "text" in got ? got.text.split("\n").slice(from - 1, to).join("\n") : "";
 };
 
 /**
@@ -382,12 +402,14 @@ export async function askAbout(r: Review, files: FileDiff[], subject: Subject, q
   const t0 = Date.now();
   let text: string, cost: number | undefined, model: string | undefined, note = "";
   if (tools) {
+    const links = linksIn(r.worktree);
     const prompt = askPrompt(subjectData(r.doc, files, subject), history, question);
     const run = await (deps.runner ?? claudeAgent)({ cwd: r.worktree, system: DEEP_SYSTEM, prompt, model: m.def.model, limits: cfg.deep, onStep: deps.onStep ?? (() => {}), signal: deps.signal });
     ({ cost, model } = run);
     text = clean(run.text);
     if (run.stopped) note = `\n\n(stopped: ${run.stopped === "steps" ? `the step cap of ${cfg.deep.steps} was reached` : `the ${Math.round(cfg.deep.timeoutMs / 1000)}s timeout ran out`}${text.trim() ? "; the answer may be unfinished" : ""})`;
     if (!text.trim()) text = run.stopped ? "The agent stopped before it answered." : "The agent gave no answer.";
+    if (links.length) note += `\n\n(the agent was denied ${links.length === 1 ? "the symlink" : `${links.length} symlinks`} in the worktree: ${links.slice(0, 5).map((l) => visible(clean(l))).join(", ")}${links.length > 5 ? ", …" : ""})`;
   } else {
     const prompt = askPrompt(subjectData(r.doc, files, subject, readAround(r.worktree)), history, question);
     text = await (deps.call ?? complete)(m, ASK_SYSTEM, prompt, (u) => { cost = u.cost; model = u.model; });

@@ -4,6 +4,8 @@ name: release
 #   - workflow_dispatch: run it by hand from the Actions tab. This is the one that always works, because
 #     .stamp/mirror.yml mirrors main only, so a version tag pushed to the stamp origin never reaches GitHub.
 #   - push of a `v*` tag: fires if tags are ever mirrored (uncomment `tags:` in .stamp/mirror.yml).
+#   A dispatch publishes only when run on main: the publish job's `if:` skips it on any other branch, so a build
+#   that never passed the stamp gate on main cannot reach npm with a provenance attestation. Tag runs are unchanged.
 # It deliberately does NOT run on every push to main (as open-audit and stamp-cli do): merging this file must
 # not publish, and the first publish waits on the npm Trusted Publisher being configured for this repo and
 # this workflow filename (npm package -> Settings -> Trusted Publishers).
@@ -43,6 +45,8 @@ jobs:
 
   publish:
     needs: check
+    # workflow_dispatch can be run on any branch; only main is stamp-reviewed, so only main publishes.
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

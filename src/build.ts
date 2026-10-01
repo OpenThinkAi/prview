@@ -16,6 +16,7 @@ import { filterOf, type Filter } from "./filter.ts";
 import { clean, visible } from "./sanitize.ts";
 import { actionOf, actionText, DEFAULTS, IN_HOUSE, suggestVerdict, type Defaults } from "./triage.ts";
 import { parseDiff, type FileDiff } from "./diff.ts";
+import { readInTree } from "./intree.ts";
 import { blank, Fail, fit, merge, parseDocument, SCHEMA, suggestions, type Comment, type Doc, type Suggested, type Target } from "./document.ts";
 import {
   applyReask, applyRefute, classify, CRITIC_SYSTEM, criticPrompt, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, refutable,
@@ -193,10 +194,13 @@ export async function guideAndCritic(src: Target, files: FileDiff[], worktree: s
   const contested = findings.filter((f) => f.severity !== "low");
   if (contested.length) say(`${tag("refute")}: checking ${contested.length} finding${contested.length === 1 ? "" : "s"}…`);
   const at = new Map(hunks.map((h) => [h.id, h]));
+  // A symlink, or a path out of the worktree, is never read for the prompt (src/intree.ts); refute then sees only the hunk.
+  const skipped = new Set<string>();
   const verdicts = await pool(contested.map((f) => async () => {
     const h = at.get(f.hunk)!;
-    const file = join(worktree, h.file.path);
-    const text = f.side === "new" && existsSync(file) ? readFileSync(file, "utf8") : null;
+    const got = f.side === "new" ? readInTree(worktree, h.file.path) : { missing: true as const };
+    if ("skipped" in got && !skipped.has(got.skipped)) { skipped.add(got.skipped); say(`${tag("refute")}: ${visible(clean(got.skipped))}`); }
+    const text = "text" in got ? got.text : null;
     // A withdrawal has to cite a line the prompt showed; `refutable` says which those were.
     return applyRefute(f, await call(models.refute, REFUTE_SYSTEM, refutePrompt(f, h.hunk!, text), timed("refute")), refutable(f, h.hunk!, text));
   }));

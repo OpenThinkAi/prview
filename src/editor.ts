@@ -1,18 +1,30 @@
 // Launching an editor at a line: what to run, and how to run it beside prview when we are inside tmux.
 
+import { resolve } from "node:path";
+
 /** $PRVIEW_EDITOR, else the config's `editor` (the settings view sets it), else $EDITOR, else hx. */
 export function editor(env: Record<string, string | undefined> = process.env, configured?: string): string[] {
   const e = env.PRVIEW_EDITOR ?? configured ?? env.EDITOR ?? "hx";
   return e.split(/\s+/).filter(Boolean);
 }
 
-/** `hx +12 file`, `vim +12 file`, `code -g file:12`, `zed file:12`: the common ways to say "open here". */
-export function editorArgs(cmd: string[], path: string, line: number): string[] {
+/**
+ * `hx +12 -- /wt/file`, `vim +12 -- /wt/file`, `code -g /wt/file:12`, `zed /wt/file:12`: the common ways to say
+ * "open here". The path comes from the PR, so it is made absolute against `root` (the worktree) first: it then starts
+ * with `/` and no editor can read it as an option or a command (vim runs `+cmd` and `-c cmd`; a file named
+ * `+:!touch x` would otherwise be one). The `+N` is ours. Editors known to take `--` get it too, before the path;
+ * anything else gets the absolute path alone, since an editor that does not know `--` would open a file of that name.
+ */
+export function editorArgs(cmd: string[], path: string, line: number, root: string): string[] {
   const bin = cmd[0]!.split("/").pop()!;
-  if (/^(code|cursor|codium)$/.test(bin)) return [...cmd, "-g", `${path}:${line}`, "--wait"];
-  if (/^(zed|subl)$/.test(bin)) return [...cmd, `${path}:${line}`];
-  return [...cmd, `+${line}`, path];
+  const p = resolve(root, path);
+  if (/^(code|cursor|codium)$/.test(bin)) return [...cmd, "-g", `${p}:${line}`, "--wait"];
+  if (/^(zed|subl)$/.test(bin)) return [...cmd, `${p}:${line}`];
+  return [...cmd, `+${line}`, ...(DASHDASH.test(bin) ? ["--"] : []), p];
 }
+
+/** Editors that end their options at `--` (and still take `+N` before it). */
+const DASHDASH = /^(hx|helix|vi|vim|nvim|gvim|mvim|view|vimdiff|ex)$/;
 
 export const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
@@ -33,7 +45,7 @@ export type Beside = (path: string, line: number) => string | undefined;
 export function besideIn(worktree: string, env: Record<string, string | undefined> = process.env, configured: () => string | undefined = () => undefined): Beside | undefined {
   if (!env.TMUX) return undefined;
   return (path, line) => {
-    const p = Bun.spawnSync(tmuxSplit(editorArgs(editor(env, configured()), path, line), worktree), { stdin: "ignore" });
+    const p = Bun.spawnSync(tmuxSplit(editorArgs(editor(env, configured()), path, line, worktree), worktree), { stdin: "ignore" });
     return p.exitCode === 0 ? undefined : `tmux could not open a pane: ${p.stderr.toString().trim() || `exit ${p.exitCode}`}`;
   };
 }
