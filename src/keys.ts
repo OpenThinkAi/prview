@@ -138,6 +138,7 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "view.fullscreen", states: [...READING, "content"], prefix: "v", key: "c", label: "full-screen content", description: "Make the content area full-screen, where the arrows scroll it, or restore it; Esc restores it too." },
   { id: "view.editor", states: READING, prefix: "v", key: "e", label: "editor", description: "Open the file in your editor at the cursor line." },
   { id: "view.wrap", states: READING, prefix: "v", key: "w", label: "wrap", description: "Wrap long lines onto more rows, or cut them again." },
+  // Outside a finding only (the table of contents and the code): the toggle can take the open finding's block off the screen.
   { id: "view.since", states: OUTSIDE, needs: "since", prefix: "v", key: "s", label: "since your review", description: "In a re-review, show only the blocks that changed since the head you last submitted on, or the whole PR again." },
 
   // ---- g: go to

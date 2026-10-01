@@ -36,7 +36,8 @@ const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head
   Keys (the defaults; [keys] in the config remaps them, prview keys prints yours). Arrows move; the prefixes
   a (AI), f (filter), v (view) and g (go to) hold the rest, and the key panel (bottom right, always there) lists
   the keys for where you are, or a prefix's second keys once it is pressed. Esc backs out of anything.
-  The screen: a status area (title, then PR, branches, read, findings by severity, comments, suggested verdict), the
+  The screen: a status area (title, then PR, branches, read, findings by severity, comments, re-review · since the
+  head you last submitted at, and v s's view, suggested verdict), the
   table of contents and the code, and a bottom panel: the content area (the summary, a chapter's why, a finding's
   detail, docs results, answers, prompts) beside the key panel. Below 60x20 it asks for a larger terminal.
     A review opens in the table of contents, on the first block; the content area shows its chapter's intent and why.
@@ -72,6 +73,8 @@ const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head
             is a follow-up. Inside a finding, while its answer waits: a a applies the change it proposes, a x discards it
     v then: z zen (hide or show the table of contents) · c the content area full-screen (Esc or v c restores)
             · e open the file here in your editor (inside tmux: in a split pane, this screen stays up) · w wrap
+            · s in a re-review (you submitted on it before, at another head): only the blocks changed since that
+            review (marked ● in the table of contents and the gutter), or the whole PR again
     g then: f/F next/previous finding (wrapping) · h/H next/previous by severity · g/e top/end of the file (the "whole file" rows)
             · <digits> g (or Enter) that line of this file (these land in the code)
             · c <digits> g (or Enter) that chapter's first block in the table of contents

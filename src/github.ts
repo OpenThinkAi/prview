@@ -5,7 +5,7 @@ import { Fail } from "./document.ts";
 import { git, prSlug, remoteFor, run, type PrRef, type PrSource } from "./pr.ts";
 import { clean } from "./sanitize.ts";
 
-const has = (repo: string, c: string) => Bun.spawnSync(["git", "cat-file", "-e", `${c}^{commit}`], { cwd: repo, stdin: "ignore" }).exitCode === 0;
+const has = (repo: string, c: string) => Bun.spawnSync(["git", "cat-file", "-e", `${c}^{commit}`], { cwd: repo, stdin: "ignore", env: process.env }).exitCode === 0;
 
 const PR_URL = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/;
 
