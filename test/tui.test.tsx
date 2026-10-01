@@ -81,7 +81,15 @@ const KEY = /\x1b\[[0-9;]*[A-Za-z~]|./gsu;
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const row = (keys: string, label: string) => new RegExp(`(?:│ |  )${esc(keys)} +${esc(label)}(?: |\\s*│)`);
 const listing = (e: { keys: string; label: string }[]) => e.map((x) => `${x.keys} ${x.label}`);
-const settle = () => new Promise((r) => setTimeout(r, 30));
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Wait for a render to land: at least 30ms, then until the frame is the same on two ticks in a row (at most ~1s), so a
+ *  redraw an effect schedules (a block marked read, a note) is on screen before the test looks, even on a slow CI runner. */
+const settle = async (app?: { lastFrame(): string | undefined }) => {
+  await sleep(30);
+  if (!app) return;
+  let prev = app.lastFrame();
+  for (let i = 0; i < 50; i++) { await sleep(20); const f = app.lastFrame(); if (f === prev) return; prev = f; }
+};
 /** `code`: step from the table of contents, where a review opens, into the first block's code (→), as most tests start there. */
 async function open(over?: Over, props: { ai?: Review["ai"]; suggested?: Review["suggested"]; blind?: boolean; dryRun?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined; code?: boolean; defaults?: Defaults; resume?: Flow } = {}) {
   const outcomes: Outcome[] = [];
@@ -92,9 +100,9 @@ async function open(over?: Over, props: { ai?: Review["ai"]; suggested?: Review[
   r.ai = props.ai;
   if (props.suggested) r.suggested = props.suggested;
   const app = render(<App review={r} files={files} onDone={(o) => outcomes.push(o)} beside={props.beside} blind={props.blind} dryRun={props.dryRun} defaults={props.defaults} resume={props.resume} copier={copier} size={{ cols: props.cols ?? 120, rows: props.rows ?? 40 }} />);
-  await settle();
+  await settle(app);
   // One key at a time: a handler closes over the state of its render, so two keys in one chunk would both see the old cursor.
-  const press = async (keys: string) => { for (const k of keys.match(KEY) ?? []) { app.stdin.write(k); await settle(); } };
+  const press = async (keys: string) => { for (const k of keys.match(KEY) ?? []) { app.stdin.write(k); await settle(app); } };
   if (props.code) await press(RIGHT);
   return { r, app, press, outcomes, copied, cols: props.cols ?? 120, rows: props.rows ?? 40, frame: () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "") };
 }
@@ -548,8 +556,8 @@ test("a hunk taller than the screen scrolls its window and keeps each line's own
   const [hk] = hunksOf(tall);
   const r = fixture({ findings: [], plan: { summary: "", by: "files", mechanical: [], chapters: [{ title: "T", intent: "", why: "", hunks: [hk!.id] }] } });
   const app = render(<App review={r} files={tall} onDone={() => {}} size={{ cols: 100, rows: 20 }} />);
-  await settle();
-  for (const k of ["g", "5", "1", "\r"]) { app.stdin.write(k); await settle(); }
+  await settle(app);
+  for (const k of ["g", "5", "1", "\r"]) { app.stdin.write(k); await settle(app); }
   const raw = app.lastFrame() ?? "";
   const row = raw.split("\n").find((l) => l.includes("marker"))!;
   expect(row).toBeDefined();
@@ -915,8 +923,8 @@ async function copying(over?: Over) {
   const copier = (t: string) => { copied.push(t); return { ok: true as const, chars: t.length, via: "pbcopy" }; };
   const r = fixture(over);
   const app = render(<App review={r} files={files} onDone={() => {}} copier={copier} size={{ cols: 120, rows: 40 }} />);
-  await settle();
-  const press = async (keys: string) => { for (const k of keys.match(KEY) ?? []) { app.stdin.write(k); await settle(); } };
+  await settle(app);
+  const press = async (keys: string) => { for (const k of keys.match(KEY) ?? []) { app.stdin.write(k); await settle(app); } };
   await press(RIGHT); // into the code
   return { copied, press, frame: () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "") };
 }
@@ -1429,8 +1437,8 @@ async function openCopying() {
   const copier = (t: string) => { copied.push(t); return { ok: true as const, chars: t.length, via: "test" }; };
   const r = fixture();
   const app = render(<App review={r} files={files} onDone={() => {}} copier={copier} size={{ cols: 120, rows: 40 }} />);
-  await settle();
-  const press = async (keys: string) => { for (const k of keys.match(KEY) ?? []) { app.stdin.write(k); await settle(); } };
+  await settle(app);
+  const press = async (keys: string) => { for (const k of keys.match(KEY) ?? []) { app.stdin.write(k); await settle(app); } };
   return { app, press, copied, frame: () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "") };
 }
 
@@ -1523,7 +1531,7 @@ test("a hunk line with an OSC/CSI payload is drawn with visible stand-ins; no ra
   const efiles = parseDiff(evil);
   const r = fixture();
   const app = render(<App review={r} files={efiles} onDone={() => {}} size={{ cols: 120, rows: 40 }} />);
-  await settle();
+  await settle(app);
   const all = app.frames.join("\n") + (app.lastFrame() ?? "");
   expect(all.replace(/\x1b\[[0-9;]*m/g, "")).not.toMatch(/[\x00-\x08\x0b-\x1a\x1c-\x1f\x7f-\x9f]|\x1b/);
   expect(app.lastFrame()).toContain("new2 ␛]0;pwned␇␛[2Jboom\\x85␍");
@@ -1767,7 +1775,7 @@ test("filter: the level is kept with the stored review, not in the document, and
   expect(back.filter).toBe("high");
   expect(JSON.stringify(back.doc)).not.toContain("\"filter\"");
   const again = render(<App review={back} files={files} onDone={() => {}} size={{ cols: 120, rows: 40 }} />);
-  await settle();
+  await settle(again);
   expect((again.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "")).toContain("filter high only");
   await t.press("fa");
   expect(t.r.filter).toBeUndefined();
