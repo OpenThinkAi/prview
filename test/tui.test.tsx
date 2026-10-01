@@ -83,15 +83,18 @@ const settle = () => new Promise((r) => setTimeout(r, 30));
 /** `code`: step from the table of contents, where a review opens, into the first block's code (→), as most tests start there. */
 async function open(over?: Over, props: { ai?: Review["ai"]; suggested?: Review["suggested"]; blind?: boolean; dryRun?: boolean; cols?: number; rows?: number; beside?: (p: string, l: number) => string | undefined; code?: boolean; defaults?: Defaults; resume?: Flow } = {}) {
   const outcomes: Outcome[] = [];
+  const copied: string[] = [];
+  // Never the machine's clipboard: pbcopy on a Mac, OSC 52 on a CI runner with no tool gives a different confirmation.
+  const copier = (text: string) => { copied.push(text); return { ok: true as const, chars: [...text].length, via: "test" }; };
   const r = fixture(over);
   r.ai = props.ai;
   if (props.suggested) r.suggested = props.suggested;
-  const app = render(<App review={r} files={files} onDone={(o) => outcomes.push(o)} beside={props.beside} blind={props.blind} dryRun={props.dryRun} defaults={props.defaults} resume={props.resume} size={{ cols: props.cols ?? 120, rows: props.rows ?? 40 }} />);
+  const app = render(<App review={r} files={files} onDone={(o) => outcomes.push(o)} beside={props.beside} blind={props.blind} dryRun={props.dryRun} defaults={props.defaults} resume={props.resume} copier={copier} size={{ cols: props.cols ?? 120, rows: props.rows ?? 40 }} />);
   await settle();
   // One key at a time: a handler closes over the state of its render, so two keys in one chunk would both see the old cursor.
   const press = async (keys: string) => { for (const k of keys.match(KEY) ?? []) { app.stdin.write(k); await settle(); } };
   if (props.code) await press(RIGHT);
-  return { r, app, press, outcomes, cols: props.cols ?? 120, rows: props.rows ?? 40, frame: () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "") };
+  return { r, app, press, outcomes, copied, cols: props.cols ?? 120, rows: props.rows ?? 40, frame: () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "") };
 }
 type Shown = { frame: () => string; cols: number; rows: number };
 /** The key panel for state `s` as the screen lays it out at this size: the submit flow's send step (and `full`) is the full-screen one. */
@@ -297,6 +300,7 @@ test("Enter on a line makes your own finding there: pick a severity (arrows, Ent
   expect(t.r.doc.human.decisions![mine.id]).toMatchObject({ kind: "comment" });
   await t.press("y");
   expect(t.frame()).toContain("copied");
+  expect(t.copied).toHaveLength(1);
 });
 
 test("a new finding takes the severity's default action; an empty comment or Esc makes none", async () => {
