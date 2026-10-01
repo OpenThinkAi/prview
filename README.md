@@ -170,8 +170,8 @@ tables with your own bindings.
   to the table of contents from the code, or closes a finding. `Tab` moves focus into the content area and back.
 - **Esc** backs out of anything: a pending prefix, a finding, the content area, full-screen, a prompt. `x` only
   closes a finding.
-- **Prefixes.** Press `a`, `f`, `v` or `g` and the key panel shows that prefix's second keys. `g 120 Enter` goes to
-  that line of the file (the nearest line shown); `g c 3 Enter` to that chapter's first block. `g f`, `g h` and the
+- **Prefixes.** Press `a`, `f`, `v` or `g` and the key panel shows that prefix's second keys. `g 120 g` goes to (or `g 120 Enter`)
+  that line of the file (the nearest line shown); `g c 3 g` to that chapter's first block. `g f`, `g h` and the
   line jumps land in the code; `g c` lands in the table of contents. The filter (`f h`, `f m`, `f a`) is for reading:
   it shows in the status area and is kept with the review, and the submit checklist still lists every finding.
 - **No** undo, counts, hunk-to-hunk keys, horizontal panning, separate "withdrawn" view or note key: pressing
@@ -277,8 +277,8 @@ tables with your own bindings.
 | `g H` |  | `go.prev_severity` | Go to the previous finding by severity, the reverse of next by severity. |
 | `g g` |  | `go.top` | Go to the first line of this file's first block. |
 | `g e` |  | `go.end` | Go to the last line of this file's last block. |
-| `g <n> Enter` |  | `go.line` | Type a line number and Enter to go to that line of this file, or the nearest line shown. |
-| `g c <n> Enter` |  | `go.chapter` | Type a chapter number and Enter to go to that chapter's first block. |
+| `g <n> g` | `g <n> Enter` | `go.line` | Type a line number, then close it with the go prefix key again or Enter, to go to that line of this file, or the nearest line shown. |
+| `g c <n> g` | `g c <n> Enter` | `go.chapter` | Type a chapter number, then close it with the go prefix key again or Enter, to go to that chapter's first block. |
 
 <!-- keys:end -->
 
