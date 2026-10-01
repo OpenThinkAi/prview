@@ -17,8 +17,9 @@ import { lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { FileDiff } from "./diff.ts";
 import { hunksOf } from "./guide.ts";
-import { exportDocument, Fail, home, save, VERDICT, writeup, type Review } from "./build.ts";
-import type { Doc, Human, Submission, Target } from "./document.ts";
+import { exportDocument, Fail, save, VERDICT, writeup, type Review } from "./build.ts";
+import { PostError, type Doc, type Human, type Submission, type Target } from "./document.ts";
+import { freshStamp, historyDir, submittedDir } from "./history.ts";
 import { adapterFor, postingOf, spawn, type Adapter, type Posting, type Runner } from "./platform.ts";
 import { applySelection, type Selection } from "./submit-flow.ts";
 import type { Defaults } from "./triage.ts";
@@ -69,7 +70,7 @@ export function hookOf(run: string[], file: string, cwd: string, timeoutMs = HOO
 /** Everything submit will do, worked out before it does any of it, so the preview can show it. `human`: the reader's layer as it will be written. */
 export type Plan = { file: string; md: string; hookFile: string; target: Target; platform?: string; adapter?: Adapter; posting?: Posting; hook?: Hook; human: Human };
 
-export const submittedDir = () => join(home(), "submitted");
+export { submittedDir };
 
 /**
  * What the human chose at submit: the flow's selection (ticked findings, verdict, top-level comment) and a coverage
@@ -85,7 +86,9 @@ export function coverageLine(d: Doc, files: FileDiff[]): string {
 }
 
 export function planOf(r: Review, files: FileDiff[], choices: Choices = {}): Plan {
-  const file = join(submittedDir(), `${r.slug}.json`), md = join(submittedDir(), `${r.slug}.md`), hookFile = join(submittedDir(), `${r.slug}.hook.json`);
+  // Every submit is kept, under its own time: submitted/<slug>/<UTC timestamp>.json, .md and .hook.json (history.ts).
+  const dir = historyDir(r.slug), stamp = freshStamp(dir, choices.at ?? new Date().toISOString());
+  const file = join(dir, `${stamp}.json`), md = join(dir, `${stamp}.md`), hookFile = join(dir, `${stamp}.hook.json`);
   const d = r.doc, platform = d.target.platform, adapter = adapterFor(platform);
   const human = choices.selection ? applySelection(d.human, d.findings, choices.selection, choices.defaults, choices.at) : d.human;
   const paths = new Map(hunksOf(files).map((h) => [h.id, h.file.path]));
@@ -179,11 +182,11 @@ export async function submit(r: Review, files: FileDiff[], opts: Choices & { all
 
   // 1. The document, before anything that can fail for reasons outside this machine.
   try {
-    mkdirSync(submittedDir(), { recursive: true });
+    mkdirSync(dirname(p.file), { recursive: true });
     writeFileSync(p.md, writeup(d, files, opts.defaults));
     writeFileSync(p.file, exportDocument(r));
   } catch (e) { throw new Fail(`could not write ${p.file}: ${(e as Error).message}`); }
-  const sub: Submission = { at, verdict, file: p.file };
+  const sub: Submission = { at, verdict, file: p.file, head: d.target.head, ...(p.platform ? { platform: p.platform } : {}) };
   const parts = [`Submitted (${VERDICT[verdict]}): wrote ${p.file}`];
   let ok = true;
 
@@ -192,12 +195,14 @@ export async function submit(r: Review, files: FileDiff[], opts: Choices & { all
   else if (!p.adapter) parts.push(`no ${p.platform} adapter yet, the file is the review`);
   else {
     try {
-      const { url } = await p.adapter.post(d.target, p.posting!, opts.run ?? spawn, r.worktree);
-      sub.posted = { platform: p.adapter.platform, ok: true, ...(url ? { url } : {}) };
+      const { url, review_id, items } = await p.adapter.post(d.target, p.posting!, opts.run ?? spawn, r.worktree);
+      sub.posted = { platform: p.adapter.platform, ok: true, ...(url ? { url } : {}), ...(review_id ? { review_id } : {}), ...(items?.length ? { items } : {}) };
       parts.push(`posted to ${url ?? p.platform}`);
     } catch (e) {
       const error = (e as Error).message;
-      sub.posted = { platform: p.adapter.platform, ok: false, error };
+      // A partial failure still records what reached the PR, with its ids: a re-review finds those comments too.
+      const items = e instanceof PostError ? e.items : [];
+      sub.posted = { platform: p.adapter.platform, ok: false, error, ...(items.length ? { items } : {}) };
       parts.push(`NOT posted to ${p.platform}: ${error}`); ok = false;
     }
   }

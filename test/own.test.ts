@@ -143,8 +143,11 @@ test("a file-level comment posts as a file-level review comment (subject_type fi
   expect(p.comments).toEqual([{ path: "src/a.rs", side: "new", line: 2, text: "a line comment" }]);
   expect(p.files).toEqual([{ path: "src/a.rs", text: "about the whole file" }]);
   const { calls, run } = fakeGh();
-  expect(await github.post(target, p, run, "/wt")).toEqual({ url: `${PR}#r` });
-  expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET repos/o/r/pulls/7", "POST repos/o/r/pulls/7/reviews", "POST repos/o/r/pulls/7/comments", "POST repos/o/r/pulls/7/reviews/99/events"]);
+  expect(await github.post(target, p, run, "/wt")).toEqual({ url: `${PR}#r`, review_id: 99, items: [
+    { kind: "line", path: "src/a.rs", line: 2, side: "new", text: "a line comment", review_id: 99 }, // this fake lists no review comments: no ids to match
+    { kind: "file", path: "src/a.rs", text: "about the whole file" },
+  ] });
+  expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET repos/o/r/pulls/7", "POST repos/o/r/pulls/7/reviews", "POST repos/o/r/pulls/7/comments", "POST repos/o/r/pulls/7/reviews/99/events", "GET repos/o/r/pulls/7/reviews/99/comments?per_page=100&page=1"]);
   expect(calls[1]!.body.comments).toHaveLength(1); // the pending review holds only the line comment
   expect(calls[2]!.body).toEqual({ commit_id: B, path: "src/a.rs", subject_type: "file", body: "about the whole file" });
   expect(calls[3]!.body).toEqual({ event: "COMMENT", body: "" });

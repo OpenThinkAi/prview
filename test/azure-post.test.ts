@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { azureHttp, type AzRunner, type Http, type HttpReq, type HttpRes } from "../src/azure-auth.ts";
 import { parseConfig } from "../src/config.ts";
-import type { Target } from "../src/document.ts";
+import { PostError, type Target } from "../src/document.ts";
 import { adapterFor, postingOf, type Posting, type Runner } from "../src/platform.ts";
 import { azure, azureAdapter, azureProblem, VOTE } from "../src/platforms/azure.ts";
 import { submit } from "../src/submit.ts";
@@ -34,7 +34,7 @@ function fakeAzure(over: Over = {}) {
     const ch = u.match(/\/iterations\/3\/changes\?\$top=2000&\$skip=(\d+)&api-version=7\.1$/);
     if (ch) { const i = Number(ch[1]) / 2000; return res(200, { changeEntries: pages[i] ?? [], ...(i + 1 < pages.length ? { nextSkip: (i + 1) * 2000, nextTop: 2000 } : { nextSkip: 0, nextTop: 0 }) }); }
     if (u === "https://dev.azure.com/contoso/_apis/connectionData") return over.me ?? res(200, { authenticatedUser: { id: "me-123" } });
-    if (u === `${ROOT}/threads?api-version=7.1` && req.method === "POST") return res(200, { id: ++threadId });
+    if (u === `${ROOT}/threads?api-version=7.1` && req.method === "POST") { ++threadId; return res(200, { id: threadId, comments: [{ id: 1, parentCommentId: 0 }] }); }
     if (u === `${ROOT}/reviewers/me-123?api-version=7.1` && req.method === "PUT") return res(200, { vote: JSON.parse(req.body!).vote });
     return res(404, { message: `unexpected ${req.method} ${u}` });
   };
@@ -68,7 +68,12 @@ describe("azure adapter", () => {
       files: [{ path: "src/new.ts", text: "rename it back?" }],
       coverage: "I read 2 of 3 hunks.",
     });
-    expect(await f.adapter.post(t, p, f.run, "/wt")).toEqual({ url: URL_ });
+    expect(await f.adapter.post(t, p, f.run, "/wt")).toEqual({ url: URL_, items: [
+      { kind: "line", path: "src/a.ts", line: 2, side: "new", text: "why twelve?", thread_id: 101, comment_id: 1 },
+      { kind: "line", path: "src/a.ts", line: 1, side: "old", text: "was this used?", thread_id: 102, comment_id: 1 },
+      { kind: "file", path: "src/new.ts", text: "rename it back?", thread_id: 103, comment_id: 1 },
+      { kind: "summary", text: "Looks right.\n\nI read 2 of 3 hunks.", thread_id: 104, comment_id: 1 },
+    ] });
     expect(f.calls.map((c) => `${c.method} ${c.url.replace(ROOT, "").replace("https://dev.azure.com/contoso", "")}`)).toEqual([
       "GET /iterations?api-version=7.1",
       "GET /iterations/3/changes?$top=2000&$skip=0&api-version=7.1",
@@ -168,6 +173,15 @@ describe("azure adapter", () => {
     expect(m).toContain(`already posted (left in place): thread 101 (line comment on src/a.ts:1, ${URL_}?discussionId=101)`);
     expect(m).toContain("No vote was cast.");
     expect(f.writes().map((c) => c.method)).toEqual(["POST", "POST"]);
+  });
+
+  test("a partial failure is a PostError listing what was posted, with thread and comment ids", async () => {
+    let posts = 0;
+    const f = fakeAzure({ fail: (r) => r.method === "POST" && ++posts === 2 ? res(400, { message: "TF401181: bad position" }) : undefined });
+    const p = words("approve", { comments: [{ path: "src/a.ts", side: "new", line: 1, text: "one" }, { path: "src/a.ts", side: "new", line: 2, text: "two" }] });
+    const e = await f.adapter.post(t, p, f.run, "/wt").then(() => undefined, (x) => x);
+    expect(e).toBeInstanceOf(PostError);
+    expect((e as PostError).items).toEqual([{ kind: "line", path: "src/a.ts", line: 1, side: "new", text: "one", thread_id: 101, comment_id: 1 }]);
   });
 
   test("a failed vote names every thread already on the PR", async () => {

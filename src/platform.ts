@@ -8,7 +8,7 @@
 // the one they saved with b or c, or, for a finding they ticked at submit, the finding's text they chose to post
 // (submit-flow.ts applySelection). Never the write-up, never a finding's source, never a word about prview or any model. Commands run through an injected runner so tests never touch a network.
 
-import type { Comment, Target, Verdict } from "./document.ts";
+import { PostError, type Comment, type PostedItem, type Target, type Verdict } from "./document.ts";
 import { azure } from "./platforms/azure.ts";
 
 /** Runs one argv (no shell) and hands back what happened; the real one is `spawn` below. */
@@ -28,6 +28,9 @@ export type Posting = {
   files?: { path: string; text: string }[];
 };
 
+/** What a post put on the PR: its URL when known, and each posted item with the platform's ids (see PostedItem). */
+export type Posted = { url?: string; /** GitHub: the submitted review's id. */ review_id?: number; items?: PostedItem[] };
+
 export type Adapter = {
   platform: string;
   /** The verdicts this platform takes, in the order the submit radio lists them. */
@@ -36,8 +39,12 @@ export type Adapter = {
   describe(t: Target, p: Posting): string;
   /** The API calls post would make, as printable text, without making any. */
   dryRun(t: Target, p: Posting): string[];
-  /** Post it; rejects with a reason the reader can act on. Resolves to the URL of what was posted when known. Async: a platform reached over HTTP awaits each call. */
-  post(t: Target, p: Posting, run: Runner, cwd: string): Promise<{ url?: string }>;
+  /**
+   * Post it; rejects with a reason the reader can act on (a PostError when something already reached the PR, listing
+   * it). Resolves to what was posted: the URL when known and every item with its ids. Async: a platform reached over
+   * HTTP awaits each call.
+   */
+  post(t: Target, p: Posting, run: Runner, cwd: string): Promise<Posted>;
 };
 
 /**
@@ -106,7 +113,43 @@ function githubCalls(t: Target, p: Posting, reviewId: number | string = "<review
     // A comment on a whole file: GitHub takes these one at a time, outside a pending review (subject_type file).
     file: (x: { path: string; text: string }): Call => ({ method: "POST", path: `${pr}/comments`, body: { commit_id: t.head, path: x.path, subject_type: "file", body: x.text } }),
     discard: { method: "DELETE", path: `${pr}/reviews/${reviewId}` } as Call,
+    // Read back after the submit: the review's comments, for their ids (GitHub's create does not return them).
+    comments: (page: number): Call => ({ method: "GET", path: `${pr}/reviews/${reviewId}/comments?per_page=100&page=${page}` }),
   };
+}
+
+/** A GitHub id as a number, or undefined. */
+const numId = (v: unknown): number | undefined => {
+  const n = typeof v === "string" && /^\d+$/.test(v) ? Number(v) : v;
+  return typeof n === "number" && Number.isSafeInteger(n) && n > 0 ? n : undefined;
+};
+/** A posted GitHub comment's ids, from what the API returned for it. */
+const commentIds = (j: any): Pick<PostedItem, "comment_id" | "node_id"> => {
+  const id = numId(j?.id);
+  return { ...(id ? { comment_id: id } : {}), ...(typeof j?.node_id === "string" && j.node_id ? { node_id: j.node_id } : {}) };
+};
+
+/**
+ * Each line comment's ids, matched from the review's comments as GitHub lists them: same path, line, side and text
+ * first, then same path and text, each used once. A comment it cannot match (or a read that fails) has no ids; the
+ * review id is still known, and a later re-review can match by path, line and text.
+ */
+function lineIds(run: Runner, cwd: string, c: ReturnType<typeof githubCalls>, posted: Posting["comments"]): Pick<PostedItem, "comment_id" | "node_id">[] {
+  if (!posted.length) return []; // nothing to read back
+  const listed: any[] = [];
+  try {
+    for (let page = 1; page <= 30; page++) {
+      const got = gh(run, cwd, c.comments(page));
+      if (!Array.isArray(got)) break;
+      listed.push(...got);
+      if (got.length < 100) break;
+    }
+  } catch { return posted.map(() => ({})); }
+  const used = new Set<number>();
+  const take = (ok: (x: any) => boolean) => { const i = listed.findIndex((x, k) => !used.has(k) && ok(x)); if (i < 0) return undefined; used.add(i); return listed[i]; };
+  const same = (x: any, q: Posting["comments"][number]) => x?.path === q.path && x?.body === q.text;
+  const exact = posted.map((q) => take((x) => same(x, q) && (x.line ?? x.original_line) === q.line && x.side === (q.side === "old" ? "LEFT" : "RIGHT")));
+  return posted.map((q, i) => commentIds(exact[i] ?? take((x) => same(x, q))));
 }
 
 export const github: Adapter = {
@@ -128,6 +171,7 @@ export const github: Adapter = {
       show(c.create, "a pending review holding the line comments (side RIGHT is the new file, LEFT the old)"),
       ...(p.files ?? []).map((x) => show(c.file(x), "a comment on the whole file; if GitHub refuses it, it goes into the summary instead")),
       show(c.submit, "submit it with the verdict"),
+      ...(p.comments.length ? [show(c.comments(1), "read back the review's comments (paged) for their ids, kept in the submission record")] : []),
     ];
   },
   async post(t, p, run, cwd) {
@@ -141,19 +185,36 @@ export const github: Adapter = {
     const id = gh(run, cwd, c.create)?.id;
     if (typeof id !== "number" && typeof id !== "string") throw new Error("gh api did not return the pending review's id");
     const later = githubCalls(t, p, id);
+    const fileItems: PostedItem[] = [];
+    let body: string, done: any;
     try {
       // Whole-file comments go after the pending review took the line comments (so a bad one is caught first). One GitHub
       // will not take still reaches the PR, in the summary, under its file name.
       const folded: string[] = [];
-      for (const x of p.files ?? []) { try { gh(run, cwd, later.file(x)); } catch { folded.push(`${x.path}: ${x.text}`); } }
-      const summary = { ...later.submit, body: { ...(later.submit.body as object), body: [p.body, ...folded, p.coverage].filter(Boolean).join("\n\n") } };
-      const done = gh(run, cwd, summary);
-      return { url: typeof done?.html_url === "string" ? done.html_url : t.url };
+      for (const x of p.files ?? []) {
+        let got: any;
+        try { got = gh(run, cwd, later.file(x)); } catch { folded.push(`${x.path}: ${x.text}`); continue; }
+        fileItems.push({ kind: "file", path: x.path, text: x.text, ...commentIds(got) });
+      }
+      body = [p.body, ...folded, p.coverage].filter(Boolean).join("\n\n");
+      const summary = { ...later.submit, body: { ...(later.submit.body as object), body } };
+      done = gh(run, cwd, summary);
     } catch (e) {
       // Never leave a pending review behind: it would sit half-made on the PR and block the next attempt.
       try { gh(run, cwd, later.discard); } catch {}
-      throw e;
+      // The whole-file comments are not part of the review: those already taken stay on the PR, and are recorded.
+      throw fileItems.length ? new PostError((e as Error).message, fileItems) : e;
     }
+    // Submitted: what is on the PR now, with the ids a later re-review answers and resolves by.
+    const review_id = numId(id) ?? numId(done?.id);
+    const rid = review_id ? { review_id } : {};
+    const ids = lineIds(run, cwd, later, p.comments);
+    const items: PostedItem[] = [
+      ...p.comments.map((q, i): PostedItem => ({ kind: "line", path: q.path, line: q.line, side: q.side, text: q.text, ...rid, ...ids[i] })),
+      ...fileItems,
+      ...(body.trim() ? [{ kind: "summary" as const, text: body, ...rid }] : []),
+    ];
+    return { url: typeof done?.html_url === "string" ? done.html_url : t.url, ...rid, items };
   },
 };
 
