@@ -3,10 +3,11 @@
 // whose remoteKey reads the clone's origin (else its only remote), and GitHub when none does, since GitHub's
 // key reads any host (a mirror of o/r is still o/r) and so it goes last, as the fallback.
 
+import { azure } from "./azure.ts";
 import { github } from "./github.ts";
 import { remotesOf, type PrRef, type PrSource } from "./pr.ts";
 
-export const SOURCES: readonly PrSource[] = [github];
+export const SOURCES: readonly PrSource[] = [azure, github];
 const FALLBACK: PrSource = github;
 
 const BARE = /^#?\d+$/;
