@@ -14,7 +14,7 @@ import { isAbsolute, join, relative } from "node:path";
 import type { FileDiff } from "./diff.ts";
 import { clip, DATA_RULE, fence, fitLine, hunksOf, numbered, SEVERITIES, titleOf, type Finding, type Severity } from "./guide.ts";
 import { decide } from "./triage.ts";
-import { DEFAULT_MODEL, loadConfig, realLookups, resolveModel, roleModel, type Config, type DeepLimits, type Lookups, type Resolved } from "./config.ts";
+import { loadConfig, realLookups, resolveModel, roleModel, type Config, type DeepLimits, type Lookups, type Resolved } from "./config.ts";
 import { claudeModelId, complete } from "./llm.ts";
 import { clean, visible } from "./sanitize.ts";
 import type { Review, Run } from "./build.ts";
@@ -277,6 +277,7 @@ export function readStreamLine(line: string, cwd: string): { steps: string[]; re
 
 /** The agent as `claude -p` runs it, in the worktree. The step cap and the timeout each end it, as does `signal`. */
 export const claudeAgent: Runner = async ({ cwd, system, prompt, model, limits, onStep, signal }) => {
+  if (signal?.aborted) throw new Error("cancelled"); // an abort before the start would never reach the process
   const p = Bun.spawn(agentArgs(model, system, limits.steps), { stdin: Buffer.from(prompt), env: process.env, cwd, stdout: "pipe", stderr: "pipe" });
   let steps = 0, stopped: AgentResult["stopped"];
   const stop = (why: AgentResult["stopped"]) => { stopped ??= why; p.kill(); };
@@ -325,7 +326,7 @@ export type AskDeps = { cfg?: Config; lookups?: Lookups; runner?: Runner; call?:
 export function deepModel(r: Pick<Review, "ai">, cfg: Config, lookups: Lookups): Resolved {
   const recorded = r.ai?.models?.deep;
   const name = recorded && cfg.models[recorded] ? recorded : roleModel(cfg, "deep");
-  return resolveModel(cfg, name ?? DEFAULT_MODEL, lookups);
+  return resolveModel(cfg, name, lookups);
 }
 
 const readAround = (worktree: string) => (path: string, from: number, to: number): string => {
