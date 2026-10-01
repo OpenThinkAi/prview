@@ -257,6 +257,11 @@ export function agentArgs(model: string | undefined, system: string, steps: numb
  * Both the path as given and its real path are walked (/tmp is /private/tmp on macOS). A rule is `//abs/path` for the
  * entry and `//abs/path/**` for what is under it; a name with a parenthesis has it matched by `?`, since a rule cannot
  * hold one. Entries created after the agent starts are not covered.
+ *
+ * The rules are `Read(...)` only, and that covers Grep and Glob too: claude matches file permission rules for every
+ * file-reading tool against Read rules (checked against claude 2.1: a Grep or Glob outside the worktree finds nothing,
+ * a Read is refused), and it warns that a `Grep(path)` or `Glob(path)` deny rule "is not matched by file permission
+ * checks — only Read(path) rules are", so adding those would do nothing.
  */
 export function outsideRules(dir: string, list: (d: string) => string[] = (d) => { try { return readdirSync(d); } catch { return []; } }, real: (d: string) => string = (d) => { try { return realpathSync(d); } catch { return d; } }): string[] {
   const out = new Set<string>();
