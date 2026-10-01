@@ -3,9 +3,9 @@
 // all) is not an error, the written document is then the review.
 //
 // What is posted is the human's own words and nothing more: the verdict, their summary comments as
-// the body, their line comments on their lines. A finding the human decided to block on or comment
-// on reaches here only as the line comment they saved for it. Never the write-up, never a finding's
-// own text, never a word about prview or any model. Commands run through an injected runner so tests never touch a network.
+// the body, their line comments on their lines. A finding reaches here only as a line comment in the human's layer:
+// the one they saved with b or c, or, for a finding they ticked at submit, the finding's text they chose to post
+// (submit-flow.ts applySelection). Never the write-up, never a finding's source, never a word about prview or any model. Commands run through an injected runner so tests never touch a network.
 
 import type { Comment, Target, Verdict } from "./document.ts";
 
@@ -28,6 +28,8 @@ export type Posting = {
 
 export type Adapter = {
   platform: string;
+  /** The verdicts this platform takes, in the order the submit radio lists them. */
+  verdicts: Verdict[];
   /** One line for the submit preview: where this would post, or why it cannot. */
   describe(t: Target, p: Posting): string;
   /** The API calls post would make, as printable text, without making any. */
@@ -66,9 +68,9 @@ function githubProblem(t: Target, p: Posting): string | undefined {
   if (!prOf(t)) return "no GitHub pull request URL in the document's target";
   // GitHub wants words with a change request or a comment; prview never writes them for you.
   const words = p.comments.length + (p.files?.length ?? 0);
-  if (p.verdict !== "approve" && !p.body.trim() && !words) return `${p.verdict === "request_changes" ? "requesting changes" : "a comment"} needs a summary comment (N) or a line comment (n) to post`;
+  if (p.verdict !== "approve" && !p.body.trim() && !words) return `${p.verdict === "request_changes" ? "requesting changes" : "a comment"} needs a top-level comment or a ticked finding to post`;
   // The coverage line is opt-in and is never the whole review: there must be words of the human's own beside it.
-  if (p.coverage && !p.body.trim() && !words) return "a coverage line needs a summary comment (N) or a line comment (n) to go with it";
+  if (p.coverage && !p.body.trim() && !words) return "a coverage line needs a top-level comment or a ticked finding to go with it";
   return undefined;
 }
 
@@ -107,6 +109,7 @@ function githubCalls(t: Target, p: Posting, reviewId: number | string = "<review
 
 export const github: Adapter = {
   platform: "github",
+  verdicts: ["approve", "request_changes", "comment"],
   describe(t, p) {
     const why = githubProblem(t, p);
     if (why) return `not posted: ${why}`;
@@ -156,3 +159,8 @@ const ADAPTERS: Record<string, Adapter> = { github };
 
 /** The adapter for a platform, if prview has one. GitLab and Azure DevOps come later, as more entries here. */
 export const adapterFor = (platform: string | undefined): Adapter | undefined => platform ? ADAPTERS[platform.toLowerCase()] : undefined;
+
+/** Every verdict a document can record: what the submit radio offers when no adapter posts (the file is the review). */
+export const ALL_VERDICTS: Verdict[] = ["approve", "request_changes", "comment"];
+/** The verdicts the submit radio offers for a platform: its adapter's, or every one the document can record. */
+export const verdictsFor = (platform: string | undefined): Verdict[] => adapterFor(platform)?.verdicts ?? ALL_VERDICTS;

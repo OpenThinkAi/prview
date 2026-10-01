@@ -34,7 +34,7 @@ const TITLES: Record<string, string> = { toc: "contents", code: "keys", finding:
 export const panelTitle = (s: KeyState, pending: Pending | null = null): string =>
   pending ? `${pending.prefix} ${PREFIXES[pending.prefix]}`
   : s.state === "prompt" ? (s.kind === "reason" ? "ignore" : s.kind === "docs" ? "search the docs" : s.kind === "finding" ? "new finding" : s.kind)
-  : s.state === "submit" ? (s.step === "verdict" ? "verdict" : "submit")
+  : s.state === "submit" ? `submit · ${s.step}`
   : s.state === "content" && s.results ? "search the docs" : TITLES[s.state]!;
 
 /** A run of text in a panel line; `dim` for a secondary key. */

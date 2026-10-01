@@ -37,24 +37,32 @@ export type Action = {
   fixed?: true;
   /** Not built yet: the key acts with a notice naming what is coming. */
   coming?: string;
-  /** Submit only: the step it is pressed in, and the choice it needs the submit to have. */
-  step?: "verdict" | "preview";
-  needs?: "hook" | "coverage";
+  /**
+   * Submit only: the steps it is pressed in; in the comment step, whether only while typing (true) or only while not
+   * (false); and `needs: "boxes"`, in the send step only when the submit has a checkbox (a command, a coverage line).
+   */
+  steps?: readonly SubmitStep[];
+  typing?: boolean;
+  needs?: "boxes";
 };
+
+/** The submit flow's steps (submit-flow.ts): the findings checklist, the verdict, the top-level comment, then send. */
+export type SubmitStep = "findings" | "verdict" | "comment" | "send";
 
 /** A line being typed: `docs` is the question put to the docs search (`ask` is the one put to a model). */
 export type PromptKind = "ask" | "comment" | "reason" | "docs" | "severity" | "finding";
 
 /**
- * Where a key is pressed. `content` with `results`: docs search answers, where the arrows select. In the submit
- * preview `hook` and `coverage` are the current toggles, or null when the submit has no such choice.
+ * Where a key is pressed. `content` with `results`: docs search answers, where the arrows select. In the submit flow's
+ * comment step `typing` is whether the box takes the keys; in its send step `boxes` is whether there is a checkbox.
  */
 export type KeyState =
   | { state: "toc" | "code" | "finding" | "settings" }
   | { state: "content"; results?: boolean }
   | { state: "prompt"; kind: PromptKind; decide?: boolean }
-  | { state: "submit"; step: "verdict" }
-  | { state: "submit"; step: "preview"; dryRun: boolean; hook: boolean | null; coverage: boolean | null };
+  | { state: "submit"; step: "findings" | "verdict" }
+  | { state: "submit"; step: "comment"; typing: boolean }
+  | { state: "submit"; step: "send"; dryRun: boolean; boxes: boolean };
 
 const TOC: readonly State[] = ["toc"], CODE: readonly State[] = ["code"], FINDING: readonly State[] = ["finding"], CONTENT: readonly State[] = ["content"];
 const OUTSIDE: readonly State[] = ["toc", "code"], READING: readonly State[] = ["toc", "code", "finding"];
@@ -80,7 +88,7 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "code.new_finding", states: CODE, key: "enter", label: "new finding", description: "Write a finding of your own on the cursor line, or on a file's whole-file row: pick a severity, then write the comment, which posts if the finding's action is block or comment." },
 
   // ---- anywhere outside a finding
-  { id: "review.submit", states: OUTSIDE, key: "s", label: "submit", description: "Submit the review: choose a verdict, see what will be posted, then send it." },
+  { id: "review.submit", states: OUTSIDE, key: "s", label: "submit", description: "Submit the review: tick the findings to post, pick a verdict, write the top-level comment, see exactly what posts, then send." },
   { id: "review.copy", states: OUTSIDE, key: "y", label: "copy", description: "Copy the content area's main text; with nothing there, the cursor line's path and line number." },
   { id: "review.search_docs", states: OUTSIDE, key: "?", label: "search docs", description: "Search the docs in your own words and see the actions that answer it, with your keys; offline, no model." },
   { id: "review.settings", states: OUTSIDE, key: "\\", label: "settings", description: "Open the settings: keys, default actions, models, editor and display, saved to the config file." },
@@ -141,20 +149,24 @@ export const DEFAULT_ACTIONS: readonly Action[] = [
   { id: "prompt.down", states: ["prompt"], key: "down", secondary: "j", label: "severity", description: "Pick the next severity for your new finding.", fixed: true },
   { id: "prompt.newline", states: ["prompt"], key: "ctrl-n", label: "new line", description: "Start a new line in a comment of several lines.", fixed: true },
 
-  // ---- submit: the verdict, then the preview. Enter takes the default: request changes when you blocked on a finding.
-  { id: "submit.approve", states: ["submit"], step: "verdict", key: "a", label: "approve", description: "Approve the change.", fixed: true },
-  { id: "submit.request_changes", states: ["submit"], step: "verdict", key: "r", label: "request changes", description: "Request changes.", fixed: true },
-  { id: "submit.comment", states: ["submit"], step: "verdict", key: "c", label: "comment", description: "Leave a comment verdict, neither approving nor blocking.", fixed: true },
-  { id: "submit.default", states: ["submit"], step: "verdict", key: "enter", label: "default verdict", description: "Take the default verdict: request changes when you blocked on a finding, else the one already chosen.", fixed: true },
-  { id: "submit.cancel", states: ["submit"], step: "verdict", key: "esc", label: "cancel", description: "Go back to the review without a verdict.", fixed: true },
-  { id: "submit.send", states: ["submit"], step: "preview", key: "enter", label: "submit", description: "Submit: write the document and post it (a dry run only prints the calls).", fixed: true },
-  { id: "submit.hook", states: ["submit"], step: "preview", needs: "hook", key: "x", label: "allow command", description: "Allow or disallow the document's on_submit command for this submit.", fixed: true },
-  { id: "submit.coverage", states: ["submit"], step: "preview", needs: "coverage", key: "v", label: "coverage line", description: "Add or drop the line saying how much you read in the posted summary.", fixed: true },
-  { id: "submit.down", states: ["submit"], step: "preview", key: "down", secondary: "j", label: "scroll", description: "Scroll the preview down a line.", fixed: true },
-  { id: "submit.up", states: ["submit"], step: "preview", key: "up", secondary: "k", label: "scroll", description: "Scroll the preview up a line.", fixed: true },
-  { id: "submit.page_down", states: ["submit"], step: "preview", key: "pgdn", secondary: "ctrl-d", label: "page", description: "Page the preview down.", fixed: true },
-  { id: "submit.page_up", states: ["submit"], step: "preview", key: "pgup", secondary: "ctrl-u", label: "page", description: "Page the preview up.", fixed: true },
-  { id: "submit.back", states: ["submit"], step: "preview", key: "esc", label: "back", description: "Go back to the verdict.", fixed: true },
+  // ---- submit: the findings checklist, the verdict, the top-level comment, then send (submit-flow.ts). Tab and ⇧Tab
+  // move between the steps; Esc leaves without sending, except while typing the comment, where it stops the typing.
+  { id: "submit.down", states: ["submit"], steps: ["findings", "verdict", "send"], needs: "boxes", key: "down", secondary: "j", label: "move", description: "Move to the next finding, verdict or checkbox.", fixed: true },
+  { id: "submit.up", states: ["submit"], steps: ["findings", "verdict", "send"], needs: "boxes", key: "up", secondary: "k", label: "move", description: "Move to the previous finding, verdict or checkbox.", fixed: true },
+  { id: "submit.tick", states: ["submit"], steps: ["findings", "send"], needs: "boxes", key: "space", label: "tick", description: "Tick or untick the finding (or the checkbox) under the cursor.", fixed: true },
+  { id: "submit.tick_all", states: ["submit"], steps: ["findings"], key: "a", label: "tick all", description: "Tick every finding, or untick them all when every one is ticked.", fixed: true },
+  { id: "submit.newline", states: ["submit"], steps: ["comment"], typing: true, key: "enter", label: "new line", description: "Start a new line in the comment.", fixed: true },
+  { id: "submit.clear_line", states: ["submit"], steps: ["comment"], typing: true, key: "ctrl-u", label: "clear line", description: "Clear the line being typed.", fixed: true },
+  { id: "submit.word", states: ["submit"], steps: ["comment"], typing: true, key: "ctrl-w", label: "delete word", description: "Delete the last word.", fixed: true },
+  { id: "submit.stop_typing", states: ["submit"], steps: ["comment"], typing: true, key: "esc", label: "done typing", description: "Stop typing; the comment stays as it is.", fixed: true },
+  { id: "submit.edit", states: ["submit"], steps: ["comment"], typing: false, key: "enter", label: "type", description: "Type in the comment again.", fixed: true },
+  { id: "view.comment_editor", states: ["submit"], steps: ["comment"], typing: false, prefix: "v", key: "e", label: "editor", description: "Write the comment in your editor; it comes back here when you quit it.", fixed: true },
+  { id: "submit.send", states: ["submit"], steps: ["send"], key: "enter", label: "send", description: "Send: write the document, post it, and run the command if ticked (a dry run only prints the calls).", fixed: true },
+  { id: "submit.page_down", states: ["submit"], steps: ["send"], key: "pgdn", secondary: "ctrl-d", label: "page", description: "Page the preview down.", fixed: true },
+  { id: "submit.page_up", states: ["submit"], steps: ["send"], key: "pgup", secondary: "ctrl-u", label: "page", description: "Page the preview up.", fixed: true },
+  { id: "submit.next", states: ["submit"], steps: ["findings", "verdict", "comment"], key: "tab", label: "next step", description: "Go on to the next step.", fixed: true },
+  { id: "submit.back", states: ["submit"], steps: ["verdict", "comment", "send"], key: "shift-tab", label: "step back", description: "Go back to the step before.", fixed: true },
+  { id: "submit.leave", states: ["submit"], steps: ["findings", "verdict", "comment", "send"], typing: false, key: "esc", label: "leave", description: "Leave the submit flow; nothing is sent.", fixed: true },
 
   // ---- settings (settings.ts): the arrows walk the fields, Enter edits one, Esc leaves. Fixed, so a rebinding can never lock you out of the view that fixes it.
   { id: "settings.down", states: ["settings"], key: "down", secondary: "j", label: "field", description: "Move to the next field.", fixed: true },
@@ -234,8 +246,9 @@ export function keyOf(id: string, km: Keymap = active): string {
 const inState = (ks: KeyState) => (a: Action): boolean => {
   if (!a.states.includes(ks.state)) return false;
   if (ks.state !== "submit") return true;
-  if (a.step !== ks.step) return false;
-  return ks.step !== "preview" || !a.needs || ks[a.needs] !== null;
+  if (!a.steps?.includes(ks.step)) return false;
+  if (ks.step === "comment" && a.typing !== undefined && a.typing !== ks.typing) return false;
+  return ks.step !== "send" || a.needs !== "boxes" || ks.boxes;
 };
 
 /** How a row reads in this state: labels that say what Enter, x or v will do right now. */
@@ -246,10 +259,9 @@ function worded(ks: KeyState, a: Action): Action {
   }
   if (ks.state === "content" && ks.results && (a.id === "content.down" || a.id === "content.up")) return { ...a, label: "select" };
   if (ks.state === "content" && ks.results && a.id === "content.back") return { ...a, label: "close" };
-  if (ks.state === "submit" && ks.step === "preview") {
-    if (a.id === "submit.send" && ks.dryRun) return { ...a, label: "print the calls" };
-    if (a.needs === "hook") return { ...a, label: ks.hook ? "disallow command" : "allow command" };
-    if (a.needs === "coverage") return { ...a, label: ks.coverage ? "drop coverage line" : "add coverage line" };
+  if (ks.state === "submit") {
+    if (a.id === "submit.send" && ks.step === "send" && ks.dryRun) return { ...a, label: "print the calls" };
+    if (a.id === "submit.down" || a.id === "submit.up") return { ...a, label: ks.step === "findings" ? "finding" : ks.step === "verdict" ? "verdict" : "checkbox" };
   }
   return a;
 }
@@ -364,7 +376,7 @@ function checkConflicts(km: Keymap): void {
 
 const STATE_NAMES: Record<State, string> = {
   toc: "toc: the table of contents", code: "code: reading the code, no finding open", finding: "finding: a finding is open",
-  content: "content: focus in the content area (Tab)", prompt: "prompt: a line being typed", submit: "submit: the verdict, then the preview",
+  content: "content: focus in the content area (Tab)", prompt: "prompt: a line being typed", submit: "submit: the findings checklist, the verdict, the comment, then send",
   settings: "settings: the settings view",
 };
 

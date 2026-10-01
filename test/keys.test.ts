@@ -19,8 +19,9 @@ const CODE: KeyState = { state: "code" }, TOC: KeyState = { state: "toc" }, FIND
 const ALL_STATES: KeyState[] = [
   TOC, CODE, FINDING, CONTENT, { state: "content", results: true }, { state: "settings" },
   { state: "prompt", kind: "ask" }, { state: "prompt", kind: "comment" }, { state: "prompt", kind: "comment", decide: true }, { state: "prompt", kind: "reason" }, { state: "prompt", kind: "docs" }, { state: "prompt", kind: "severity" }, { state: "prompt", kind: "finding" },
-  { state: "submit", step: "verdict" },
-  { state: "submit", step: "preview", dryRun: false, hook: null, coverage: null }, { state: "submit", step: "preview", dryRun: true, hook: false, coverage: true },
+  { state: "submit", step: "findings" }, { state: "submit", step: "verdict" },
+  { state: "submit", step: "comment", typing: true }, { state: "submit", step: "comment", typing: false },
+  { state: "submit", step: "send", dryRun: false, boxes: false }, { state: "submit", step: "send", dryRun: true, boxes: true },
 ];
 const name = (s: KeyState) => JSON.stringify(s);
 /** Keys a terminal can send: every printable ASCII character and every named key. */
@@ -219,10 +220,24 @@ test("chords: a remap moves the chord, and a key freed by a remap acts no more",
   expect(press(CODE, ["v", "w"], km).out).toEqual({ kind: "cancel" });
 });
 
-test("steps with Esc of their own (a prompt's cancel, the submit's back) act on it", () => {
+test("steps with Esc of their own (a prompt's cancel, leaving the submit flow, stopping typing) act on it", () => {
   expect(press({ state: "prompt", kind: "comment" }, ["esc"]).out).toEqual({ kind: "act", id: "prompt.cancel" });
-  expect(press({ state: "submit", step: "verdict" }, ["esc"]).out).toEqual({ kind: "act", id: "submit.cancel" });
-  expect(press({ state: "submit", step: "preview", dryRun: false, hook: null, coverage: null }, ["esc"]).out).toEqual({ kind: "act", id: "submit.back" });
+  for (const ks of [{ step: "findings" }, { step: "verdict" }, { step: "comment", typing: false }, { step: "send", dryRun: false, boxes: true }] as const)
+    expect(press({ state: "submit", ...ks } as KeyState, ["esc"]).out, ks.step).toEqual({ kind: "act", id: "submit.leave" });
+  expect(press({ state: "submit", step: "comment", typing: true }, ["esc"]).out).toEqual({ kind: "act", id: "submit.stop_typing" });
+  // The submit steps: Tab on, ⇧Tab back (none before the first, none after the last).
+  expect(press({ state: "submit", step: "findings" }, ["tab"]).out).toEqual({ kind: "act", id: "submit.next" });
+  expect(press({ state: "submit", step: "findings" }, ["shift-tab"]).out).toEqual({ kind: "none" });
+  expect(press({ state: "submit", step: "send", dryRun: false, boxes: false }, ["tab"]).out).toEqual({ kind: "none" });
+  expect(press({ state: "submit", step: "send", dryRun: false, boxes: false }, ["shift-tab"]).out).toEqual({ kind: "act", id: "submit.back" });
+  // Typing the comment, letters (v included) are text; out of typing, v e opens the editor.
+  for (const k of ["v", "a", "j", "q", "space"]) expect(press({ state: "submit", step: "comment", typing: true }, [k]).out, k).toEqual({ kind: "none" });
+  expect(press({ state: "submit", step: "comment", typing: true }, ["enter"]).out).toEqual({ kind: "act", id: "submit.newline" });
+  expect(press({ state: "submit", step: "comment", typing: false }, ["v", "e"]).out).toEqual({ kind: "act", id: "view.comment_editor" });
+  expect(press({ state: "submit", step: "comment", typing: false }, ["enter"]).out).toEqual({ kind: "act", id: "submit.edit" });
+  // The send step's checkbox keys act only when there is a checkbox.
+  expect(press({ state: "submit", step: "send", dryRun: false, boxes: false }, ["space"]).out).toEqual({ kind: "none" });
+  expect(press({ state: "submit", step: "send", dryRun: false, boxes: true }, ["space"]).out).toEqual({ kind: "act", id: "submit.tick" });
   // In a prompt, letters are text: they resolve to nothing, and a/f/v/g are not prefixes there.
   for (const k of ["a", "g", "j", "?", "\\", "q"]) expect(press({ state: "prompt", kind: "comment" }, [k]).out, k).toEqual({ kind: "none" });
 });

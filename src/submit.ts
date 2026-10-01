@@ -1,4 +1,6 @@
-// Submitting a review, the same way whoever produced the document:
+// Submitting a review, the same way whoever produced the document. What the submit flow chose (submit-flow.ts: the
+// ticked findings, the verdict, the top-level comment) is applied to the reader's layer first, so the document
+// records exactly what goes out, and the preview is drawn from the same plan that posts. Then:
 //   1. write the finished document (and its markdown) — always, first, so nothing after can lose it;
 //   2. post it through the adapter for `target.platform`, if prview has one (none: the file is the review);
 //   3. run the document's `on_submit` command, only if the human allowed it in this submit.
@@ -16,8 +18,9 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { FileDiff } from "./diff.ts";
 import { hunksOf } from "./guide.ts";
 import { exportDocument, Fail, home, save, VERDICT, writeup, type Review } from "./build.ts";
-import type { Doc, Submission, Target } from "./document.ts";
+import type { Doc, Human, Submission, Target } from "./document.ts";
 import { adapterFor, postingOf, spawn, type Adapter, type Posting, type Runner } from "./platform.ts";
+import { applySelection, type Selection } from "./submit-flow.ts";
 import type { Defaults } from "./triage.ts";
 
 export const HOOK_TIMEOUT_MS = 60_000;
@@ -63,13 +66,16 @@ export function hookOf(run: string[], file: string, cwd: string, timeoutMs = HOO
   return { argv, cwd, timeoutMs, ...(stdout ? { stdout: resolve(cwd, stdout) } : {}), ...(refused ? { refused } : {}) };
 }
 
-/** Everything submit will do, worked out before it does any of it, so the preview can show it. */
-export type Plan = { file: string; md: string; hookFile: string; target: Target; platform?: string; adapter?: Adapter; posting?: Posting; hook?: Hook };
+/** Everything submit will do, worked out before it does any of it, so the preview can show it. `human`: the reader's layer as it will be written. */
+export type Plan = { file: string; md: string; hookFile: string; target: Target; platform?: string; adapter?: Adapter; posting?: Posting; hook?: Hook; human: Human };
 
 export const submittedDir = () => join(home(), "submitted");
 
-/** What the human opted into at submit: a coverage line, off by default. Findings post only as the comments their block or comment actions wrote. */
-export type Choices = { coverage?: boolean };
+/**
+ * What the human chose at submit: the flow's selection (ticked findings, verdict, top-level comment) and a coverage
+ * line, off by default. Without a selection the reader's layer is taken as it stands.
+ */
+export type Choices = { coverage?: boolean; selection?: Selection; defaults?: Defaults; at?: string };
 
 /** The coverage line, in the reader's own voice: how much of the change they read. */
 export function coverageLine(d: Doc, files: FileDiff[]): string {
@@ -81,9 +87,35 @@ export function coverageLine(d: Doc, files: FileDiff[]): string {
 export function planOf(r: Review, files: FileDiff[], choices: Choices = {}): Plan {
   const file = join(submittedDir(), `${r.slug}.json`), md = join(submittedDir(), `${r.slug}.md`), hookFile = join(submittedDir(), `${r.slug}.hook.json`);
   const d = r.doc, platform = d.target.platform, adapter = adapterFor(platform);
+  const human = choices.selection ? applySelection(d.human, d.findings, choices.selection, choices.defaults, choices.at) : d.human;
   const paths = new Map(hunksOf(files).map((h) => [h.id, h.file.path]));
-  const posting = d.human.verdict ? postingOf(d.human.verdict, d.human.comments, (id) => paths.get(id), { coverage: choices.coverage ? coverageLine(d, files) : undefined }) : undefined;
-  return { file, md, hookFile, target: d.target, platform, adapter, posting, ...(d.on_submit ? { hook: hookOf(d.on_submit.run, hookFile, r.worktree) } : {}) };
+  const posting = human.verdict ? postingOf(human.verdict, human.comments, (id) => paths.get(id), { coverage: choices.coverage ? coverageLine(d, files) : undefined }) : undefined;
+  return { file, md, hookFile, target: d.target, platform, adapter, posting, human, ...(d.on_submit ? { hook: hookOf(d.on_submit.run, hookFile, r.worktree) } : {}) };
+}
+
+/**
+ * The send step's account of what posts, drawn from the posting itself so it is exactly what goes out: the verdict,
+ * the top-level comment (and the coverage line when chosen), each line comment on its file and line, and each comment
+ * on a whole file.
+ */
+export function postPreview(p: Plan, label: (v: Posting["verdict"]) => string): string {
+  const where = !p.platform ? "nothing is posted (the document has no platform): this is what the review records"
+    : !p.adapter ? `nothing is posted (no ${p.platform} adapter yet): this is what the review records`
+    : `what posts to ${p.target.url ?? p.platform}`;
+  const out = [`── ${where[0]!.toUpperCase()}${where.slice(1)}`, ""];
+  const q = p.posting;
+  if (!q) return [...out, "No verdict yet."].join("\n");
+  out.push(`Verdict: ${label(q.verdict)}`, "", "Comment:");
+  const body = [q.body, q.coverage].filter(Boolean).join("\n\n");
+  out.push(...(body ? body.split("\n").map((l) => `  ${l}`) : ["  (none)"]));
+  out.push("", `Line comments (${q.comments.length}):`);
+  if (!q.comments.length) out.push("  (none)");
+  for (const c of q.comments) { out.push(`  ${c.path}:${c.line}${c.side === "old" ? " (old side)" : ""}`); out.push(...c.text.split("\n").map((l) => `    ${l}`)); }
+  if (q.files?.length) {
+    out.push("", `Whole-file comments (${q.files.length}):`);
+    for (const x of q.files) { out.push(`  ${x.path}`); out.push(...x.text.split("\n").map((l) => `    ${l}`)); }
+  }
+  return out.join("\n");
 }
 
 /** An argv the way a reader would type it back: plain words bare, anything else single-quoted. */
@@ -103,7 +135,7 @@ export function describe(p: Plan, allowed: boolean, dryRun = false): string {
       `   in ${p.hook.cwd}, no shell, stopped after ${Math.round(p.hook.timeoutMs / 1000)}s.`,
       `   {file} is ${p.hookFile}: your review without your private ignore notes.`, "",
       ...(p.hook.refused ? [`   REFUSED: ${p.hook.refused}. It will not run.`] : []),
-      ...(p.hook.refused ? [] : [allowed ? "   [x] Allowed for this submit (x takes it back)." : "   [ ] Not allowed: it will not run. Press x to allow it for this submit."]),
+      ...(p.hook.refused ? [] : [allowed ? "   Allowed for this submit: it runs after the post." : "   Not allowed: it will not run. Tick it above to allow it for this submit."]),
     );
   }
   return out.join("\n");
@@ -129,17 +161,21 @@ export type Result = { submission: Submission; summary: string; ok: boolean };
  * Submit the review. Throws only if the document itself cannot be written (step 1); anything after
  * that is caught, recorded in `submissions`, and summed up in one line.
  */
-export function submit(r: Review, files: FileDiff[], opts: Choices & { allowHook: boolean; run?: Runner; hook?: HookRunner; now?: () => Date; dryRun?: boolean; defaults?: Defaults }): Result {
+export function submit(r: Review, files: FileDiff[], opts: Choices & { allowHook: boolean; run?: Runner; hook?: HookRunner; now?: () => Date; dryRun?: boolean }): Result {
   const d = r.doc;
-  if (!d.human.verdict) throw new Fail("pick a verdict before submitting");
-  const p = planOf(r, files, opts);
   const at = (opts.now ?? (() => new Date()))().toISOString();
+  const p = planOf(r, files, { ...opts, at });
+  const verdict = p.human.verdict;
+  if (!verdict) throw new Fail("pick a verdict before submitting");
 
   // A dry run is a read-only account of the post: nothing is written, sent or run, and no submission is recorded.
   if (opts.dryRun) {
     const calls = p.adapter && p.posting ? p.adapter.dryRun(d.target, p.posting).join("\n\n") : `no ${p.platform ?? "platform"} adapter: there is nothing to post`;
-    return { submission: { at, verdict: d.human.verdict, file: p.file }, summary: `Dry run (${VERDICT[d.human.verdict]}): nothing written or posted.\n\n${calls}`, ok: true };
+    return { submission: { at, verdict, file: p.file }, summary: `Dry run (${VERDICT[verdict]}): nothing written or posted.\n\n${calls}`, ok: true };
   }
+
+  // What the flow chose becomes the reader's layer, so the document written next is the record of what posts.
+  d.human = p.human;
 
   // 1. The document, before anything that can fail for reasons outside this machine.
   try {
@@ -147,8 +183,8 @@ export function submit(r: Review, files: FileDiff[], opts: Choices & { allowHook
     writeFileSync(p.md, writeup(d, files, opts.defaults));
     writeFileSync(p.file, exportDocument(r));
   } catch (e) { throw new Fail(`could not write ${p.file}: ${(e as Error).message}`); }
-  const sub: Submission = { at, verdict: d.human.verdict, file: p.file };
-  const parts = [`Submitted (${VERDICT[d.human.verdict]}): wrote ${p.file}`];
+  const sub: Submission = { at, verdict, file: p.file };
+  const parts = [`Submitted (${VERDICT[verdict]}): wrote ${p.file}`];
   let ok = true;
 
   // 2. The platform.

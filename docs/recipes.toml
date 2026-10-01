@@ -230,7 +230,12 @@ why = "Opens the settings view: every action's primary and secondary key, the de
 [[recipe]]
 q = ["how do I submit a review", "send my review to GitHub", "approve the pull request", "request changes on the pull request"]
 actions = ["review.submit"]
-why = "Choose approve, request changes or comment, read the preview, then confirm; the review file is written first."
+why = "Tick the findings to post, pick a verdict, write the top-level comment, read exactly what posts, then send; the review file is written first."
+
+[[recipe]]
+q = ["write a summary comment for the whole review", "leave a general comment on the pull request", "add a top-level review comment"]
+actions = ["review.submit"]
+why = "The top-level comment is the third step of submit: several lines, or v e to write it in your editor."
 
 [[recipe]]
 q = ["how do I quit", "leave the review for now", "stop reviewing without losing my work"]

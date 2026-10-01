@@ -6,7 +6,7 @@ import { parseDiff } from "../src/diff.ts";
 import { hunksOf } from "../src/guide.ts";
 import { argvOf, merge, parseDocument, SCHEMA, splitArgs, type Doc } from "../src/document.ts";
 import { adapterFor, github, postingOf, type Runner } from "../src/platform.ts";
-import { describe, hookOf, planOf, redirectRefusal, runHook, shown, submit, type HookRunner } from "../src/submit.ts";
+import { describe, hookOf, planOf, postPreview, redirectRefusal, runHook, shown, submit, type HookRunner } from "../src/submit.ts";
 import type { Review } from "../src/build.ts";
 import { decide } from "../src/triage.ts";
 
@@ -164,11 +164,11 @@ test("github: a failed submit deletes the pending review rather than leaving it 
 test("github: refused before sending when GitHub would refuse it", () => {
   const t = review({}, { url: PR, platform: "github" }).doc.target;
   const silent = postingOf("request_changes", [], () => undefined);
-  expect(() => github.post(t, silent, noNet, "/wt")).toThrow("needs a summary comment (N)");
+  expect(() => github.post(t, silent, noNet, "/wt")).toThrow("needs a top-level comment or a ticked finding");
   expect(github.describe(t, silent)).toStartWith("not posted:");
   // A coverage line is not words of your own.
-  expect(() => github.post(t, postingOf("comment", [], () => undefined, { coverage: "I read 1 of 2 hunks." }), noNet, "/wt")).toThrow("needs a summary comment");
-  expect(() => github.post(t, postingOf("approve", [], () => undefined, { coverage: "I read 1 of 2 hunks." }), noNet, "/wt")).toThrow("coverage line needs a summary comment");
+  expect(() => github.post(t, postingOf("comment", [], () => undefined, { coverage: "I read 1 of 2 hunks." }), noNet, "/wt")).toThrow("needs a top-level comment");
+  expect(() => github.post(t, postingOf("approve", [], () => undefined, { coverage: "I read 1 of 2 hunks." }), noNet, "/wt")).toThrow("coverage line needs a top-level comment");
   expect(() => github.post({ ...t, url: undefined }, postingOf("approve", [], () => undefined), noNet, "/wt")).toThrow("no GitHub pull request URL");
   const down: Runner = () => ({ exit: 1, stdout: "", stderr: "gh: HTTP 404" });
   expect(() => github.post(t, postingOf("approve", [], () => undefined), down, "/wt")).toThrow("gh api failed (exit 1): gh: HTTP 404");
@@ -277,8 +277,8 @@ test("the preview spells out all three steps, the exact command, and whether it 
   expect(text).toContain("without your private ignore notes");
   expect(text).toContain(`in ${r.worktree}, no shell, stopped after 60s.`);
   const ok = describe(planOf(review({ on_submit: { run: ["notify", "{file}", ">", "out.txt"] } }), files), false);
-  expect(ok).toContain("[ ] Not allowed");
-  expect(describe(planOf(review({ on_submit: { run: ["notify", "{file}", ">", "out.txt"] } }), files), true)).toContain("[x] Allowed for this submit");
+  expect(ok).toContain("Not allowed: it will not run");
+  expect(describe(planOf(review({ on_submit: { run: ["notify", "{file}", ">", "out.txt"] } }), files), true)).toContain("Allowed for this submit");
   expect(describe(planOf(review(), files), false)).not.toContain("3.");
 });
 
@@ -327,4 +327,87 @@ test("the hook's copy of the document has the private ignore notes removed; the 
   expect(parseDocument(seen).human.decisions!.f1!.kind).toBe("ignore");
   expect(readFileSync(res.submission.file, "utf8")).toContain("SECRET-REASON");
   expect(describe(planOf(r, files), true)).toContain("without your private ignore notes");
+});
+
+// ---------------------------------------------------------------- the submit flow's selection, end to end
+
+const flowFindings = () => {
+  const base = { source: "stamp:security", hunk: h1!.id, side: "new" as const, kind: "bug", evidence: "see the loop", status: "upheld" as const };
+  return [
+    { ...base, id: "1", line: 11, severity: "high" as const, claim: "Guard the zero count." },
+    { ...base, id: "2", line: 12, severity: "medium" as const, claim: "Name this better." },
+    { ...base, id: "3", line: 12, severity: "low" as const, claim: "Dropped by the second look.", status: "withdrawn" as const },
+  ];
+};
+
+test("submit with a selection: ticked findings post their text on their lines, the comment is the body, the verdict the event", () => {
+  const r = review({ findings: flowFindings(), human: { comments: [], visited: [h1!.id] } }, { url: PR, platform: "github" });
+  const { calls, run } = fakeGh();
+  const res = submit(r, files, { allowHook: false, run, selection: { listed: ["1", "2", "3"], include: ["1"], comment: "Nearly there.", verdict: "request_changes" } });
+  expect(res.ok).toBe(true);
+  expect(calls[1]!.body.comments).toEqual([{ path: "src/a.rs", line: 11, side: "RIGHT", body: "Guard the zero count." }]);
+  expect(calls[2]!.body).toEqual({ event: "REQUEST_CHANGES", body: "Nearly there." });
+  // Only the words chosen: no source, evidence, or the unticked findings' text.
+  expect(JSON.stringify(calls.map((c) => c.body))).not.toMatch(/stamp|security|prview|critic|see the loop|Name this|Dropped/i);
+  // The document written first records exactly that: the verdict, the comment, and the actions as they went out.
+  const written = parseDocument(readFileSync(res.submission.file, "utf8"));
+  expect(written.human.verdict).toBe("request_changes");
+  expect(written.human.comments.map((c) => c.text)).toEqual(["Nearly there.", "Guard the zero count."]);
+  expect(Object.fromEntries(Object.entries(written.human.decisions!).map(([k, v]) => [k, v.kind]))).toEqual({ "1": "block", "2": "ignore" });
+});
+
+test("submit with a selection: a ticked comment verdict with only a finding posts; nothing ticked and no words is refused by the GitHub check, the file still written", () => {
+  const r = review({ findings: flowFindings(), human: { comments: [], visited: [] } }, { url: PR, platform: "github" });
+  const { calls, run } = fakeGh();
+  submit(r, files, { allowHook: false, run, selection: { listed: ["1", "2", "3"], include: ["3"], comment: "", verdict: "comment" } });
+  expect(calls[1]!.body.comments).toEqual([{ path: "src/a.rs", line: 12, side: "RIGHT", body: "Dropped by the second look." }]);
+  expect(calls[2]!.body).toEqual({ event: "COMMENT", body: "" });
+
+  const silent = review({ findings: flowFindings(), human: { comments: [], visited: [] } }, { url: PR, platform: "github" });
+  const res = submit(silent, files, { allowHook: false, run: noNet, selection: { listed: ["1", "2", "3"], include: [], comment: "  ", verdict: "request_changes" } });
+  expect(res.ok).toBe(false);
+  expect(res.summary).toContain("NOT posted to github: requesting changes needs a top-level comment or a ticked finding to post");
+  expect(existsSync(res.submission.file)).toBe(true);
+});
+
+test("submit with a selection: no verdict is refused before anything is written; a dry run applies it to a copy only", () => {
+  const r = review({ findings: flowFindings(), human: { comments: [], visited: [] } }, { url: PR, platform: "github" });
+  expect(() => submit(r, files, { allowHook: false, run: noNet, selection: { listed: ["1"], include: ["1"], comment: "x" } })).toThrow("pick a verdict");
+  expect(existsSync(join(tmp, "home", "submitted", `${r.slug}.json`))).toBe(false);
+  const res = submit(r, files, { allowHook: false, run: noNet, dryRun: true, selection: { listed: ["1", "2", "3"], include: ["1", "2"], comment: "Top.", verdict: "comment" } });
+  expect(res.summary).toContain('"body": "Guard the zero count."');
+  expect(res.summary).toContain('"body": "Name this better."');
+  expect(res.summary).toContain('"body": "Top."');
+  expect(r.doc.human).toEqual({ comments: [], visited: [] }); // the review itself is as it was
+  expect(existsSync(join(tmp, "home", "submitted", `${r.slug}.json`))).toBe(false);
+});
+
+test("the send step's preview is drawn from the posting: verdict, comment, coverage, each line comment on its file and line", () => {
+  const r = review({ findings: flowFindings(), human: { comments: [], visited: [h1!.id] } }, { url: PR, platform: "github" });
+  const p = planOf(r, files, { coverage: true, selection: { listed: ["1", "2", "3"], include: ["1", "2"], comment: "Top.\nSecond line.", verdict: "comment" } });
+  expect(postPreview(p, (v) => v)).toBe([
+    `── What posts to ${PR}`, "",
+    "Verdict: comment", "", "Comment:", "  Top.", "  Second line.", "  ", "  I read 1 of 1 hunk.", "",
+    "Line comments (2):", "  src/a.rs:11", "    Guard the zero count.", "  src/a.rs:12", "    Name this better.",
+  ].join("\n"));
+  expect(r.doc.human.decisions).toBeUndefined(); // planning changes nothing
+  expect(postPreview(planOf(review(), files), (v) => v)).toStartWith("── Nothing is posted (the document has no platform)");
+});
+
+test("submit with a selection: a ticked whole-file finding posts as a file comment; your own decided finding posts once, as you wrote it", () => {
+  const base = { source: "critic", hunk: h1!.id, side: "new" as const, kind: "bug", evidence: "", status: "upheld" as const };
+  const whole = { ...base, id: "w", line: 0, severity: "medium" as const, claim: "This file needs a header.", file: true as const };
+  const own = { ...base, id: "y", source: "you", line: 11, severity: "high" as const, claim: "Derive this." };
+  const human = decide({ comments: [], visited: [] }, own, "block", { text: "Derive this.", at: "now" });
+  const r = review({ findings: [whole, own], human }, { url: PR, platform: "github" });
+  const sel = { listed: ["w", "y"], include: ["w", "y"], comment: "", verdict: "request_changes" as const };
+  const p = planOf(r, files, { selection: sel });
+  expect(p.posting!.comments).toEqual([{ path: "src/a.rs", side: "new", line: 11, text: "Derive this." }]);
+  expect(p.posting!.files).toEqual([{ path: "src/a.rs", text: "This file needs a header." }]);
+  expect(postPreview(p, (v) => v)).toContain("Whole-file comments (1):\n  src/a.rs\n    This file needs a header.");
+  const { calls, run } = fakeGh();
+  expect(submit(r, files, { allowHook: false, run, selection: sel }).ok).toBe(true); // a file comment is words enough for request changes
+  expect(calls.map((c) => c.argv[4])).toEqual(["repos/o/r/pulls/7", "repos/o/r/pulls/7/reviews", "repos/o/r/pulls/7/comments", "repos/o/r/pulls/7/reviews/99/events"]);
+  expect(calls[2]!.body).toEqual({ commit_id: B, path: "src/a.rs", subject_type: "file", body: "This file needs a header." });
+  expect(r.doc.human.comments.filter((c) => c.text === "Derive this.")).toHaveLength(1);
 });

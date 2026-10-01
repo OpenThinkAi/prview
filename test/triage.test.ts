@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { parseDiff } from "../src/diff.ts";
 import { hunksOf, type Finding } from "../src/guide.ts";
 import { blank, fit, merge, parseDocument, SCHEMA, type Human } from "../src/document.ts";
-import { actionOf, actionsNote, actionText, bySeverity, decide, defaultAction, DEFAULTS, defaultVerdict, linkedComment, suggestionHint, suggestVerdict, withLegacy } from "../src/triage.ts";
+import { actionOf, actionText, bySeverity, decide, defaultAction, DEFAULTS, linkedComment, suggestionHint, suggestVerdict, withLegacy } from "../src/triage.ts";
 
 // The action rules without a screen: what an action writes, what a finding starts with, how
 // actions load, fit and merge.
@@ -83,22 +83,6 @@ test("a finding the refute step dropped starts as ignore, whatever its severity;
 test("bySeverity counts the findings of each severity, whatever their action", () => {
   expect(bySeverity([F("1", "a", 1, { severity: "high" }), F("2", "a", 1), F("3", "a", 1), F("4", "a", 1, { status: "withdrawn", severity: "low" })])).toEqual({ high: 1, medium: 2, low: 1 });
   expect(bySeverity([])).toEqual({ high: 0, medium: 0, low: 0 });
-});
-
-test("verdict default: request changes when the reader blocked on something, else none; the preview lists every finding's action", () => {
-  const all = [f1, f3];
-  expect(defaultVerdict(all, empty())).toBeUndefined();
-  expect(defaultVerdict(all, decide(empty(), f1, "comment", { text: "x", at: "" }))).toBeUndefined();
-  const h = decide(empty(), f1, "block", { text: "x", at: "" });
-  expect(defaultVerdict(all, h)).toBe("request_changes");
-  // A high finding on its default block has no comment of the reader's to post, so it does not pick the verdict.
-  expect(defaultVerdict([F("h", h1!.id, 11, { severity: "high" })], empty())).toBeUndefined();
-  const place = (hunk: string, line: number | null) => `${hunk.split("@")[0]}:${line}`;
-  const note = actionsNote(all, h, place);
-  expect(note).toContain("── Findings (2)\n\n▲ src/a.rs:11 · medium · block · Title 1\n▲ src/b.ts:2 · medium · comment (default) · Title 3\n");
-  expect(note).toContain("a finding on its default action posts nothing");
-  expect(actionsNote([], empty(), place)).toBe("");
-  expect(actionsNote([], empty(), place, DEFAULTS, true)).toContain("still hide their findings"); // blind: only that some are hidden
 });
 
 test("legacy dismissals load as ignore; an existing action wins", () => {
