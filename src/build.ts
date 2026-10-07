@@ -95,10 +95,16 @@ function fromRange(repo: string, spec: string | undefined): Source {
 
 export { isPR };
 
-/** A pull request through its platform's source (registry.ts): the canonical URL is what the review stores as its ref. */
-function fromPR(repo: string, target: string, ctx: ResolveCtx): Source | Promise<Source> {
+/**
+ * A pull request through its platform's source (registry.ts): the canonical URL is what the review stores as its ref.
+ * A bare number means a PR of whichever repo this clone's origin names, so which one it opened is said while preparing:
+ * run in the wrong clone, `1040` is another repo's #1040, and the title is the first sign of it.
+ */
+async function fromPR(repo: string, target: string, ctx: ResolveCtx): Promise<Source> {
   const { source, ref } = prIn(repo, target);
-  return source.resolve(repo, ref, ctx);
+  const s = await source.resolve(repo, ref, ctx);
+  if (typeof ref === "number") ctx.say?.(`opening ${s.target.label}${s.target.title ? `: ${s.target.title}` : ""}`);
+  return s;
 }
 
 // ---------------------------------------------------------------- the model passes

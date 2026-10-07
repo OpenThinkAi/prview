@@ -180,7 +180,9 @@ test("a bare number in an Azure clone is that repo's PR, in the case the remote 
   process.env.PRVIEW_TEST_BARE = bare("bare-number", { bySha: true });
   const c = clone("c-number");
   const http = fakeHttp();
-  const r = await build(c, "#7", { ai: null, http });
+  const said: string[] = [];
+  const r = await build(c, "#7", { ai: null, http, say: (m) => said.push(m) });
+  expect(said).toContain("opening Repo!7: Add the thing");
   expect(http.calls[0]!.url).toBe("https://dev.azure.com/org/Proj/_apis/git/repositories/Repo/pullRequests/7?api-version=7.1");
   expect(r.doc.target).toMatchObject({ platform: "azure-devops", url: URL_, label: "Repo!7", head });
   expect(r.ref).toBe(URL_);

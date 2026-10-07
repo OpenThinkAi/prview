@@ -18,7 +18,7 @@ export const DROP_ORDER: readonly Field["key"][] = ["suggested", "branch", "comm
 export const GAP = "   ";
 
 export type StatusInput = {
-  /** The target's label: `owner/repo#12` for a pull request, `base..head` for a range. */
+  /** The target's label: `owner/repo#12` for a GitHub pull request, `repo!12` for an Azure DevOps one, `base..head` for a range. */
   label: string; base: string; head: string;
   read: { seen: number; total: number };
   /** The findings shown, by severity, whatever their action; `hidden`: blind, some are not shown yet. */
@@ -37,10 +37,24 @@ export type StatusInput = {
 
 const SEVERITY: readonly Severity[] = ["high", "medium", "low"];
 
+/** The number a PR label ends in, as the platform writes it (`#12` on GitHub, `!12` on Azure DevOps); undefined for a range. */
+export function prNumber(label: string): string | undefined {
+  return label.match(/[#!]\d+$/)?.[0];
+}
+
+/**
+ * The status area's bold first line. A pull request's line leads with its label (`owner/repo#12  Title`), so the repo it
+ * is from is on screen whatever the width: the title is what gets cut. A range keeps its title, or its label when it has none.
+ */
+export function headerText(t: { label: string; title: string }): string {
+  if (!prNumber(t.label)) return t.title || t.label;
+  return t.title ? `${t.label}  ${t.title}` : t.label;
+}
+
 export function statusFields(s: StatusInput): Field[] {
   const out: Field[] = [];
-  const pr = s.label.match(/#(\d+)$/);
-  if (pr) out.push({ key: "pr", label: "PR", value: `#${pr[1]}` });
+  const pr = prNumber(s.label);
+  if (pr) out.push({ key: "pr", label: "PR", value: pr });
   const range = s.label.match(/^(.+?)\.{2,3}(.+)$/);
   out.push({ key: "branch", label: range ? "branches" : "commits", value: range ? `${range[1]} ← ${range[2]}` : `${s.base.slice(0, 7)} ← ${s.head.slice(0, 7)}` });
   out.push({ key: "read", label: "read", value: `${s.read.seen}/${s.read.total}` });

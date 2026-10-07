@@ -19,7 +19,7 @@ import { parseConfig } from "../src/config.ts";
 import { App, type Outcome } from "../src/tui.tsx";
 import { highlightLines, langOf, sliceSpans, styleOf } from "../src/highlight.ts";
 import { bottomHeight, boxLines, clampScroll, layoutOf, pageStep, windowOf, wrapText } from "../src/layout.ts";
-import { DROP_ORDER, fitFields, statusFields, type StatusInput } from "../src/status.ts";
+import { DROP_ORDER, fitFields, headerText, prNumber, statusFields, type StatusInput } from "../src/status.ts";
 import { editorArgs, tmuxSplit, besideIn } from "../src/editor.ts";
 import { nextBySeverity, nextFindingWrapping, fileEdge, chapterStart, tocIndex, tocMove, tocRows, type TocAt, type TocMove } from "../src/nav.ts";
 import { DEFAULTS, type Defaults } from "../src/triage.ts";
@@ -55,11 +55,11 @@ const files = parseDiff(DIFF);
 const [h1, h2] = hunksOf(files);
 
 const finding: Finding = { id: "1", source: "critic", hunk: h1!.id, side: "new", line: 11, severity: "high", kind: "bug", title: "Hard-coded answer in main", claim: "answer is hard-coded", evidence: "42 appears with no source", status: "upheld" };
-type Over = { findings?: Finding[]; comments?: Doc["human"]["comments"]; plan?: Doc["plan"] };
+type Over = { findings?: Finding[]; comments?: Doc["human"]["comments"]; plan?: Doc["plan"]; target?: Partial<Doc["target"]> };
 function fixture(over: Over = {}): Review {
   const doc: Doc = {
     schema: "prview-review/1",
-    target: { repo: "/nowhere", base: "a", head: "b", title: "A change", body: "", label: "main..x" },
+    target: { repo: "/nowhere", base: "a", head: "b", title: "A change", body: "", label: "main..x", ...over.target },
     plan: over.plan ?? {
       summary: "", by: "guide", mechanical: [],
       chapters: [
@@ -1580,6 +1580,33 @@ test("status fields (pure): a PR shows its number and commits, a range its branc
   }
   expect(dropped).toEqual([...DROP_ORDER]);
   expect(fitFields(all, 5).map((f) => f.key)).toEqual(["findings"]); // never dropped
+});
+
+test("header (pure): a PR leads with its repo and number, GitHub or Azure; a range keeps its title or label", () => {
+  expect(prNumber("acme/app#1016")).toBe("#1016");
+  expect(prNumber("Elevate!10479")).toBe("!10479");
+  expect(prNumber("main..feature")).toBeUndefined();
+  expect(headerText({ label: "acme/app#1016", title: "Fix the thing" })).toBe("acme/app#1016  Fix the thing");
+  expect(headerText({ label: "Elevate!10479", title: "Fix the thing" })).toBe("Elevate!10479  Fix the thing");
+  expect(headerText({ label: "acme/app#1016", title: "" })).toBe("acme/app#1016");
+  expect(headerText({ label: "main..feature", title: "Last commit" })).toBe("Last commit");
+  expect(headerText({ label: "main..feature", title: "" })).toBe("main..feature");
+  // Azure's `!n` is a PR number too: the field shows, written the platform's way.
+  const s: StatusInput = { label: "Elevate!10479", base: "a".repeat(40), head: "b".repeat(40), read: { seen: 0, total: 1 }, findings: { high: 0, medium: 0, low: 0 }, hidden: false, comments: 0 };
+  expect(statusFields(s).map((f) => `${f.label} ${f.value}`)[0]).toBe("PR !10479");
+});
+
+test("status area: a PR's header names its repo even at the narrowest width; a long title is what gets cut", async () => {
+  for (const [label, num] of [["acme/app#1016", "#1016"], ["Elevate!10479", "!10479"]] as const) {
+    const t = await open({ target: { label, title: "A change with a title long enough that a narrow terminal has to cut some of it off" } }, { cols: 80 });
+    const [, title, fields] = regions(t).status.split("\n");
+    expect(title, label).toMatch(new RegExp(`^│ ${esc(label)}  A change with`));
+    expect(fields, label).toContain(`PR ${num}`);
+    t.app.unmount();
+  }
+  const r = await open({}, { cols: 80 });
+  expect(regions(r).status.split("\n")[1]).toMatch(/^│ A change\s+│?$/); // a range: unchanged
+  r.app.unmount();
 });
 
 test("bottom panel: the content area on the left and the key panel on the right share the same rows, under the code", async () => {
