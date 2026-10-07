@@ -5,7 +5,9 @@ import { Fail } from "./document.ts";
 import { git, hasCommit, prSlug, remoteFor, run, type PrRef, type PrSource } from "./pr.ts";
 import { clean } from "./sanitize.ts";
 
-const PR_URL = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/;
+// Anchored, and owner/repo limited to what GitHub allows: a document's target.url reaches `gh api` paths, so no `..`, `?` or `#`.
+const NAME = "(?!\\.{1,2}(?:\\/|$))[A-Za-z0-9_.-]+";
+export const PR_URL = new RegExp(`^(?:https?:\\/\\/)?(?:www\\.)?github\\.com\\/(${NAME})\\/(${NAME})\\/pull\\/(\\d+)(?:[/?#].*)?$`);
 
 /** Fetch the head (and the base branch, when named) into refs/prview/pr-<n>; the namespace it used. */
 function fetchHead(repo: string, ref: PrRef, base: string | undefined, known: boolean): string {
