@@ -17,6 +17,9 @@ the screen: with `auto_update = false` (the default) the footer says a newer rel
 (top level of the config, or `\` settings → Updates) it installs it in the background and the footer says to restart.
 Only a plain `1.2.3` release newer than the running one is ever installed (never a downgrade or a pre-release). The
 check is skipped under `--dry-run`, with `PRVIEW_NO_UPDATE=1`, and in a source checkout, which never updates itself.
+Before installing, prview checks that the new version's tarball is downloadable (npm can list a release a few minutes before
+its tarball is up): if not, nothing is installed and the check is repeated after about 15 minutes instead of a day. A failed
+background install is retried on the next launch, up to three times in 24 hours.
 
 ```sh
 prview --version               # also -V or `prview version`: prints `prview 0.1.4`

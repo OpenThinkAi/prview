@@ -5,7 +5,7 @@ import { join } from "node:path";
 import React from "react";
 import { cleanup, render } from "ink-testing-library";
 import { inkTestHooks } from "./ink-hooks.ts";
-import { availableNotice, backgroundCheck, CHECK_EVERY_MS, compare, installArgv, managerOf, newer, PACKAGE, REGISTRY, runningVersion, updateCommand, type UpdateDeps } from "../src/update.ts";
+import { availableNotice, backgroundCheck, CHECK_EVERY_MS, compare, installArgv, managerOf, MAX_INSTALL_FAILURES_PER_DAY, newer, NOT_READY_RECHECK_MS, notReadyMessage, PACKAGE, REGISTRY, runningVersion, tarballUrl, updateCommand, type UpdateDeps } from "../src/update.ts";
 import { parseDiff } from "../src/diff.ts";
 import { hunksOf } from "../src/guide.ts";
 import type { Review } from "../src/build.ts";
@@ -31,14 +31,20 @@ const DAY = CHECK_EVERY_MS;
 let n = 0;
 
 type Stub = { deps: UpdateDeps; fetched: string[]; ran: string[][] };
-function stub(o: { latest?: unknown; body?: string; fetchFails?: boolean; ok?: boolean; code?: number; stderr?: string; dir?: string; version?: string; env?: Record<string, string>; now?: number; home?: string } = {}): Stub {
+function stub(o: { latest?: unknown; body?: string; fetchFails?: boolean; ok?: boolean; code?: number; stderr?: string; dir?: string; version?: string; env?: Record<string, string>; now?: number; home?: string; tarballStatus?: number; tarballThrows?: boolean; dist?: unknown } = {}): Stub {
   const fetched: string[] = [], ran: string[][] = [];
   const home = o.home ?? join(tmp, `home-${++n}`);
   const deps: UpdateDeps = {
-    fetch: async (url) => {
-      fetched.push(url);
+    fetch: async (url, init) => {
+      fetched.push(init?.method === "HEAD" ? `HEAD ${url}` : url);
+      if (init?.method === "HEAD") {
+        if (o.tarballThrows) throw new TypeError("fetch failed");
+        const status = o.tarballStatus ?? 200;
+        return { ok: status >= 200 && status < 300, status, text: async () => "" };
+      }
       if (o.fetchFails) throw new TypeError("fetch failed");
-      return { ok: o.ok ?? true, text: async () => o.body ?? JSON.stringify({ name: PACKAGE, version: o.latest ?? "0.1.3" }) };
+      const v = o.latest ?? "0.1.3";
+      return { ok: o.ok ?? true, status: 200, text: async () => o.body ?? JSON.stringify({ name: PACKAGE, version: v, dist: o.dist ?? { tarball: tarball(v) } }) };
     },
     run: async (argv) => { ran.push(argv); return { code: o.code ?? 0, stderr: o.stderr ?? "" }; },
     now: () => o.now ?? 10 * DAY,
@@ -46,6 +52,7 @@ function stub(o: { latest?: unknown; body?: string; fetchFails?: boolean; ok?: b
   };
   return { deps, fetched, ran };
 }
+const tarball = (v: unknown) => `https://registry.npmjs.org/${PACKAGE}/-/prview-${v}.tgz`;
 const off = { autoUpdate: () => false }, on = { autoUpdate: () => true };
 
 // ---------------------------------------------------------------- versions and where this copy came from
@@ -90,7 +97,7 @@ test("install argv is fixed per package manager, and refuses anything but a rele
 test("off: a newer release gives the footer notice and installs nothing", async () => {
   const s = stub({ latest: "0.1.4" });
   expect(await backgroundCheck(s.deps, off)).toBe("prview 0.1.4 is available — run prview update, or turn on auto-update in \\ settings");
-  expect(s.fetched).toEqual([REGISTRY]);
+  expect(s.fetched).toEqual([REGISTRY]); // no tarball probe: nothing is installed
   expect(s.ran).toEqual([]);
 });
 
@@ -98,6 +105,7 @@ test("on: a newer release installs in the background with the manager that insta
   const npm = stub({ latest: "0.1.4" });
   let started = "";
   expect(await backgroundCheck(npm.deps, { ...on, installing: (v) => { started = v; } })).toBe("updated to 0.1.4 — restart prview to use it");
+  expect(npm.fetched).toEqual([REGISTRY, `HEAD ${tarball("0.1.4")}`]); // the tarball is probed before installing
   expect(npm.ran).toEqual([["npm", "install", "-g", "@openthink/prview@0.1.4"]]);
   expect(started).toBe("0.1.4");
   expect(existsSync(join(npm.deps.home, "update.lock"))).toBe(false); // released
@@ -163,7 +171,74 @@ test("the registry is untrusted: errors, bad JSON, older, pre-release and odd ve
   }
 });
 
+test("tarball not ready (404, any non-200, or unreachable): no install, no note, re-check in 15 minutes rather than a day", async () => {
+  for (const o of [{ tarballStatus: 404 }, { tarballStatus: 403 }, { tarballStatus: 204 }, { tarballThrows: true }]) {
+    const home = join(tmp, `notready-${++n}`);
+    const s = stub({ latest: "0.1.4", home, now: 10 * DAY, ...o });
+    expect(await backgroundCheck(s.deps, on)).toBeNull();
+    expect(s.ran).toEqual([]);
+    expect(existsSync(join(home, "update.lock"))).toBe(false);
+    const stamp = JSON.parse(readFileSync(join(home, "update.json"), "utf8"));
+    expect(stamp).toEqual({ checked: 10 * DAY, latest: "0.1.4", due: 10 * DAY + NOT_READY_RECHECK_MS });
+    // Inside the window nothing is fetched; after it the registry is asked again and, once the tarball is up, installed.
+    const inside = stub({ latest: "0.1.4", home, now: 10 * DAY + NOT_READY_RECHECK_MS - 1 });
+    expect(await backgroundCheck(inside.deps, on)).toBeNull();
+    expect(inside.fetched).toEqual([]);
+    const after = stub({ latest: "0.1.4", home, now: 10 * DAY + NOT_READY_RECHECK_MS });
+    expect(await backgroundCheck(after.deps, on)).toBe("updated to 0.1.4 — restart prview to use it");
+    expect(after.ran).toHaveLength(1);
+    // A successful install goes back to the daily rhythm.
+    expect(JSON.parse(readFileSync(join(home, "update.json"), "utf8")).due).toBeUndefined();
+  }
+});
+
+test("the tarball probed is the packument's dist.tarball when it is on the npm registry, else the canonical URL", async () => {
+  expect(tarballUrl("0.1.4", tarball("0.1.4"))).toBe(tarball("0.1.4"));
+  for (const bad of [undefined, 7, "http://registry.npmjs.org/x.tgz", "https://evil.example/x.tgz", "https://registry.npmjs.org/x\n.tgz"]) expect(tarballUrl("0.1.4", bad)).toBe(tarball("0.1.4"));
+  const s = stub({ latest: "0.1.4", dist: { tarball: "https://evil.example/x.tgz" } });
+  await backgroundCheck(s.deps, on);
+  expect(s.fetched).toEqual([REGISTRY, `HEAD ${tarball("0.1.4")}`]);
+});
+
+test("a failed install is retried on the next launch, at most MAX_INSTALL_FAILURES_PER_DAY times a day", async () => {
+  const home = join(tmp, "retries");
+  const t0 = 10 * DAY;
+  for (let i = 0; i < MAX_INSTALL_FAILURES_PER_DAY; i++) {
+    const s = stub({ latest: "0.1.4", home, now: t0 + i * 1000, code: 1, stderr: "boom" });
+    expect(await backgroundCheck(s.deps, on)).toBe("update to 0.1.4 failed (npm exited 1): boom");
+    expect(s.ran).toHaveLength(1);
+  }
+  const stamp = JSON.parse(readFileSync(join(home, "update.json"), "utf8"));
+  expect(stamp.failures).toEqual({ since: t0, n: MAX_INSTALL_FAILURES_PER_DAY });
+  // Used up: nothing more until the 24h window since the first failure is over.
+  const capped = stub({ latest: "0.1.4", home, now: t0 + DAY - 1 });
+  expect(await backgroundCheck(capped.deps, on)).toBeNull();
+  expect(capped.fetched).toEqual([]);
+  const later = stub({ latest: "0.1.4", home, now: t0 + DAY });
+  expect(await backgroundCheck(later.deps, on)).toBe("updated to 0.1.4 — restart prview to use it");
+  expect(JSON.parse(readFileSync(join(home, "update.json"), "utf8")).failures).toBeUndefined();
+});
+
+test("a failed install under the cap is retried at once (next launch); the lock being held is not a failure", async () => {
+  const home = join(tmp, "retry-once");
+  const fail = stub({ latest: "0.1.4", home, now: 10 * DAY, code: 1 });
+  await backgroundCheck(fail.deps, on);
+  const next = stub({ latest: "0.1.4", home, now: 10 * DAY + 1 });
+  expect(await backgroundCheck(next.deps, on)).toBe("updated to 0.1.4 — restart prview to use it");
+  const held = stub({ latest: "0.1.4" });
+  mkdirSync(held.deps.home, { recursive: true });
+  writeFileSync(join(held.deps.home, "update.lock"), "123");
+  await backgroundCheck(held.deps, on);
+  expect(JSON.parse(readFileSync(join(held.deps.home, "update.json"), "utf8")).failures).toBeUndefined();
+});
+
 // ---------------------------------------------------------------- prview update
+
+test("prview update: a tarball that is not downloadable yet installs nothing and says to try again", async () => {
+  const s = stub({ latest: "0.1.4", tarballStatus: 404 });
+  expect(await updateCommand(s.deps)).toEqual({ ok: false, lines: [`0.1.3 → 0.1.4: ${notReadyMessage("0.1.4")}`] });
+  expect(s.ran).toEqual([]);
+});
 
 test("prview update: installs a newer release whatever the setting, printing current → new", async () => {
   const s = stub({ latest: "0.1.4", dir: BUN_DIR });
