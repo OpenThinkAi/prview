@@ -159,6 +159,10 @@ test("the agent's reads are kept to the worktree: every entry beside the path do
   const both = outsideRules("/tmp/w", (d) => ({ "/": ["tmp", "private", "etc"], "/tmp": ["w", "x"], "/private": ["tmp", "var"], "/private/tmp": ["w", "x"] } as Record<string, string[]>)[d] ?? [], () => "/private/tmp/w");
   for (const denied of ["//tmp/x", "//private/tmp/x", "//private/var", "//etc"]) expect(both, denied).toContain(`Read(${denied}/**)`);
   expect(both).not.toContain("Read(//private/tmp/w/**)");
+  // The as-given walk must not deny the real path's ancestors (that left the agent unable to read the worktree at all).
+  for (const kept of ["//private", "//private/tmp", "//private/tmp/w"]) { expect(both, kept).not.toContain(`Read(${kept})`); expect(both, kept).not.toContain(`Read(${kept}/**)`); }
+  // Still fails closed: a real path that cannot be resolved is walked as given, and an unrelated sibling stays denied.
+  expect(outsideRules("/tmp/w", (d) => ({ "/": ["tmp", "private"], "/tmp": ["w", "x"] } as Record<string, string[]>)[d] ?? [], () => "/tmp/w")).toContain("Read(//private/**)");
   // Read rules only: claude checks Grep and Glob against them, and ignores a Grep(path) or Glob(path) rule with a warning.
   expect(rules.every((x) => x.startsWith("Read(//"))).toBe(true);
   // They reach claude as deny rules, which win over the allowed tools.

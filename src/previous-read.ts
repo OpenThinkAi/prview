@@ -16,6 +16,7 @@ import { hasCommit } from "./pr.ts";
 import { parseNameStatus, pathsToDiff, sinceFiles, type Since } from "./since.ts";
 import type { Target } from "./document.ts";
 import { itemKey, itemsOf, lastReached, located, matchAzure, matchGithub, movesOf, type Moves, type PrevItem, type Previous, type Remote, type Snippet } from "./previous.ts";
+import { PR_URL } from "./github.ts";
 import { azure as azureSource } from "./azure.ts";
 import { prApi, getJson } from "./azure-api.ts";
 import { azSpawn, azureHttp, type Http } from "./azure-auth.ts";
@@ -120,7 +121,7 @@ const THREADS = "query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner
 
 /** GitHub: the PR's review comments, every page, then each thread's resolution (a GraphQL failure only leaves it unknown). */
 export async function readGithub(p: Pick<Previous, "url" | "items">, run: AsyncRunner, cwd: string): Promise<Remote> {
-  const m = p.url?.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  const m = p.url?.startsWith("https://") ? p.url.match(PR_URL) : null;
   if (!m) return { ok: false, reason: "no GitHub pull request URL" };
   const [, owner, repo, n] = m;
   const comments: unknown[] = [];

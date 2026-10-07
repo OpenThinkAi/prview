@@ -269,11 +269,16 @@ export function agentArgs(model: string | undefined, system: string, steps: numb
  */
 export function outsideRules(dir: string, list: (d: string) => string[] = (d) => { try { return readdirSync(d); } catch { return []; } }, real: (d: string) => string = (d) => { try { return realpathSync(d); } catch { return d; } }): string[] {
   const out = new Set<string>();
-  for (const start of new Set([dir, real(dir)])) {
+  const resolved = real(dir);
+  for (const start of new Set([dir, resolved])) {
     for (let cur = start; dirname(cur) !== cur; cur = dirname(cur)) {
       const parent = dirname(cur), keep = cur.slice(parent.length).replace(/^[/\\]+/, "");
       for (const name of list(parent)) {
         if (name === keep) continue;
+        // Walking a symlinked path as given (/tmp/x) denies the real path's ancestors (/private): never deny the way to the
+        // real worktree. Everything else stays denied, so this only fails open on what the real path itself needs.
+        const raw = `${parent === sep ? "" : parent}/${name}`;
+        if (resolved === raw || resolved.startsWith(`${raw}/`)) continue;
         const abs = `${parent === sep ? "" : parent}/${name.replace(/[()]/g, "?")}`;
         out.add(`Read(/${abs})`); out.add(`Read(/${abs}/**)`);
       }

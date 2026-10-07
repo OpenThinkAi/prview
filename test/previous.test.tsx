@@ -426,3 +426,10 @@ test("screen: a failed read says why beside every item; no platform reads nothin
   none.unmount();
 });
 
+
+test("readGithub refuses a URL whose owner or repo could rewrite the gh api path", async () => {
+  for (const url of ["https://github.com/../r/pull/7", "https://github.com/o/../pull/7", "https://github.com/./r/pull/7", "https://github.com/o/r%2f..%2f/pull/7", "https://github.com/o?x=1/r/pull/7", "https://evil.test/https://github.com/o/r/pull/7", "http://github.com/o/r/pull/7"]) {
+    const gh = fakeGh(GH_COMMENTS);
+    expect(await readGithub({ url, items: ITEMS }, gh.run, "/x"), url).toEqual({ ok: false, reason: "no GitHub pull request URL" });
+  }
+});
