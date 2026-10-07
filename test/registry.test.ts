@@ -104,8 +104,11 @@ function stubGitHub() {
 test("github resolves a PR through gh, fetches its head from the matching remote, and the review stores the canonical URL as its ref", async () => {
   const { clone, head, log } = stubGitHub();
   const { build, load, reopen, save } = await import("../src/build.ts");
-  const r = await build(clone, "#7", { ai: null });
+  const said: string[] = [];
+  const r = await build(clone, "#7", { ai: null, say: (m) => said.push(m) });
   expect(log()).toEqual(["pr view 7 --json number,title,body,url,headRefOid,baseRefName"]);
+  // A bare number means this clone's repo: which PR that turned out to be is said while preparing.
+  expect(said).toContain("opening o/r#7: Add two");
   expect(r.slug).toBe(prSlug(clone, 7));
   expect(r.ref).toBe("https://github.com/o/r/pull/7");
   expect(r.doc.target).toMatchObject({ repo: "o/r", head, url: "https://github.com/o/r/pull/7", platform: "github", title: "Add two", body: "the body", label: "o/r#7" });
@@ -114,6 +117,10 @@ test("github resolves a PR through gh, fetches its head from the matching remote
   // Reopening asks gh for the URL, not a number that would mean whatever PR 7 is in the clone it runs in.
   await reopen(r.slug, { ai: null });
   expect(log().at(-1)).toBe("pr view https://github.com/o/r/pull/7 --json number,title,body,url,headRefOid,baseRefName");
+  // A URL names its repo already: nothing to announce.
+  const byUrl: string[] = [];
+  await build(clone, "https://github.com/o/r/pull/7", { ai: null, say: (m) => byUrl.push(m) });
+  expect(byUrl.filter((m) => m.startsWith("opening"))).toEqual([]);
 
   // A review stored before refs were URLs, with a bare number, still reopens on GitHub.
   save({ ...load(r.slug), ref: "7" });

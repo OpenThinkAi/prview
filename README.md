@@ -20,7 +20,7 @@ check is skipped under `--dry-run`, with `PRVIEW_NO_UPDATE=1`, and in a source c
 
 ```sh
 prview --version               # also -V or `prview version`: prints `prview 0.1.4`
-prview 42                      # a PR in this repo
+prview 42                      # a PR of this clone's origin: says `opening owner/repo#42: <title>`
 prview main..my-branch         # any range
 prview prepare 42              # build now, open later (the model pass takes a few minutes)
 prview open pm-pr-42
@@ -59,7 +59,9 @@ What you get is a full-screen review, not a diff dump:
   back out; `Enter` writes a finding of your own, `s` submits, `?` searches the docs, `\` opens the settings and `q`
   quits. Four letter prefixes hold the rest (`a` AI, `f` filter, `v` view, `g` go to), and `Esc` backs out of
   anything. The [full key map](#keys) is below, and the key panel on screen always shows the keys for where you are.
-- **The screen.** A status area on top: the PR's title, then separate fields, each with a dim label: the PR number,
+- **The screen.** A status area on top: the PR's repo and number (`owner/repo#42`, `repo!42` on Azure DevOps) and its
+  title, on one bold line where a narrow terminal cuts the title, never the repo; a range shows its title. Then separate
+  fields, each with a dim label: the PR number,
   the branches (or commits), `read 3/5`, the findings by severity, whatever their action (`▲ 2 high · 1 medium`), the
   comments, and the in-house review's suggested verdict when there is one. No field is cut to make room for another:
   on a narrow terminal whole fields drop, the suggested verdict first, then the branches, the comments, the PR

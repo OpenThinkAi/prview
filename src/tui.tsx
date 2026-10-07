@@ -45,7 +45,7 @@ import { installKeymap, type KeyState, keyOf, rowById } from "./keys.ts";
 import { pendingText, step, tokenOf, type InkKey, type Pending } from "./chord.ts";
 import { answersBody, answersFor, answerText, type Answer } from "./ask-docs.ts";
 import { entriesOf, panelOf, panelTitle } from "./panel.ts";
-import { fitFields, GAP, statusFields } from "./status.ts";
+import { fitFields, GAP, headerText, statusFields } from "./status.ts";
 import { visible as printable } from "./sanitize.ts";
 import { MIN_COLS, MIN_ROWS, tooSmall, useTerminalSize } from "./resize.ts";
 import { configPath, parseConfig, type Config } from "./config.ts";
@@ -973,7 +973,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   return (
     <Box flexDirection="column" width={cols} height={rows}>
       <Box flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1} width={cols} height={STATUS_H}>
-        <Text bold wrap="truncate">{d.target.title || printable(d.target.label)}</Text>
+        <Text bold wrap="truncate">{printable(headerText(d.target))}</Text>
         <Text wrap="truncate">{fields.map((f, i) => <Text key={f.key}>{i ? GAP : ""}<Text dimColor>{f.label} </Text><Text color={f.color}>{f.value}</Text></Text>)}</Text>
       </Box>
       {L.middleH > 0 ? (
