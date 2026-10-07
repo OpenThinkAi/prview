@@ -19,6 +19,10 @@ export const PACKAGE = "@openthink/prview";
 export const REGISTRY = `https://registry.npmjs.org/${PACKAGE}/latest`;
 /** At most one registry check per this long. */
 export const CHECK_EVERY_MS = 24 * 60 * 60 * 1000;
+/** After a version is listed but its tarball is not downloadable yet (npm's post-publish processing), look again this soon. */
+export const NOT_READY_RECHECK_MS = 15 * 60 * 1000;
+/** After a failed install the next launch tries again, but at most this many failed installs in one 24h window. */
+export const MAX_INSTALL_FAILURES_PER_DAY = 3;
 export const FETCH_TIMEOUT_MS = 4000;
 export const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 /** A lock older than this is from an install that died; it no longer blocks one. */
@@ -28,7 +32,7 @@ const RELEASE = /^\d+\.\d+\.\d+$/;
 const RUNNING = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
 
 export type Manager = "bun" | "npm";
-export type Fetcher = (url: string, init: { signal: AbortSignal }) => Promise<{ ok: boolean; text(): Promise<string> }>;
+export type Fetcher = (url: string, init: { signal: AbortSignal; method?: "HEAD" }) => Promise<{ ok: boolean; status?: number; text(): Promise<string> }>;
 export type Runner = (argv: string[], timeoutMs: number) => Promise<{ code: number; stderr: string }>;
 export type UpdateDeps = {
   fetch: Fetcher;
@@ -88,13 +92,19 @@ export function installArgv(manager: Manager, version: string): string[] {
 
 // ---------------------------------------------------------------- the registry and the daily throttle
 
-type Stamp = { checked: number; latest?: string };
+/** `due`: when the registry is next asked (default `checked` + a day). `failures`: failed installs since `since`. */
+type Stamp = { checked: number; latest?: string; due?: number; failures?: { since: number; n: number } };
 const stampPath = (home: string) => join(home, "update.json");
 
 function readStamp(home: string): Stamp | null {
   try {
     const s = JSON.parse(readFileSync(stampPath(home), "utf8"));
-    return typeof s?.checked === "number" ? { checked: s.checked, latest: typeof s.latest === "string" && RELEASE.test(s.latest) ? s.latest : undefined } : null;
+    if (typeof s?.checked !== "number") return null;
+    const f = s.failures, num = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
+    return {
+      checked: s.checked, latest: typeof s.latest === "string" && RELEASE.test(s.latest) ? s.latest : undefined,
+      due: num(s.due) ? s.due : undefined, failures: num(f?.since) && num(f?.n) ? { since: f.since, n: f.n } : undefined,
+    };
   } catch { return null; }
 }
 
@@ -108,18 +118,33 @@ function writeStamp(home: string, s: Stamp): void {
 }
 
 /** The registry's latest release, or why it could not be read. The response is untrusted: only a release string is kept. */
-export async function latest(deps: Pick<UpdateDeps, "fetch">): Promise<{ version: string } | { error: string }> {
+export async function latest(deps: Pick<UpdateDeps, "fetch">): Promise<{ version: string; tarball: string } | { error: string }> {
   try {
     const res = await deps.fetch(REGISTRY, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) return { error: "the npm registry did not answer" };
     const text = await res.text();
     if (text.length > 1_000_000) return { error: "the npm registry's answer was not understood" };
-    const v = (JSON.parse(text) as { version?: unknown } | null)?.version;
-    return typeof v === "string" && RELEASE.test(v) ? { version: v } : { error: "the npm registry's answer was not understood" };
+    const doc = JSON.parse(text) as { version?: unknown; dist?: { tarball?: unknown } } | null;
+    const v = doc?.version;
+    return typeof v === "string" && RELEASE.test(v) ? { version: v, tarball: tarballUrl(v, doc?.dist?.tarball) } : { error: "the npm registry's answer was not understood" };
   } catch (e) {
     return { error: (e as Error)?.name === "SyntaxError" ? "the npm registry's answer was not understood" : "the npm registry could not be reached" };
   }
 }
+
+/** The tarball to probe: the packument's `dist.tarball` if it is on the npm registry over https, else the canonical URL. */
+export function tarballUrl(version: string, advertised: unknown): string {
+  const canonical = `https://registry.npmjs.org/${PACKAGE}/-/${PACKAGE.split("/")[1]}-${version}.tgz`;
+  return typeof advertised === "string" && advertised.startsWith("https://registry.npmjs.org/") && !/[\s\x00-\x1f]/.test(advertised) ? advertised : canonical;
+}
+
+/** Is the version's tarball downloadable yet? npm can list a version as latest while its tarball still 404s. Only a 200 counts. */
+export async function tarballReady(deps: Pick<UpdateDeps, "fetch">, tarball: string): Promise<boolean> {
+  try { return (await deps.fetch(tarball, { method: "HEAD", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })).status === 200; }
+  catch { return false; }
+}
+
+export const notReadyMessage = (v: string) => `prview ${v} is listed on npm but not downloadable yet; try again in a few minutes`;
 
 // ---------------------------------------------------------------- installing
 
@@ -134,7 +159,7 @@ function lock(home: string, now: number): boolean {
 }
 
 /** Install `version` with the manager that installed this copy: the message for the footer or the terminal. */
-export async function install(deps: UpdateDeps, manager: Manager, version: string): Promise<{ ok: boolean; message: string }> {
+export async function install(deps: UpdateDeps, manager: Manager, version: string): Promise<{ ok: boolean; message: string; /** The installer ran (or could not start) and failed: worth retrying soon. */ failed?: boolean }> {
   if (!newer(version, deps.version)) return { ok: false, message: `not updating to ${clean(String(version))}: not newer than ${deps.version}` };
   try { if (!lock(deps.home, deps.now())) return { ok: false, message: `an update is already being installed; prview ${version} is available` }; }
   catch { return { ok: false, message: `update to ${version} failed: cannot write to ${deps.home}` }; }
@@ -142,9 +167,9 @@ export async function install(deps: UpdateDeps, manager: Manager, version: strin
     const r = await deps.run(installArgv(manager, version), INSTALL_TIMEOUT_MS);
     if (r.code === 0) return { ok: true, message: `updated to ${version} — restart prview to use it` };
     const why = clean(r.stderr).split("\n").map((l) => l.trim()).filter(Boolean).pop()?.slice(0, 160);
-    return { ok: false, message: `update to ${version} failed (${manager} exited ${r.code})${why ? `: ${why}` : ""}` };
+    return { ok: false, failed: true, message: `update to ${version} failed (${manager} exited ${r.code})${why ? `: ${why}` : ""}` };
   } catch (e) {
-    return { ok: false, message: `update to ${version} failed: ${clean((e as Error).message ?? String(e)).slice(0, 160)}` };
+    return { ok: false, failed: true, message: `update to ${version} failed: ${clean((e as Error).message ?? String(e)).slice(0, 160)}` };
   } finally { rmSync(lockPath(deps.home), { force: true }); }
 }
 
@@ -154,8 +179,8 @@ export const availableNotice = (v: string) => `prview ${v} is available — run 
 
 /**
  * The background check a review screen starts: the footer note it ends with, or null for nothing to say. Never throws.
- * Skipped under --dry-run, with PRVIEW_NO_UPDATE=1 and in a source checkout; the registry is asked at most once a day
- * (in between, a newer release seen last time is still noticed, but not installed again). `autoUpdate` is read when the
+ * Skipped under --dry-run, with PRVIEW_NO_UPDATE=1 and in a source checkout; the registry is asked at most once a day,
+ * sooner after a failed install or a tarball not up yet (in between, a newer release seen last time is still noticed, but not installed again). `autoUpdate` is read when the
  * answer is in, so turning it on in the settings meanwhile counts.
  */
 export async function backgroundCheck(deps: UpdateDeps, opts: { dryRun?: boolean; autoUpdate: () => boolean; /** An install is starting: quitting should wait for it rather than cut it short. */ installing?: (version: string) => void }): Promise<string | null> {
@@ -164,17 +189,26 @@ export async function backgroundCheck(deps: UpdateDeps, opts: { dryRun?: boolean
     const manager = managerOf(deps.moduleDir, deps.userHome, deps.env);
     if (!manager) return null;
     const now = deps.now(), stamp = readStamp(deps.home);
-    if (stamp && stamp.checked <= now && now - stamp.checked < CHECK_EVERY_MS) {
+    if (stamp && stamp.checked <= now && now < (stamp.due ?? stamp.checked + CHECK_EVERY_MS)) {
       const v = newer(stamp.latest, deps.version);
       return v && !opts.autoUpdate() ? availableNotice(v) : null;
     }
     const got = await latest(deps);
-    writeStamp(deps.home, { checked: now, latest: "version" in got ? got.version : stamp?.latest });
+    const next: Stamp = { checked: now, latest: "version" in got ? got.version : stamp?.latest, failures: stamp?.failures };
     const v = "version" in got ? newer(got.version, deps.version) : undefined;
-    if (!v) return null;
-    if (!opts.autoUpdate()) return availableNotice(v);
+    if (!v || !("tarball" in got)) { writeStamp(deps.home, next); return null; }
+    if (!opts.autoUpdate()) { writeStamp(deps.home, next); return availableNotice(v); }
+    if (!(await tarballReady(deps, got.tarball))) { writeStamp(deps.home, { ...next, due: now + NOT_READY_RECHECK_MS }); return null; }
+    writeStamp(deps.home, next);
     opts.installing?.(v);
-    return (await install(deps, manager, v)).message;
+    const r = await install(deps, manager, v);
+    if (!r.ok && r.failed) {
+      const f = stamp?.failures && now - stamp.failures.since < CHECK_EVERY_MS && stamp.failures.since <= now ? stamp.failures : { since: now, n: 0 };
+      const failures = { since: f.since, n: f.n + 1 };
+      // Retry on the next launch until the day's failures are used up; then wait out the rest of the day.
+      writeStamp(deps.home, { ...next, failures, due: failures.n < MAX_INSTALL_FAILURES_PER_DAY ? now : f.since + CHECK_EVERY_MS });
+    } else if (r.ok) writeStamp(deps.home, { checked: now, latest: next.latest });
+    return r.message;
   } catch { return null; }
 }
 
@@ -193,6 +227,7 @@ export async function updateCommand(deps: UpdateDeps, opts: { dryRun?: boolean }
   if (!v) return { ok: true, lines: [`already on the latest (${deps.version})`] };
   const argv = installArgv(manager, v);
   if (opts.dryRun) return { ok: true, lines: [`${deps.version} → ${v}: would run ${argv.join(" ")} (--dry-run: nothing installed)`] };
+  if (!(await tarballReady(deps, got.tarball))) return { ok: false, lines: [`${deps.version} → ${v}: ${notReadyMessage(v)}`] };
   const r = await install(deps, manager, v);
   return { ok: r.ok, lines: [`${deps.version} → ${v}: ${argv.join(" ")}`, r.message] };
 }
