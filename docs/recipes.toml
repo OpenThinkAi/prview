@@ -265,7 +265,12 @@ why = "Type a question and see the matching actions with your current keys; it r
 [[recipe]]
 q = ["how do I change a key binding", "open the settings", "change the default models or editor", "turn wrap or blind on by default"]
 actions = ["review.settings"]
-why = "Opens the settings view: every action's primary and secondary key, the default action per severity, the model per role, the editor and the display defaults. Enter edits a field, Esc leaves and offers to save to the config file; saved changes apply at once."
+why = "Opens the settings view: every action's primary and secondary key, the default action per severity, the model per role, the editor, the display defaults and the refute depth. Enter edits a field, Esc leaves and offers to save to the config file; saved changes apply at once."
+
+[[recipe]]
+q = ["make the refute check findings more thoroughly", "how deep does the second look go", "let refute read other files before keeping a finding", "too many findings turn out wrong when I ask about them"]
+actions = ["review.settings"]
+why = "Set refute in the settings view: quick (default) is one call that sees the lines around a finding, deep sends high findings it kept to an agent that reads the code, thorough sends every finding, off skips it. It applies to the next review prepared; rerun with --fresh, or pass --refute for one run."
 
 # ---- finishing
 

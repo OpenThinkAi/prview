@@ -35,7 +35,8 @@ What you get is a full-screen review, not a diff dump:
   rule, never by the model, and come last, under a fixed line: skim for a behaviour change the
   rule may have missed.
 - **Findings in the gutter.** A critic (a model) raises findings anchored to a line, each `high`, `medium` or `low`
-  severity; each high or medium one is handed to a fresh call with more of the file to refute. `→` on its line (or
+  severity; each high or medium one is handed to a fresh call with more of the file to refute (how hard that
+  second look tries is the [refute depth](#refute-depth)). `→` on its line (or
   `g f` from anywhere) opens one: a short box on its line with a header in its border (source · kind · severity ·
   action, `▲ critic · bug · medium · comment (default)`), a bold title of at most 12 words ("Missing test: X isn't
   covered") and at most two lines of its claim; the whole of it (claim, evidence, the second look with the lines it
@@ -380,8 +381,27 @@ only when the PR head moves, or with `--fresh`. The critic reads each chapter `-
 (default 2) and merges the runs: a finding shows how many runs raised it (`2/3`), and the gutter marks
 the worst by severity, then votes. Each run's time and cost are kept in the review's JSON.
 
+### Refute depth
+
+The second look at each finding (the refute role) tries to knock it down before you see it. How hard it tries is
+`refute` at the top of the config, `refute` in the settings view (`\`), or `--refute LEVEL` for one run:
+
+| Level | What runs | Cost |
+|---|---|---|
+| `off` | No second look; every finding shows as raised. | None |
+| `quick` (default) | One call per high or medium finding, seeing its hunk and 40 lines either side. A withdrawal must cite a line it was shown, so a finding whose answer lives in another file stands. | Seconds |
+| `deep` | `quick`, then every **high** finding it kept goes to an agent that reads the code (the `a ?` sandbox: Read, Grep and Glob in the head worktree, bounded by `[deep]`): callers, types, tests, config. | Up to a minute or so per high finding, run 4 at a time |
+| `thorough` | `quick`, then **every** finding still standing goes to the agent, low ones included. | The slowest |
+
+The agent's withdrawal or downgrade must cite a `path:line` that exists in the worktree, or the finding stands. It
+needs a `claude-cli` refute model; any other kind keeps the quick verdict and the review's warnings say so. A review is
+prepared at the depth in force then: reopening it at the same head reuses it (and says so when the depth has changed
+since), and `prview <PR> --fresh` prepares it again at the new depth. The summary's "Prepared by" line names any depth
+other than `quick`.
+
 ```toml
 blind = true                 # top level, before any [table]: hide findings until a chapter is read
+refute = "deep"              # off | quick (default) | deep | thorough: see Refute depth
 [models.claude]              # kinds: claude-cli | anthropic | openai-compatible
 kind = "claude-cli"
 [models.sonnet]
@@ -396,7 +416,7 @@ model = "mlx-community/Qwen3.8-27B-4bit"  # optional: defaults to the server's f
 critic = "sonnet"
 ask = "qwen"                 # deep (a ?) uses ask's model when deep is not set
 deep = "claude"              # a ? runs tools only on a claude-cli model
-[deep]                       # bounds on one a ? run
+[deep]                       # bounds on one a ? run, and on each refute agent run (deep, thorough)
 max_steps = 24               # tool calls (default 24)
 timeout = 180                # seconds (default 180)
 ```

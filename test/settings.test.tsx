@@ -40,11 +40,29 @@ const open = (text = "", path = "/nowhere/config.toml") => openSettings(parseCon
 test("fields: every action (fixed ones too), then the defaults by severity, the model per role, the editor, the display and updates", () => {
   const f = fieldsOf();
   expect(f.filter((x) => x.kind === "key").map((x) => (x as { id: string }).id)).toEqual(DEFAULT_ACTIONS.map((a) => a.id));
-  expect(f.slice(DEFAULT_ACTIONS.length).map((x) => x.kind)).toEqual(["default", "default", "default", "role", "role", "role", "role", "role", "editor", "wrap", "blind", "auto_update"]);
+  expect(f.slice(DEFAULT_ACTIONS.length).map((x) => x.kind)).toEqual(["default", "default", "default", "role", "role", "role", "role", "role", "editor", "wrap", "blind", "refute", "auto_update"]);
   const s = open(`editor = "nvim"\nwrap = true\n[keys]\n"code.down" = { primary = "down", secondary = "n" }\n[defaults]\nlow = "ignore"`);
   expect(s.values.keys["code.down"]).toEqual({ primary: "down", secondary: "n" });
   expect(s.values.defaults).toEqual({ high: "block", medium: "comment", low: "ignore" });
   expect([s.values.editor, s.values.wrap, s.values.blind, s.values.autoUpdate]).toEqual(["nvim", true, false, false]);
+});
+
+test("refute: quick by default, checked against the levels; Enter steps through them and the save writes one top-level line", () => {
+  expect(parseConfig("").refute).toBe("quick");
+  expect(parseConfig(`refute = "thorough"`).refute).toBe("thorough");
+  expect(() => parseConfig(`refute = "max"`)).toThrow('refute must be one of "off", "quick", "deep", "thorough"');
+  const s = settingsAct(at(open(), (f) => f.kind === "refute"), "settings.edit").s;
+  expect(s.values.refute).toBe("deep");
+  expect(editsOf(s.initial, s.values)).toEqual([{ table: null, key: "refute", value: '"deep"' }]);
+  const round = [s.values.refute];
+  let x = s;
+  for (let i = 0; i < 3; i++) { x = settingsAct(x, "settings.edit").s; round.push(x.values.refute); }
+  expect(round).toEqual(["deep", "thorough", "off", "quick"]);
+  // Back to the built-in level: its line goes.
+  expect(editsOf(open(`refute = "deep"`).values, open().values)).toEqual([{ table: null, key: "refute", value: null }]);
+  const path = freshConfig("# mine\n");
+  expect(saveSettings({ ...s, path }).refute).toBe("deep");
+  expect(readFileSync(path, "utf8")).toBe('# mine\nrefute = "deep"\n');
 });
 
 test("auto_update: read and checked like wrap, off by default; Enter toggles it and the save writes one top-level line", () => {
@@ -287,9 +305,10 @@ test("screen: \\ opens the settings full-screen with every section, the cursor's
   for (let i = 0; i < DEFAULT_ACTIONS.length; i++) await t.press(DOWN);
   expect(t.frame()).toContain("Default actions by severity");
   expect(t.frame()).toMatch(/high\s+ block /);
-  for (let i = 0; i < 11; i++) await t.press(DOWN);
-  for (const s of ["Models per role", "Editor command", "Display", "Updates"]) expect(t.frame()).toContain(s);
+  for (let i = 0; i < 12; i++) await t.press(DOWN);
+  for (const s of ["Models per role", "Editor command", "Display", "Review preparation", "Updates"]) expect(t.frame()).toContain(s);
   expect(t.frame()).toMatch(/blind\s+ off$/m);
+  expect(t.frame()).toMatch(/refute\s+ quick$/m);
   expect(t.frame()).toMatch(/auto_update\s+ off /); // the cursor's row: lit
   // Last, the models, read-only, with where each one's credential comes from.
   await t.press(DOWN);

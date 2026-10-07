@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { all, build, preparedBy, checkHead, exportDocument, Fail, filesOf, home, importDocument, load, remove, reopen, repoFor, writeup, type BuildOpts, type Review } from "./build.ts";
-import { ConfigError, configPath, loadConfig, realLookups, resolveModel, roleModel, ROLES, type Config } from "./config.ts";
+import { ConfigError, configPath, isRefuteDepth, loadConfig, realLookups, REFUTE_DEPTHS, resolveModel, roleModel, ROLES, type Config } from "./config.ts";
 import { describeKeymap, installKeymap } from "./keys.ts";
 import { probe } from "./llm.ts";
 import { credentialSource } from "./claude-env.ts";
@@ -16,7 +16,7 @@ import { clean } from "./sanitize.ts";
 import type { Flow } from "./submit-flow.ts";
 import { backgroundCheck, managerOf, realDeps, runningVersion, updateCommand } from "./update.ts";
 
-const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head | branch> [--repo DIR] [--context N] [--ai MODEL | --no-ai] [--samples N] [--blind | --no-blind] [--fresh] [--dry-run]
+const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head | branch> [--repo DIR] [--context N] [--ai MODEL | --no-ai] [--samples N] [--refute LEVEL] [--blind | --no-blind] [--fresh] [--dry-run]
   Opens the change in a full-screen review: a guide (a model) has ordered the hunks into chapters,
   core change first, tests last, and says what to verify in each; mechanical hunks (whitespace, lock
   files, pure moves, classified by rule) come last; a critic (a model) has raised findings, each
@@ -29,6 +29,10 @@ const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head
   makes that the default, --no-blind turns it off for a run.
   --dry-run prints the API calls a submit would make and posts nothing (nothing is written or run either).
   --samples N runs the critic N times per chapter (default 2) and keeps what the runs agree on, with votes shown.
+  --refute LEVEL sets how hard the second look at each finding tries, for this run: off, quick (the default: one
+  call that sees the file around the line), deep (then an agent that reads the code re-checks the high findings
+  still standing) or thorough (the agent re-checks every finding still standing). refute = "<level>" in the config
+  (or the settings view, \\) makes it the default; it applies when a review is prepared, so --fresh redoes one at it.
   Models are named in ~/.config/prview/config.toml ($PRVIEW_CONFIG) and assigned per role (guide, critic,
   refute, ask, deep); with no config every role is claude -p on your subscription. --ai MODEL uses one named
   model for every role this run; --no-ai skips the models.
@@ -235,6 +239,11 @@ async function main(args: string[]): Promise<void> {
       if (!Number.isInteger(n) || n < 1 || n > 9) throw new Fail("--samples takes a whole number from 1 to 9");
       opts.samples = n;
     }
+    else if (a === "--refute") {
+      const d = args[++i];
+      if (!isRefuteDepth(d)) throw new Fail(`--refute takes one of ${REFUTE_DEPTHS.join(", ")}`);
+      opts.refute = d;
+    }
     else if (a === "--ai") {
       const n = args[++i];
       if (!n || n.startsWith("-")) throw new Fail("--ai takes a model name from your config (prview models)");
@@ -255,7 +264,7 @@ async function main(args: string[]): Promise<void> {
     case "keys": console.log(describeKeymap(loadConfig().keymap)); return;
     case "update": { const u = await updateCommand(realDeps(home()), { dryRun: opts.dryRun }); for (const l of u.lines) (u.ok ? console.log : (t: string) => console.error(`prview: ${t}`))(l); if (!u.ok) process.exitCode = 1; return; }
     case "list": console.log(all().map(({ slug, doc: { target: t, human: h } }) => `${slug}\t${t.label}\t${h.visited.length} read · ${h.comments.length} notes\t${t.title}`).join("\n")); return;
-    case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r.doc, filesOf(r), loadConfig().defaults)); const by = preparedBy(r.ai?.runs); if (by) process.stderr.write(`${by}\n`); return; }
+    case "writeup": { if (!a1) throw new Fail("usage: prview writeup <name>"); const r = load(a1); process.stdout.write(writeup(r.doc, filesOf(r), loadConfig().defaults)); const by = preparedBy(r.ai?.runs, r.ai?.refute); if (by) process.stderr.write(`${by}\n`); return; }
     case "export": { if (!a1) throw new Fail("usage: prview export <name>"); process.stdout.write(exportDocument(load(a1))); return; }
     case "import": { const r = importDocument(await doc(), opts.repo, opts.mine); console.log(`${r.slug}: ${r.doc.plan.chapters.length} chapters, ${findingCount(r)}. Open it with: prview open ${r.slug}`); return; }
     case "show": { if (!process.stdout.isTTY) throw new Fail("prview needs a terminal"); const cfg = start(); return review(importDocument(await doc(), opts.repo, opts.mine), cfg, opts.blind ?? cfg.blind, opts.dryRun); }

@@ -1,5 +1,5 @@
 // The settings view (`\`): the keys, the default action per severity, the model per role, the editor command, the
-// display defaults and auto-update, edited on one screen and saved to config.toml. Pure apart from `saveSettings`, so every edit, refusal
+// display defaults, the refute depth and auto-update, edited on one screen and saved to config.toml. Pure apart from `saveSettings`, so every edit, refusal
 // and save is tested without a terminal.
 //
 // Nothing here has rules of its own: a key is checked by `effectiveKeys` (the same check that refuses a bad [keys] at
@@ -8,14 +8,14 @@
 //
 // What a save rewrites: only the lines for the settings changed in the view. A changed line keeps its indentation and
 // its trailing comment; a setting with no line yet is added at the end of its table (`[keys]`, `[defaults]`, `[roles]`),
-// or among the top-level keys before the first table for `editor`, `wrap`, `blind` and `auto_update`, and a table that does not exist
+// or among the top-level keys before the first table for `editor`, `wrap`, `blind`, `refute` and `auto_update`, and a table that does not exist
 // yet is appended at the end of the file. A key put back to its default has its `[keys]` line removed, and so does a
 // role put back to the default model and an emptied editor. Every other line (comments, blank lines, models, tables
 // prview does not know) is left exactly as it was.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { ConfigError, configPath, DEFAULT_MODEL, parseConfig, ROLES, splitKey, stripComment, type Config, type Role } from "./config.ts";
+import { ConfigError, configPath, DEFAULT_MODEL, DEFAULT_REFUTE, parseConfig, REFUTE_DEPTHS, ROLES, splitKey, stripComment, type Config, type RefuteDepth, type Role } from "./config.ts";
 import { DEFAULT_ACTIONS, effectiveKeys, KeysError, rowById, showKey, type Action, type Binding } from "./keys.ts";
 import { ACTION_KINDS, DEFAULTS, LABEL, type Defaults } from "./triage.ts";
 import type { Severity } from "./guide.ts";
@@ -28,10 +28,11 @@ export type Field =
   | { kind: "editor" }
   | { kind: "wrap" }
   | { kind: "blind" }
+  | { kind: "refute" }
   | { kind: "auto_update" }
   | { kind: "model"; name: string };
 
-export const SECTIONS = { key: "Keys", default: "Default actions by severity", role: "Models per role", editor: "Editor command", wrap: "Display", blind: "Display", auto_update: "Updates", model: "Models (edit them in the config file)" } as const;
+export const SECTIONS = { key: "Keys", default: "Default actions by severity", role: "Models per role", editor: "Editor command", wrap: "Display", blind: "Display", refute: "Review preparation", auto_update: "Updates", model: "Models (edit them in the config file)" } as const;
 export const sectionOf = (f: Field): string => SECTIONS[f.kind];
 
 /** What the view edits, with every value spelled out: an unset role or editor is "". */
@@ -42,6 +43,7 @@ export type Values = {
   editor: string;
   wrap: boolean;
   blind: boolean;
+  refute: RefuteDepth;
   autoUpdate: boolean;
 };
 
@@ -75,7 +77,7 @@ export function fieldsOf(models: string[] = []): Field[] {
     ...DEFAULT_ACTIONS.map((a): Field => ({ kind: "key", id: a.id })),
     ...SEVERITIES.map((severity): Field => ({ kind: "default", severity })),
     ...ROLES.map((role): Field => ({ kind: "role", role })),
-    { kind: "editor" }, { kind: "wrap" }, { kind: "blind" }, { kind: "auto_update" },
+    { kind: "editor" }, { kind: "wrap" }, { kind: "blind" }, { kind: "refute" }, { kind: "auto_update" },
     ...models.map((name): Field => ({ kind: "model", name })),
   ];
 }
@@ -86,7 +88,7 @@ export function valuesOf(cfg: Config): Values {
   for (const r of ROLES) if (cfg.roles[r] && cfg.roles[r] !== DEFAULT_MODEL) roles[r] = cfg.roles[r];
   return {
     keys: Object.fromEntries(cfg.keymap.actions.map((a) => [a.id, { primary: a.key, secondary: a.secondary ?? "" }])),
-    defaults: { ...cfg.defaults }, roles, editor: cfg.editor ?? "", wrap: cfg.wrap, blind: cfg.blind, autoUpdate: cfg.autoUpdate,
+    defaults: { ...cfg.defaults }, roles, editor: cfg.editor ?? "", wrap: cfg.wrap, blind: cfg.blind, refute: cfg.refute, autoUpdate: cfg.autoUpdate,
   };
 }
 
@@ -102,7 +104,7 @@ export function flat(v: Values): Record<string, string> {
   for (const [id, b] of Object.entries(v.keys)) { out[`keys.${id}.primary`] = b.primary; out[`keys.${id}.secondary`] = b.secondary; }
   for (const s of SEVERITIES) out[`defaults.${s}`] = v.defaults[s];
   for (const r of ROLES) out[`roles.${r}`] = v.roles[r] ?? "";
-  out.editor = v.editor; out.wrap = String(v.wrap); out.blind = String(v.blind); out.auto_update = String(v.autoUpdate);
+  out.editor = v.editor; out.wrap = String(v.wrap); out.blind = String(v.blind); out.refute = v.refute; out.auto_update = String(v.autoUpdate);
   return out;
 }
 
@@ -188,6 +190,7 @@ export function settingsAct(s0: Settings, id: string): Out {
         case "editor": return { s: { ...s, sub: { kind: "typing", text: v.editor } } };
         case "wrap": return { s: { ...s, values: { ...v, wrap: !v.wrap } } };
         case "blind": return { s: { ...s, values: { ...v, blind: !v.blind } } };
+        case "refute": return { s: { ...s, values: { ...v, refute: next(REFUTE_DEPTHS, v.refute) } } };
         case "auto_update": return { s: { ...s, values: { ...v, autoUpdate: !v.autoUpdate } } };
         case "model": return { s: say(s, `models are read-only here; edit [models.${f.name}] in ${s.path}`) };
       }
@@ -252,6 +255,7 @@ export function describeField(s: Settings, f: Field): { label: string; value: st
     case "editor": return { label: "editor", value: s.values.editor || "(from $PRVIEW_EDITOR or $EDITOR, else hx)", changed: ch("editor"), description: "The command v e runs, with the file and line added; $PRVIEW_EDITOR still wins when it is set. Empty: $EDITOR, else hx." };
     case "wrap": return { label: "wrap", value: s.values.wrap ? "on" : "off", changed: ch("wrap"), description: "Whether long lines wrap when a review opens (v w still toggles it)." };
     case "blind": return { label: "blind", value: s.values.blind ? "on" : "off", changed: ch("blind"), description: "Blind first pass: a chapter's findings stay hidden until you have read it (--blind / --no-blind still win for a run)." };
+    case "refute": return { label: "refute", value: s.values.refute, changed: ch("refute"), description: `How hard the second look at each finding tries when a review is prepared (built-in: ${DEFAULT_REFUTE}); Enter steps through them. off: none. quick: one call that sees the file around the line, for medium and high findings. deep: quick, then an agent that reads the code (Read, Grep, Glob, under the [deep] limits) re-checks every high finding still standing. thorough: the agent re-checks every finding still standing, low ones too. Slower the deeper it goes; it applies to the next review prepared (prview <PR> --fresh redoes one), and --refute still wins for a run.` };
     case "model": return { label: f.name, value: s.modelLines[f.name] ?? "", changed: false, description: `Read-only: edit [models.${f.name}] in the config file. "your claude login" runs claude -p as you are logged in; key_env or key_keychain bills that key instead (the agent of a ? too). Only the name of the variable or Keychain item shows, never the key.` };
     case "auto_update": return { label: "auto_update", value: s.values.autoUpdate ? "on" : "off", changed: ch("auto_update"), description: "Once a day an installed prview asks npm for a newer release. On: it installs it in the background (bun or npm, whichever installed prview) and says to restart. Off: it only says one is out. prview update installs at once either way; a source checkout never updates itself." };
   }
@@ -279,6 +283,7 @@ export function editsOf(initial: Values, values: Values): Edit[] {
   if (paths.includes("editor")) out.push({ table: null, key: "editor", value: values.editor ? q(values.editor) : null });
   if (paths.includes("wrap")) out.push({ table: null, key: "wrap", value: String(values.wrap) });
   if (paths.includes("blind")) out.push({ table: null, key: "blind", value: String(values.blind) });
+  if (paths.includes("refute")) out.push({ table: null, key: "refute", value: values.refute === DEFAULT_REFUTE ? null : q(values.refute) });
   if (paths.includes("auto_update")) out.push({ table: null, key: "auto_update", value: String(values.autoUpdate) });
   return out;
 }
