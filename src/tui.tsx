@@ -127,7 +127,7 @@ export function summaryContent(review: Review, changed = 0): Content | null {
   const suggested = verdicts.length ? [...verdicts, "That is information only: you pick your own verdict at submit."].join("\n") : "";
   if (!d.plan.summary && !suggested && !again) return null;
   const hint = `Esc closes this; ${keyOf("ai.info")} brings it back. The key panel lists the keys for where you are.`;
-  return { title: "Summary of this change · not a finding", color: "magenta", copy: d.plan.summary || suggested || again, body: [again, d.plan.summary, suggested, preparedBy(review.ai?.runs), hint].filter(Boolean).join("\n\n") };
+  return { title: "Summary of this change · not a finding", color: "magenta", copy: d.plan.summary || suggested || again, body: [again, d.plan.summary, suggested, preparedBy(review.ai?.runs, review.ai?.refute), hint].filter(Boolean).join("\n\n") };
 }
 
 /** A re-review, said where the review opens: the head you last submitted at, what changed since, and the notes that qualify it. */

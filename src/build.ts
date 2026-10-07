@@ -22,7 +22,8 @@ import {
   applyReask, applyRefute, classify, CRITIC_SYSTEM, criticPrompt, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, refutable,
   mergeFindings, readCritic, readGuide, applyTitleReask, TITLE_REASK_SYSTEM, titleReaskPrompt, titleOf, REASK_SYSTEM, reaskPrompt, REFUTE_SYSTEM, refutePrompt, type Chapter, type Finding, type HunkAt, type Mechanical, type Plan,
 } from "./guide.ts";
-import { loadConfig, realLookups, resolveRoles, type Resolved, type Role } from "./config.ts";
+import { DEEP_LIMITS, DEFAULT_REFUTE, loadConfig, realLookups, resolveRoles, type DeepLimits, type RefuteDepth, type Resolved, type Role } from "./config.ts";
+import { refuteByAgent, type Runner } from "./deep.ts";
 import { complete, modelLabel, pool, type Usage } from "./llm.ts";
 import { reviveAsks, type Asks } from "./deep.ts";
 import { git, hasCommit, prSlug, remoteFor, run, type ResolveCtx, type Source } from "./pr.ts";
@@ -45,7 +46,7 @@ export type Run = { role: "guide" | "critic" | "refute" | "deep" | "ask"; /** th
  * A run with neither a model id nor a configured name (a review stored before ids were recorded) makes the whole line absent:
  * a line naming "unknown" tells the reader nothing.
  */
-export function preparedBy(runs: Run[] | undefined): string | undefined {
+export function preparedBy(runs: Run[] | undefined, refute?: RefuteDepth): string | undefined {
   const by = new Map<string, string[]>();
   for (const role of ["guide", "critic", "refute"] as const) {
     const r = runs?.find((x) => x.role === role);
@@ -54,10 +55,11 @@ export function preparedBy(runs: Run[] | undefined): string | undefined {
     if (!id) return undefined;
     by.set(id, [...(by.get(id) ?? []), role]);
   }
-  return by.size ? `Prepared by ${[...by].map(([id, roles]) => `${id} (${roles.join(", ")})`).join(", ")}` : undefined;
+  const depth = refute && refute !== DEFAULT_REFUTE ? ` · refute ${refute}` : "";
+  return by.size ? `Prepared by ${[...by].map(([id, roles]) => `${id} (${roles.join(", ")})`).join(", ")}${depth}` : undefined;
 }
 /** `models` names what each role used, so `ask` in a reopened review talks to the same model. */
-export type Ai = { models: Partial<Record<Role, string>>; at: string; errors: string[]; samples?: number; runs?: Run[] };
+export type Ai = { models: Partial<Record<Role, string>>; at: string; errors: string[]; samples?: number; runs?: Run[]; /** The refute depth it was prepared with; absent means quick (every review before the setting). */ refute?: RefuteDepth };
 export type Pos = { item: number; line: number };
 /** `ref` is what was asked for (a PR's canonical URL, a PR number in a review stored before URLs were, or a range), so the review can be rebuilt at a newer head. */
 /** `suggested`: the verdicts of documents imported at this head, shown in the opening summary as information only. */
@@ -125,8 +127,11 @@ export async function runCritic(model: Resolved, prompt: string, chapter: Chapte
   catch { return findings; }
 }
 
+/** How deep the second look goes (config `refute`, `--refute`), the agent's limits ([deep]) and, in tests, its runner. */
+export type RefuteOpts = { depth: RefuteDepth; limits?: DeepLimits; runner?: Runner };
+
 /** The default producer: the guide orders the hunks, the critic raises findings, refute re-checks them. Exported for the pipeline tests. */
-export async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, models: Pick<Record<Role, Resolved>, "guide" | "critic" | "refute">, samples: number, say: Progress, call: Call = complete): Promise<{ doc: Doc; errors: string[]; runs: Run[] }> {
+export async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, models: Pick<Record<Role, Resolved>, "guide" | "critic" | "refute">, samples: number, say: Progress, call: Call = complete, refute: RefuteOpts = { depth: DEFAULT_REFUTE }): Promise<{ doc: Doc; errors: string[]; runs: Run[] }> {
   const errors: string[] = [], runs: Run[] = [];
   // The id each role shows: the config's own until a reply says better, `default` if neither is known yet.
   // Keyed by model name, so a role sharing a model another role has already heard from starts with the real id.
@@ -161,7 +166,8 @@ export async function guideAndCritic(src: Target, files: FileDiff[], worktree: s
   let findings: Finding[] = [];
   reviews.forEach((r, i) => { if (r instanceof Error) errors.push(`critic (${plan.chapters[i]!.title}): ${r.message}`); else findings.push(...r); });
 
-  const contested = findings.filter((f) => f.severity !== "low");
+  const contested = refute.depth === "off" ? [] : findings.filter((f) => f.severity !== "low");
+  if (refute.depth === "off") say(`refute: off (no second look)`);
   if (contested.length) say(`${tag("refute")}: checking ${contested.length} finding${contested.length === 1 ? "" : "s"}…`);
   const at = new Map(hunks.map((h) => [h.id, h]));
   // A symlink, or a path out of the worktree, is never read for the prompt (src/intree.ts); refute then sees only the hunk.
@@ -177,6 +183,29 @@ export async function guideAndCritic(src: Target, files: FileDiff[], worktree: s
   const settled = new Map<string, Finding>();
   verdicts.forEach((v, i) => { if (v instanceof Error) errors.push(`refute: ${v.message}`); else settled.set(contested[i]!.id, v); });
   findings = findings.map((f) => settled.get(f.id) ?? f);
+
+  // deep and thorough: what the quick look kept goes to an agent that can read the rest of the code.
+  if (refute.depth === "deep" || refute.depth === "thorough") {
+    const m = models.refute;
+    const deeper = findings.filter((f) => f.status !== "withdrawn" && (refute.depth === "thorough" || f.severity === "high"));
+    if (deeper.length && m.def.kind !== "claude-cli") errors.push(`refute: ${refute.depth} reads the code with an agent, which needs a claude-cli refute model; ${m.def.name} is ${m.def.kind}, so the quick look stood`);
+    else if (deeper.length) {
+      say(`${tag("refute")}: reading the code for ${deeper.length} finding${deeper.length === 1 ? "" : "s"} (${refute.depth})…`);
+      const fullDoc: Doc = { ...blank(src), plan, findings };
+      const again = await pool(deeper.map((f) => async () => {
+        const t0 = Date.now();
+        const { finding, run } = await refuteByAgent(fullDoc, files, worktree, f, { model: m, limits: refute.limits ?? DEEP_LIMITS, runner: refute.runner });
+        if (run.model) seen[m.def.name] = run.model;
+        runs.push({ role: "refute", name: m.def.name, model: run.model ?? m.def.model, ms: Date.now() - t0, ...(run.cost !== undefined ? { cost: run.cost } : {}) });
+        return finding;
+      }));
+      const deep = new Map<string, Finding>();
+      again.forEach((v, i) => { if (v instanceof Error) errors.push(`refute (${deeper[i]!.id}, reading the code): ${v.message}`); else deep.set(deeper[i]!.id, v); });
+      findings = findings.map((f) => deep.get(f.id) ?? f);
+      const dropped = [...deep.values()].filter((f) => f.status === "withdrawn").length;
+      say(`${tag("refute")}: the deeper look dropped ${dropped} of ${deeper.length}`);
+    }
+  }
   const kept = findings.filter((f) => f.status !== "withdrawn").length;
   say(`findings: ${kept} kept, ${findings.length - kept} dropped by the second look (shown as ignored)`);
   return { doc: { ...blank(src), plan, findings }, errors, runs };
@@ -282,13 +311,15 @@ function worktreeAt(repo: string, slug: string, head: string): string {
 
 // ---------------------------------------------------------------- building
 
-export type BuildOpts = { context?: number; /** a model name (--ai) for every role, undefined for the configured roles, null for no models. */ ai?: string | null; fresh?: boolean; samples?: number; say?: Progress; /** REST for a platform that needs it (Azure DevOps); the credentialed real one when absent, a fake in tests. */ http?: Http };
+export type BuildOpts = { /** The refute depth for this run (`--refute`); the config's when absent. */ refute?: RefuteDepth; context?: number; /** a model name (--ai) for every role, undefined for the configured roles, null for no models. */ ai?: string | null; fresh?: boolean; samples?: number; say?: Progress; /** REST for a platform that needs it (Azure DevOps); the credentialed real one when absent, a fake in tests. */ http?: Http };
 
 export async function build(repo: string, target: string | undefined, opts: BuildOpts = {}): Promise<Review> {
   const context = opts.context ?? 3, say = opts.say ?? (() => {});
   repo = git(["rev-parse", "--show-toplevel"], repo);
   // Roles and credentials are resolved before anything is fetched or checked out, so a missing key costs nothing.
-  const models = opts.ai === null ? null : resolveRoles(loadConfig(), realLookups(), opts.ai);
+  const cfg = opts.ai === null ? null : loadConfig();
+  const models = opts.ai === null ? null : resolveRoles(cfg!, realLookups(), opts.ai);
+  const depth: RefuteDepth = opts.refute ?? cfg?.refute ?? DEFAULT_REFUTE;
   const { slug, target: t } = isPR(target) ? await fromPR(repo, target!, { say, http: opts.http }) : fromRange(repo, target);
   if (t.base === t.head) throw new Fail(`${t.label} has no changes`);
   const worktree = worktreeAt(repo, slug, t.head);
@@ -307,6 +338,7 @@ export async function build(repo: string, target: string | undefined, opts: Buil
     // Comments carried over before the chapter existed, which that submit already posted, now live only in the chapter.
     if (pre && r.carried) r.doc.human.comments = r.doc.human.comments.filter((x) => !(pre.keys.has(postKey(x)) && r.carried![postKey(x)]));
     say(`reusing the review document from ${prior.ai?.at.slice(0, 16).replace("T", " ") ?? "before"} (--fresh redoes it)`);
+    if (models && prior.ai && (prior.ai.refute ?? DEFAULT_REFUTE) !== depth) say(`it was prepared with refute ${prior.ai.refute ?? DEFAULT_REFUTE}; refute is ${depth} now: --fresh redoes it at ${depth}`);
   } else {
     if (prior) {
       const c = carry({ human: prior.doc.human, head: prior.doc.target.head, ...(prior.carried ? { carried: prior.carried } : {}) }, files);
@@ -318,9 +350,9 @@ export async function build(repo: string, target: string | undefined, opts: Buil
     }
     if (models) {
       const samples = Math.max(1, Math.floor(opts.samples ?? 2));
-      const { doc, errors, runs } = await guideAndCritic(t, files, worktree, models, samples, say);
+      const { doc, errors, runs } = await guideAndCritic(t, files, worktree, models, samples, say, complete, { depth, limits: cfg!.deep });
       r.doc = merge(r.doc, fit(doc, files));
-      r.ai = { models: Object.fromEntries(Object.entries(models).map(([k, v]) => [k, v.def.name])) as Record<Role, string>, at: new Date().toISOString(), errors, samples, runs };
+      r.ai = { models: Object.fromEntries(Object.entries(models).map(([k, v]) => [k, v.def.name])) as Record<Role, string>, at: new Date().toISOString(), errors, samples, runs, ...(depth !== DEFAULT_REFUTE ? { refute: depth } : {}) };
       for (const e of errors) say(`warning: ${e}`);
       // By rule, from the findings that survived refute; information only, never the verdict submit starts from.
       r.suggested = [suggestVerdict(r.doc.findings), ...(prior && prior.doc.target.head === t.head ? prior.suggested ?? [] : []).filter((v) => v.by !== IN_HOUSE)];

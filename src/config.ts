@@ -21,6 +21,17 @@ export type Kind = (typeof KINDS)[number];
 export type DeepLimits = { steps: number; timeoutMs: number };
 export const DEEP_LIMITS: DeepLimits = { steps: 24, timeoutMs: 180_000 };
 
+/**
+ * How hard the second look at a finding tries (`refute = "..."` in the config, `--refute` for a run). `quick` is one
+ * call that sees the hunk and the file around the line, for every medium and high finding. `deep` adds an agent
+ * (the `a ?` sandbox: Read, Grep and Glob in the head worktree, under the [deep] limits) for every high finding the
+ * quick look kept; `thorough` sends every finding still standing to it, low ones included. `off` skips the second look.
+ */
+export const REFUTE_DEPTHS = ["off", "quick", "deep", "thorough"] as const;
+export type RefuteDepth = (typeof REFUTE_DEPTHS)[number];
+export const DEFAULT_REFUTE: RefuteDepth = "quick";
+export const isRefuteDepth = (v: unknown): v is RefuteDepth => typeof v === "string" && (REFUTE_DEPTHS as readonly string[]).includes(v);
+
 export type ModelDef = { name: string; kind: Kind; endpoint?: string; model?: string; keyEnv?: string; keyKeychain?: string };
 /** `[azure]`: how prview signs in to Azure DevOps. `az` (default) mints an Entra token with the az CLI; `pat` reads an org-scoped PAT from pat_env, then pat_keychain. */
 export type AzureConfig = { auth: "az" | "pat"; tenant?: string; patEnv?: string; patKeychain?: string };
@@ -28,6 +39,7 @@ export type Config = { models: Record<string, ModelDef>; roles: Partial<Record<R
   /** The action each finding starts with, by severity: DEFAULTS with the [defaults] table laid over it. */ defaults: Defaults;
   /** The editor command `v e` runs (after $PRVIEW_EDITOR, before $EDITOR). */ editor?: string; /** Long lines wrap from the start (`v w` still toggles). */ wrap: boolean;
   /** The `a ?` agent's step cap and timeout: DEEP_LIMITS with the [deep] table laid over it. */ deep: DeepLimits;
+  /** How deep the second look at each finding goes when a review is prepared. */ refute: RefuteDepth;
   /** How Azure DevOps credentials resolve ([azure]). */ azure: AzureConfig;
   /** Install a newer release in the background when the daily check finds one (update.ts); off, it is only noticed. */ autoUpdate: boolean; path: string | null };
 /** A model whose credential has been looked up and is ready to call. */
@@ -192,6 +204,7 @@ export function parseConfig(text: string, path: string | null = null): Config {
   if (t.blind !== undefined && typeof t.blind !== "boolean") throw new ConfigError("blind must be true or false");
   if (t.wrap !== undefined && typeof t.wrap !== "boolean") throw new ConfigError("wrap must be true or false");
   if (t.auto_update !== undefined && typeof t.auto_update !== "boolean") throw new ConfigError("auto_update must be true or false");
+  if (t.refute !== undefined && !isRefuteDepth(t.refute)) throw new ConfigError(`refute must be one of ${REFUTE_DEPTHS.map((d) => `"${d}"`).join(", ")}`);
   const editor = str(t, "editor", "editor");
   // [keys]: "<action>" = "k" sets the primary; { primary = "k", secondary = "j" } either or both; secondary = "" removes it.
   const overrides: Record<string, Binding> = {};
@@ -226,7 +239,7 @@ export function parseConfig(text: string, path: string | null = null): Config {
   if (auth !== "az" && auth !== "pat") throw new ConfigError('[azure]: auth must be "az" or "pat"');
   const azure: AzureConfig = { auth, tenant: str(at, "tenant", "[azure]"), patEnv: str(at, "pat_env", "[azure]"), patKeychain: str(at, "pat_keychain", "[azure]") };
   if (auth === "pat" && !azure.patEnv && !azure.patKeychain) throw new ConfigError('[azure]: auth = "pat" needs pat_env or pat_keychain');
-  return { models, roles, blind: t.blind === true, azure, keymap, defaults, editor, wrap: t.wrap === true, deep, autoUpdate: t.auto_update === true, path };
+  return { models, roles, blind: t.blind === true, azure, keymap, defaults, editor, wrap: t.wrap === true, deep, refute: isRefuteDepth(t.refute) ? t.refute : DEFAULT_REFUTE, autoUpdate: t.auto_update === true, path };
 }
 
 /** The user's config, or the built-in (claude -p for everything) when there is no file. */
