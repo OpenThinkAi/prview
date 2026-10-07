@@ -133,6 +133,7 @@ test("the agent's verdict: the last JSON line wins, prose before it is fine; a d
   const ok = (c: string) => c === "src/a.ts:10";
   const reply = `I opened src/a.ts and the check is there {not json}.\n${JSON.stringify({ verdict: "downgrade", reason: "Only on an admin path.", cites: ["src/a.ts:10"] })}`;
   expect(applyAgentRefute(f, reply, ok)).toMatchObject({ status: "upheld", severity: "medium", refute: "Only on an admin path. (read the code; cites src/a.ts:10)" });
+  expect(applyAgentRefute(f, "null", ok)).toMatchObject({ status: "upheld", severity: "high", refute: "The deeper look gave no verdict, so the finding stands." });
   expect(applyAgentRefute(f, "I ran out of steps", ok, "steps")).toMatchObject({ status: "upheld", severity: "high", refute: "The deeper look stopped at the step cap before it settled, so the finding stands." });
 });
 

@@ -465,7 +465,10 @@ export const citesIn = (worktree: string) => (cite: string): boolean => {
  */
 export function applyAgentRefute(f: Finding, reply: string, exists: (cite: string) => boolean, stopped?: AgentResult["stopped"]): Finding {
   let j: { verdict?: unknown; reason?: unknown; cites?: unknown };
-  try { j = verdictIn(reply); } catch {
+  try {
+    j = verdictIn(reply);
+    if (typeof j !== "object" || j === null || Array.isArray(j)) throw new Error("not a verdict");
+  } catch {
     const why = stopped ? `stopped at the ${stopped === "steps" ? "step cap" : "timeout"} before it settled` : "gave no verdict";
     return { ...f, status: "upheld", refute: clip(`The deeper look ${why}, so the finding stands.${f.refute ? ` First look: ${f.refute}` : ""}`, 299) };
   }
