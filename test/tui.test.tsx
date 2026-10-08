@@ -1586,6 +1586,11 @@ test("header (pure): a PR leads with its repo and number, GitHub or Azure; a ran
   expect(prNumber("acme/app#1016")).toBe("#1016");
   expect(prNumber("Elevate!10479")).toBe("!10479");
   expect(prNumber("main..feature")).toBeUndefined();
+  expect(prNumber("main..hotfix!42")).toBeUndefined();
+  expect(prNumber("main..fix#7")).toBeUndefined();
+  expect(prNumber("org/project/repo!42")).toBe("!42");
+  expect(prNumber("owner/repo#7")).toBe("#7");
+  expect(headerText({ label: "main..hotfix!42", title: "" })).toBe("main..hotfix!42");
   expect(headerText({ label: "acme/app#1016", title: "Fix the thing" })).toBe("acme/app#1016  Fix the thing");
   expect(headerText({ label: "Elevate!10479", title: "Fix the thing" })).toBe("Elevate!10479  Fix the thing");
   expect(headerText({ label: "acme/app#1016", title: "" })).toBe("acme/app#1016");

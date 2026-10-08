@@ -37,8 +37,9 @@ export type StatusInput = {
 
 const SEVERITY: readonly Severity[] = ["high", "medium", "low"];
 
-/** The number a PR label ends in, as the platform writes it (`#12` on GitHub, `!12` on Azure DevOps); undefined for a range. */
+/** The number a PR label ends in, as the platform writes it (`#12` on GitHub, `!12` on Azure DevOps); undefined for a range, whatever its head branch ends in. */
 export function prNumber(label: string): string | undefined {
+  if (label.includes("..")) return undefined;
   return label.match(/[#!]\d+$/)?.[0];
 }
 
