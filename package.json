@@ -1,6 +1,6 @@
 {
   "name": "@openthink/prview",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Review a pull request in the terminal, prepared by a model, judged by you",
   "license": "MIT",
   "homepage": "https://openthink.dev/prview/",
