@@ -7,7 +7,7 @@ import { hunksOf } from "../src/guide.ts";
 import { argvOf, merge, parseDocument, SCHEMA, splitArgs, type Doc } from "../src/document.ts";
 import { adapterFor, github, postingOf, type Runner } from "../src/platform.ts";
 import { isRemoteCall, remoteOut, withRemote } from "./gh-remote.ts";
-import { describe, hookOf, planOf, unboundOf, postPreview, redirectRefusal, runHook, shown, submit, type HookRunner } from "../src/submit.ts";
+import { describe, hookOf, planOf, unboundMemo, unboundOf, postPreview, redirectRefusal, runHook, shown, submit, type HookRunner } from "../src/submit.ts";
 import type { Review } from "../src/build.ts";
 import { decide } from "../src/triage.ts";
 
@@ -208,6 +208,30 @@ test("the send preview says a PR no remote of the clone points at will not be po
   expect(describe(planOf(ok, []), false, false, bound)).toContain(`2. Posts to ${PR} with gh`);
   // A platform that binds nothing to the clone is not asked.
   expect(unboundOf(planOf(review({}, { url: "https://dev.azure.com/o/p/_git/r/pullrequest/7", platform: "azure-devops" }), []), noNet, "/wt")).toBeUndefined();
+});
+
+test("the send preview's remote check is read once per PR URL and clone, and again when either changes (unboundMemo)", () => {
+  const seen: string[][] = [];
+  const remotes: Runner = (argv, o) => { seen.push(argv); return isRemoteCall(argv) ? remoteOut() : noNet(argv, o); };
+  const memo = unboundMemo(remotes), of = (p: ReturnType<typeof planOf>, wt = "/wt") => memo(p, wt);
+  const bound = planOf(review({}, { url: PR, platform: "github" }), []);
+  // Bound: undefined is kept too, so re-rendering the step does not run git again.
+  expect(of(bound)).toBeUndefined();
+  expect(of(bound)).toBeUndefined();
+  expect(seen).toHaveLength(1);
+  // The target moves to a PR no remote points at: read again, and the refusal shows.
+  const evil = planOf(review({}, { url: "https://github.com/evil/pwn/pull/7", platform: "github" }), []);
+  expect(of(evil)).toStartWith("no remote in this clone points at github.com/evil/pwn");
+  expect(seen).toHaveLength(2);
+  expect(of(evil)).toStartWith("no remote in this clone");
+  expect(seen).toHaveLength(2);
+  // And back: the bound answer is read afresh, not the refusal left over.
+  expect(of(bound)).toBeUndefined();
+  expect(seen).toHaveLength(3);
+  // Another clone for the same PR is read again too.
+  expect(of(bound, "/other")).toBeUndefined();
+  expect(seen).toHaveLength(4);
+  expect(seen.every((a) => isRemoteCall(a))).toBe(true);
 });
 
 test("github: every verdict maps to its review event", async () => {

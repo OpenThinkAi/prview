@@ -149,6 +149,21 @@ export const shown = (argv: string[]) => argv.map((a) => /^[\w@%+=:,./{}-]+$/.te
 export const unboundOf = (p: Plan, run: Runner, cwd: string): string | undefined => p.adapter?.unbound?.(p.target, run, cwd);
 
 /**
+ * `unboundOf`, read once per target: the send step's preview renders often and `git remote -v` is a process, so the
+ * answer is kept, but under the PR it was read for (platform and URL) and the clone, and read again when either changes.
+ * The clone's remotes are not watched: a remote added or removed while the step is open shows on the next target, and
+ * post() checks the binding again itself, so a stale preview can never post where the remotes do not point.
+ */
+export function unboundMemo(run: Runner): (p: Plan, cwd: string) => string | undefined {
+  let last: { key: string; v: string | undefined } | undefined;
+  return (p, cwd) => {
+    const key = JSON.stringify([p.platform ?? null, p.target.url ?? null, cwd]);
+    if (last?.key !== key) last = { key, v: unboundOf(p, run, cwd) };
+    return last.v;
+  };
+}
+
+/**
  * The preview's account of what Enter will do; `allowed` is whether the human has let the hook run. `unbound`: why the
  * post would be refused for this clone (`unboundOf`), shown in place of where it posts.
  */

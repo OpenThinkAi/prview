@@ -153,6 +153,24 @@ export async function tarballReady(deps: Pick<UpdateDeps, "fetch">, tarball: str
   catch { return false; }
 }
 
+// The registry's attestations answer and the in-toto statement inside its SLSA one, as far as provenanceOk reads them
+// (https://slsa.dev/spec/v1.0/provenance; npm's GitHub Actions build type). The JSON is from the network: every field
+// is read through Untrusted, so each may be missing or of another type: arrays go through Array.isArray and leaves are
+// compared to what is expected, never assumed.
+type Attestations = { attestations: Attestation[] };
+type Attestation = { predicateType: string; bundle: { dsseEnvelope: { payload: string; payloadType: string } } };
+type SlsaSubject = { name: string; digest: { sha512: string } };
+type SlsaStatement = {
+  _type: string;
+  subject: SlsaSubject[];
+  predicateType: string;
+  predicate: { buildDefinition: { buildType: string; externalParameters: { workflow: { repository: string; path: string; ref: string } } } };
+};
+/** `T` as parsed JSON may hold it: any field absent, and a leaf of any type (`unknown`), so it is compared, never assumed. */
+type Untrusted<T> = T extends readonly (infer E)[] ? readonly Untrusted<E>[] | undefined
+  : T extends object ? { readonly [K in keyof T]?: Untrusted<T[K]> } | undefined
+  : unknown;
+
 /**
  * Does `version`'s npm provenance say it came from prview's own release workflow, for the tarball whose integrity the
  * packument lists? The registry's SLSA v1 attestation is read (its statement decoded from the DSSE envelope): the subject
@@ -172,14 +190,14 @@ export async function provenanceOk(deps: Pick<UpdateDeps, "fetch">, version: str
     if (!res.ok) return no("it has no npm provenance");
     const text = await res.text();
     if (text.length > 1_000_000) return no("its npm provenance was not understood");
-    const list = (JSON.parse(text) as { attestations?: unknown } | null)?.attestations;
-    const slsa = Array.isArray(list) ? list.find((a: any) => a?.predicateType === SLSA_V1) as any : undefined;
+    const list = (JSON.parse(text) as Untrusted<Attestations> | null)?.attestations;
+    const slsa = Array.isArray(list) ? list.find((a) => a?.predicateType === SLSA_V1) : undefined;
     const payload = slsa?.bundle?.dsseEnvelope?.payload;
     if (typeof payload !== "string") return no("it has no npm provenance");
-    const st = JSON.parse(Buffer.from(payload, "base64").toString("utf8")) as any;
-    const subjects = Array.isArray(st?.subject) ? st.subject : [];
+    const st = JSON.parse(Buffer.from(payload, "base64").toString("utf8")) as Untrusted<SlsaStatement> | null;
+    const subjects: Untrusted<SlsaSubject>[] = Array.isArray(st?.subject) ? st.subject : [];
     const name = `pkg:npm/${PACKAGE.replace("@", "%40")}@${version}`;
-    if (st?.predicateType !== SLSA_V1 || !subjects.some((x: any) => x?.name === name && x?.digest?.sha512 === hex)) return no("its npm provenance is not for this tarball");
+    if (st?.predicateType !== SLSA_V1 || !subjects.some((x) => x?.name === name && x?.digest?.sha512 === hex)) return no("its npm provenance is not for this tarball");
     const wf = st?.predicate?.buildDefinition?.externalParameters?.workflow;
     if (wf?.repository !== PROVENANCE.repository || wf?.path !== PROVENANCE.path || wf?.ref !== PROVENANCE.ref) return no(`its npm provenance does not name ${PROVENANCE.repository}'s ${PROVENANCE.path} on main`);
     return { ok: true };
