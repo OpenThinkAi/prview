@@ -595,6 +595,10 @@ tick it in that submit's send step, and its `> path` must land inside the review
 paths and symlinks that leave it are refused). The copy of the document it receives leaves out your
 private ignore notes. `prview import` fetches a PR head only from a remote already configured in
 your clone for that repo; if there is none it refuses instead of fetching from the repo a document names.
+It keeps a document's PR URL only in its canonical form (`https://github.com/<owner>/<repo>/pull/<n>`) and drops
+one it cannot parse. A GitHub review is posted only when the review's URL is exactly that form (no other host, no
+query, fragment or trailing path, no `..`) and a remote in your clone points at that `<owner>/<repo>` (compared
+case-insensitively; a mirror of it counts); otherwise submit refuses before anything is sent.
 Model prompts go to `claude -p` on stdin, not on its command line, so they are not in the process list.
 (The system prompts, prview's own fixed text, are on the command line.)
 The `a ?` agent is `claude -p` in safe mode (no CLAUDE.md, hooks, plugins or skills load from the worktree, no MCP)

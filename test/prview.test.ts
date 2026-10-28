@@ -398,6 +398,27 @@ test("import fetches a PR head only from a remote already configured for that re
   } finally { process.env.PRVIEW_HOME = join(tmp, "store"); }
 });
 
+test("import keeps a document's target URL only in its canonical form, and drops one no platform parses", async () => {
+  const doc = JSON.parse(exportDocument(load((await build(join(tmp, "repo"), "main..feature", { ai: null })).slug))) as Doc;
+  const cases: [string, string | undefined][] = [
+    ["https://github.com/O/R/pull/7/files#diff-1", "https://github.com/O/R/pull/7"],
+    ["https://github.com/o/r/pull/7?x=../../repos/evil/pwn", "https://github.com/o/r/pull/7"],
+    ["https://evil.test/o/r/pull/7", undefined],
+    ["https://github.com/../evil/pull/7", undefined],
+  ];
+  let i = 0;
+  for (const [url, kept] of cases) {
+    const clone = join(tmp, `clone-canon-${++i}`);
+    expect(Bun.spawnSync(["git", "clone", "-q", "--no-local", join(tmp, "repo"), clone]).exitCode).toBe(0);
+    process.env.PRVIEW_HOME = join(tmp, `store-canon-${i}`);
+    try {
+      const r = importDocument(JSON.stringify({ ...doc, target: { ...doc.target, url } }), clone);
+      expect(r.doc.target.url, url).toBe(kept);
+      expect(load(r.slug).doc.target.url, url).toBe(kept);
+    } finally { process.env.PRVIEW_HOME = join(tmp, "store"); }
+  }
+});
+
 test("a commit message's terminal escapes do not reach the review's title or body", async () => {
   const r = join(tmp, "esc");
   const g = (...a: string[]) => Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: r });

@@ -12,6 +12,7 @@ import {
   afterSubmit, earlierKeys, earlierOf, earlierPosts, keepQueue, queuedText, replyKey, resolveKey, setReply, threadOf, toggleResolve, type EarlierQueue,
 } from "../src/earlier.ts";
 import { github, type EarlierPost, type Posting, type Runner } from "../src/platform.ts";
+import { isRemoteCall, remoteOut, withRemote } from "./gh-remote.ts";
 import { azureAdapter } from "../src/platforms/azure.ts";
 import type { Http, HttpReq, HttpRes } from "../src/azure-auth.ts";
 import { itemKey, itemsOf, lastReached, rowText, type PrevItem } from "../src/previous.ts";
@@ -119,6 +120,7 @@ type Call = { argv: string[]; body?: any };
 function fakeGh(fail?: "reply" | "threads" | "resolve" | "create") {
   const calls: Call[] = [];
   const run: Runner = (argv, o) => {
+    if (isRemoteCall(argv)) return remoteOut();
     const body = o.stdin === undefined ? undefined : JSON.parse(o.stdin);
     calls.push({ argv, body });
     const method = argv[3]!, path = argv[4]!;

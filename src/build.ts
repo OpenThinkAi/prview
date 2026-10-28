@@ -409,6 +409,10 @@ function haveCommits(repo: string, t: Target): void {
  */
 export function importDocument(text: string, explicitRepo?: string, mine = false): Review {
   const doc = parseDocument(text);
+  // The document's URL is the sender's word: keep only a PR URL a platform parses, in its canonical form; anything else
+  // is dropped, so nothing loose is stored as the review's target and later posted to (platform.ts checks it again).
+  const canon = parseRef(doc.target.url)?.url;
+  if (canon) doc.target.url = canon; else delete doc.target.url;
   const take = (r: Review, files: FileDiff[]): Doc => {
     if (mine) return fit(doc, files);
     const s = suggestions(doc, files);

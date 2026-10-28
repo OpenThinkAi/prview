@@ -11,6 +11,7 @@ import { parseDiff } from "../src/diff.ts";
 import { fit, SCHEMA, type Doc } from "../src/document.ts";
 import { hunksOf } from "../src/guide.ts";
 import { adapterFor, type Runner } from "../src/platform.ts";
+import { isRemoteCall, remoteOut, withRemote } from "./gh-remote.ts";
 import { ownFinding } from "../src/rows.ts";
 import { applySelection, impliedVerdict, selectionOf, startFlow, stepLines, toggle, move, type Flow } from "../src/submit-flow.ts";
 import { planOf, postPreview, submit } from "../src/submit.ts";
@@ -70,6 +71,7 @@ function poster(head: () => string) {
   const created: any[] = [];
   let made: any[] = [];
   const run: Runner = (argv, o) => {
+    if (isRemoteCall(argv)) return remoteOut();
     const method = argv[3]!, path = argv[4]!, body = o.stdin === undefined ? undefined : JSON.parse(o.stdin);
     if (method === "GET" && path.includes("/reviews/99/comments?")) {
       const page = Number(path.match(/page=(\d+)$/)![1]);
