@@ -145,8 +145,10 @@ json.dump({"median_token_length": int(m.median_token_length), "cases": [
     for s, t, v in zip(sentences, ids, vecs)]}, open(out, "w"), ensure_ascii=False)
 `;
 
-/** Refuse a download (or a --from directory) whose files are not the pinned revision's bytes. */
-/** Check each file in `pins` under `dir` against its sha256; throw on the first mismatch. `pins` is SHA256 in a build; tests pass a subset. */
+/**
+ * Refuse a download (or a --from directory) whose files are not the pinned revision's bytes: each file in `pins` under
+ * `dir` is hashed and the first mismatch throws. `pins` is SHA256 in a build; tests pass a subset.
+ */
 export function verify(dir: string, pins: Record<string, string> = SHA256): void {
   for (const [f, want] of Object.entries(pins)) {
     const got = new Bun.CryptoHasher("sha256").update(readFileSync(join(dir, f))).digest("hex");

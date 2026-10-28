@@ -154,9 +154,9 @@ export const unboundOf = (p: Plan, run: Runner, cwd: string): string | undefined
  * The clone's remotes are not watched: a remote added or removed while the step is open shows on the next target, and
  * post() checks the binding again itself, so a stale preview can never post where the remotes do not point.
  */
-export function unboundMemo(run: Runner, cwd: string): (p: Plan) => string | undefined {
+export function unboundMemo(run: Runner): (p: Plan, cwd: string) => string | undefined {
   let last: { key: string; v: string | undefined } | undefined;
-  return (p) => {
+  return (p, cwd) => {
     const key = JSON.stringify([p.platform ?? null, p.target.url ?? null, cwd]);
     if (last?.key !== key) last = { key, v: unboundOf(p, run, cwd) };
     return last.v;

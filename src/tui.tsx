@@ -269,8 +269,8 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   const sendPlan = (fl: Flow): Plan => planOf(r, files, { coverage: fl.coverage, selection: flows.selectionOf(fl), defaults });
   // Whether the clone's remotes bind the PR: read when the send step first shows and again only if the PR's URL (or
   // the clone) changes (unboundMemo); post checks it again itself.
-  const unboundRef = useRef<{ wt: string; of: (p: Plan) => string | undefined } | null>(null);
-  const unbound = (p: Plan) => { if (unboundRef.current?.wt !== r.worktree) unboundRef.current = { wt: r.worktree, of: unboundMemo(run, r.worktree) }; return unboundRef.current.of(p); };
+  const unboundRef = useRef(unboundMemo(run));
+  const unbound = (p: Plan) => unboundRef.current(p, r.worktree);
   const boxesOf = (p: Plan): CheckBox[] => [...(p.hook && !p.hook.refused ? ["hook" as const] : []), ...(p.adapter ? ["coverage" as const] : [])];
   function submitState(fl: Flow): KeyState {
     if (fl.step === "comment") return { state: "submit", step: "comment", typing: fl.typing };

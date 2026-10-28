@@ -210,10 +210,10 @@ test("the send preview says a PR no remote of the clone points at will not be po
   expect(unboundOf(planOf(review({}, { url: "https://dev.azure.com/o/p/_git/r/pullrequest/7", platform: "azure-devops" }), []), noNet, "/wt")).toBeUndefined();
 });
 
-test("the send preview's remote check is read once per PR URL, and again when the URL changes (unboundMemo)", () => {
+test("the send preview's remote check is read once per PR URL and clone, and again when either changes (unboundMemo)", () => {
   const seen: string[][] = [];
   const remotes: Runner = (argv, o) => { seen.push(argv); return isRemoteCall(argv) ? remoteOut() : noNet(argv, o); };
-  const of = unboundMemo(remotes, "/wt");
+  const memo = unboundMemo(remotes), of = (p: ReturnType<typeof planOf>, wt = "/wt") => memo(p, wt);
   const bound = planOf(review({}, { url: PR, platform: "github" }), []);
   // Bound: undefined is kept too, so re-rendering the step does not run git again.
   expect(of(bound)).toBeUndefined();
@@ -228,6 +228,9 @@ test("the send preview's remote check is read once per PR URL, and again when th
   // And back: the bound answer is read afresh, not the refusal left over.
   expect(of(bound)).toBeUndefined();
   expect(seen).toHaveLength(3);
+  // Another clone for the same PR is read again too.
+  expect(of(bound, "/other")).toBeUndefined();
+  expect(seen).toHaveLength(4);
   expect(seen.every((a) => isRemoteCall(a))).toBe(true);
 });
 
