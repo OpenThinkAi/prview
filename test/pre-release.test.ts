@@ -162,19 +162,23 @@ test("claudeAgent hands claude the link rules with the outside rules (stub claud
 
 const RELEASE = readFileSync(join(import.meta.dir, "../.github/workflows/release.yml"), "utf8");
 
-test("release: a dispatch publishes only from main; tag runs are unchanged; the header says so", () => {
+test("release: only a dispatch on main publishes; there is no tag trigger; the header says so", () => {
   const publish = RELEASE.slice(RELEASE.indexOf("\n  publish:"));
   const guard = publish.match(/^ {4}if: (.+)$/m)?.[1];
-  expect(guard).toBe("github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'");
+  expect(guard).toBe("github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'");
   // The guard is on the job, before its steps, not on one step.
   expect(publish.indexOf("    if:")).toBeLessThan(publish.indexOf("    steps:"));
-  // Evaluated as Actions would: dispatch from a branch is skipped, from main runs; a v* tag push runs.
-  const runs = (event: string, ref: string) => event !== "workflow_dispatch" || ref === "refs/heads/main";
+  // Evaluated as Actions would: only a dispatch from main runs; a branch dispatch or any tag push is skipped.
+  const runs = (event: string, ref: string) => event === "workflow_dispatch" && ref === "refs/heads/main";
   expect(runs("workflow_dispatch", "refs/heads/evil")).toBe(false);
   expect(runs("workflow_dispatch", "refs/heads/main")).toBe(true);
-  expect(runs("push", "refs/tags/v0.1.0")).toBe(true);
-  expect(RELEASE).toMatch(/^on:\n {2}workflow_dispatch:\n {2}push:\n {4}tags: \["v\*"\]$/m);
-  expect(RELEASE.slice(0, RELEASE.indexOf("\non:"))).toContain("A dispatch publishes only when run on main");
+  expect(runs("push", "refs/tags/v0.1.0")).toBe(false);
+  // The only trigger is workflow_dispatch: a v* tag can point at an unreviewed commit, so no push trigger.
+  const on = RELEASE.slice(RELEASE.indexOf("\non:\n") + 1, RELEASE.indexOf("\npermissions:"));
+  expect(on.trim()).toBe("on:\n  workflow_dispatch:");
+  expect(RELEASE).not.toMatch(/^\s*(push|tags|release):/m);
+  expect(RELEASE).not.toContain("ref_type == 'tag'");
+  expect(RELEASE.slice(0, RELEASE.indexOf("\non:"))).toContain("deliberately no `push: tags` trigger");
 });
 
 test("version: this release is 0.1.10", () => {
