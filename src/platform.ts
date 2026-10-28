@@ -76,10 +76,18 @@ export type Adapter = {
   platform: string;
   /** The verdicts this platform takes, in the order the submit radio lists them. */
   verdicts: Verdict[];
-  /** One line for the submit preview: where this would post, or why it cannot. */
-  describe(t: Target, p: Posting): string;
-  /** The API calls post would make, as printable text, without making any. */
-  dryRun(t: Target, p: Posting): string[];
+  /**
+   * One line for the submit preview: where this would post, or why it cannot. `unbound`: what `unbound()` found for the
+   * clone (the post would be refused for it), so the preview says so rather than "posts to …".
+   */
+  describe(t: Target, p: Posting, unbound?: string): string;
+  /** The API calls post would make, as printable text, without making any (none, with `unbound`). */
+  dryRun(t: Target, p: Posting, unbound?: string): string[];
+  /**
+   * Why post would refuse this target for the clone in `cwd` (a GitHub PR of a repository no remote of it points at),
+   * or undefined. Post checks it again itself; this is for the preview. Absent: the platform binds nothing to the clone.
+   */
+  unbound?(t: Target, run: Runner, cwd: string): string | undefined;
   /**
    * Post it; rejects with a reason the reader can act on (a PostError when something already reached the PR, listing
    * it). Resolves to what was posted: the URL when known and every item with its ids. Async: a platform reached over
@@ -264,15 +272,15 @@ function lineIds(run: Runner, cwd: string, c: ReturnType<typeof githubCalls>, po
 export const github: Adapter = {
   platform: "github",
   verdicts: ["approve", "request_changes", "comment"],
-  describe(t, p) {
-    const why = githubProblem(t, p);
+  describe(t, p, unbound) {
+    const why = githubProblem(t, p) ?? unbound;
     if (why) return `not posted: ${why}`;
     const n = p.comments.length, w = p.files?.length ?? 0, first = earlierText(p);
     if (onlyEarlier(p)) return `posts to ${t.url} with gh: only ${first} (no review: a comment with no words of its own)`;
     return `posts to ${t.url} with gh: ${first ? `first ${first}; then ` : ""}${EVENT[p.verdict].toLowerCase().replace("_", " ")}${p.body.trim() ? ", your summary" : ""}${n ? `, ${n} line comment${n === 1 ? "" : "s"}` : ""}${w ? `, ${w} whole-file comment${w === 1 ? "" : "s"}` : ""}${p.coverage ? ", a coverage line" : ""}`;
   },
-  dryRun(t, p) {
-    const why = githubProblem(t, p);
+  dryRun(t, p, unbound) {
+    const why = githubProblem(t, p) ?? unbound;
     if (why) return [`would not post: ${why}`];
     const c = githubCalls(t, p);
     const show = (x: Call, note: string) => [`# ${note}`, `gh api --method ${x.method} ${x.path}${x.body === undefined ? "" : " --input -"}`, ...(x.body === undefined ? [] : [JSON.stringify(x.body, null, 2)])].join("\n");
@@ -289,12 +297,13 @@ export const github: Adapter = {
       ...(p.comments.length ? [show(c.comments(1), "read back the review's comments (paged) for their ids, kept in the submission record")] : []),
     ];
   },
+  unbound: (t, run, cwd) => githubUnbound(t, run, cwd),
   async post(t, p, run, cwd) {
     const why = githubProblem(t, p);
     if (why) throw new Error(why);
     // Only to a PR of a repository this clone fetches from: a document naming some other repository's PR (one whose head
     // happens to be the same commit) must not get the reader's verdict posted there under their login.
-    const unbound = githubRemoteProblem(prOf(t)!, run, cwd);
+    const unbound = githubUnbound(t, run, cwd);
     if (unbound) throw new Error(unbound);
     const c = githubCalls(t, p);
     // A comment anchored to line 11 of one commit is wrong on another: refuse rather than mis-anchor.
@@ -325,6 +334,12 @@ function githubRemoteProblem(ref: PrRef, run: Runner, cwd: string): string | und
   const urls = r.exit === 0 ? r.stdout.split("\n").map((l) => l.split(/\s+/)[1]).filter((u): u is string => !!u) : [];
   if (urls.some((u) => githubSource.remoteKey(u)?.toLowerCase() === ref.repoKey.toLowerCase())) return undefined;
   return `no remote in this clone points at github.com/${ref.repoKey}, so prview will not post this review there: the document names a pull request of a repository this clone does not fetch from (add a remote for it if that is really the PR you reviewed)`;
+}
+
+/** githubRemoteProblem for the target's PR (none to check without a strict PR URL: githubProblem refuses that first). */
+function githubUnbound(t: Target, run: Runner, cwd: string): string | undefined {
+  const ref = prOf(t);
+  return ref ? githubRemoteProblem(ref, run, cwd) : undefined;
 }
 
 /** The review itself, after the head check and the earlier threads: pending review, whole-file comments, submit, ids. */

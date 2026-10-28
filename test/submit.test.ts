@@ -7,7 +7,7 @@ import { hunksOf } from "../src/guide.ts";
 import { argvOf, merge, parseDocument, SCHEMA, splitArgs, type Doc } from "../src/document.ts";
 import { adapterFor, github, postingOf, type Runner } from "../src/platform.ts";
 import { isRemoteCall, remoteOut, withRemote } from "./gh-remote.ts";
-import { describe, hookOf, planOf, postPreview, redirectRefusal, runHook, shown, submit, type HookRunner } from "../src/submit.ts";
+import { describe, hookOf, planOf, unboundOf, postPreview, redirectRefusal, runHook, shown, submit, type HookRunner } from "../src/submit.ts";
 import type { Review } from "../src/build.ts";
 import { decide } from "../src/triage.ts";
 
@@ -185,6 +185,29 @@ test("github: posts only to a PR of a repository one of the clone's remotes poin
     expect(posted.url, url).toBe(`${PR}#pullrequestreview-99`);
     expect(calls[0]!.argv.slice(0, 5).join(" ")).toBe("gh api --method GET repos/o/r/pulls/7");
   }
+});
+
+test("the send preview says a PR no remote of the clone points at will not be posted, instead of \"posts to …\"", () => {
+  const p = postingOf("approve", [{ hunk: null, side: "new", line: null, text: "words", at: "now" }], () => undefined);
+  const evil = review({ human: { comments: [{ hunk: null, side: "new", line: null, text: "words", at: "now" }], visited: [], verdict: "approve" } }, { url: "https://github.com/evil/pwn/pull/7", platform: "github" });
+  const plan = planOf(evil, []);
+  const seen: string[][] = [];
+  const remotes: Runner = (argv, o) => { seen.push(argv); return isRemoteCall(argv) ? remoteOut() : noNet(argv, o); };
+  const why = unboundOf(plan, remotes, "/wt");
+  expect(seen).toEqual([["git", "remote", "-v"]]); // only the remotes are read
+  expect(why).toStartWith("no remote in this clone points at github.com/evil/pwn");
+  const shownText = describe(plan, false, false, why);
+  expect(shownText).toContain("2. Not posted: no remote in this clone points at github.com/evil/pwn");
+  expect(shownText).not.toMatch(/posts to/i);
+  expect(github.describe(evil.doc.target, p, why)).toStartWith("not posted: no remote in this clone");
+  expect(github.dryRun(evil.doc.target, p, why)).toEqual([`would not post: ${why}`]);
+  // A bound clone (a mirror counts) previews where it posts, as before.
+  const ok = review({}, { url: PR, platform: "github" });
+  const bound = unboundOf(planOf(ok, []), (argv, o) => isRemoteCall(argv) ? remoteOut("git@github.com:O/R.git") : noNet(argv, o), "/wt");
+  expect(bound).toBeUndefined();
+  expect(describe(planOf(ok, []), false, false, bound)).toContain(`2. Posts to ${PR} with gh`);
+  // A platform that binds nothing to the clone is not asked.
+  expect(unboundOf(planOf(review({}, { url: "https://dev.azure.com/o/p/_git/r/pullrequest/7", platform: "azure-devops" }), []), noNet, "/wt")).toBeUndefined();
 });
 
 test("github: every verdict maps to its review event", async () => {

@@ -7,7 +7,9 @@
 //
 // What it trusts: nothing from the registry but a version string of the form 1.2.3, and only one strictly newer than
 // the version this copy's own package.json says it is. The package name is a constant and the install argv is fixed;
-// there is no shell. A source checkout (anything not inside an installed node_modules/@openthink/prview) never checks
+// there is no shell. Before anything is installed, the release's npm provenance must say it was built by this repo's
+// release workflow on main, for exactly the tarball the packument lists (`provenanceOk`): a version published any other
+// way (a stolen npm token, a fork's workflow) is reported, never installed. A source checkout (anything not inside an installed node_modules/@openthink/prview) never checks
 // and never updates itself.
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -17,6 +19,11 @@ import { clean } from "./sanitize.ts";
 
 export const PACKAGE = "@openthink/prview";
 export const REGISTRY = `https://registry.npmjs.org/${PACKAGE}/latest`;
+/** The registry's provenance attestations for `version` (built here, never taken from the packument). */
+export const attestationsUrl = (version: string) => `https://registry.npmjs.org/-/npm/v1/attestations/${PACKAGE.replace("/", "%2f")}@${version}`;
+/** What a release's provenance must name: the only workflow that publishes prview, run on main. */
+export const PROVENANCE = { repository: "https://github.com/OpenThinkAi/prview", path: ".github/workflows/release.yml", ref: "refs/heads/main" } as const;
+const SLSA_V1 = "https://slsa.dev/provenance/v1";
 /** At most one registry check per this long. */
 export const CHECK_EVERY_MS = 24 * 60 * 60 * 1000;
 /** After a version is listed but its tarball is not downloadable yet (npm's post-publish processing), look again this soon. */
@@ -118,15 +125,17 @@ function writeStamp(home: string, s: Stamp): void {
 }
 
 /** The registry's latest release, or why it could not be read. The response is untrusted: only a release string is kept. */
-export async function latest(deps: Pick<UpdateDeps, "fetch">): Promise<{ version: string; tarball: string } | { error: string }> {
+export async function latest(deps: Pick<UpdateDeps, "fetch">): Promise<{ version: string; tarball: string; integrity?: string } | { error: string }> {
   try {
     const res = await deps.fetch(REGISTRY, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) return { error: "the npm registry did not answer" };
     const text = await res.text();
     if (text.length > 1_000_000) return { error: "the npm registry's answer was not understood" };
-    const doc = JSON.parse(text) as { version?: unknown; dist?: { tarball?: unknown } } | null;
-    const v = doc?.version;
-    return typeof v === "string" && RELEASE.test(v) ? { version: v, tarball: tarballUrl(v, doc?.dist?.tarball) } : { error: "the npm registry's answer was not understood" };
+    const doc = JSON.parse(text) as { version?: unknown; dist?: { tarball?: unknown; integrity?: unknown } } | null;
+    const v = doc?.version, integrity = doc?.dist?.integrity;
+    return typeof v === "string" && RELEASE.test(v)
+      ? { version: v, tarball: tarballUrl(v, doc?.dist?.tarball), ...(typeof integrity === "string" ? { integrity } : {}) }
+      : { error: "the npm registry's answer was not understood" };
   } catch (e) {
     return { error: (e as Error)?.name === "SyntaxError" ? "the npm registry's answer was not understood" : "the npm registry could not be reached" };
   }
@@ -143,6 +152,43 @@ export async function tarballReady(deps: Pick<UpdateDeps, "fetch">, tarball: str
   try { return (await deps.fetch(tarball, { method: "HEAD", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })).status === 200; }
   catch { return false; }
 }
+
+/**
+ * Does `version`'s npm provenance say it came from prview's own release workflow, for the tarball whose integrity the
+ * packument lists? The registry's SLSA v1 attestation is read (its statement decoded from the DSSE envelope): the subject
+ * must be this package at this version with the packument's sha512, and the workflow must be PROVENANCE's repository,
+ * path and ref. npm checks the attestation's Sigstore signature when it accepts a publish; this does not re-verify the
+ * signature, so it trusts the registry for that and closes the gap of a version published without this workflow (a
+ * stolen token publishes no such attestation, and a fork's workflow names its own repository). An error or anything
+ * unexpected is a refusal.
+ */
+export async function provenanceOk(deps: Pick<UpdateDeps, "fetch">, version: string, integrity: string | undefined): Promise<{ ok: true } | { ok: false; why: string }> {
+  const no = (why: string) => ({ ok: false as const, why });
+  const want = integrity?.match(/^sha512-([A-Za-z0-9+/]+={0,2})$/)?.[1];
+  if (!want || !RELEASE.test(version)) return no("the registry lists no sha512 integrity for it");
+  const hex = Buffer.from(want, "base64").toString("hex");
+  try {
+    const res = await deps.fetch(attestationsUrl(version), { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    if (!res.ok) return no("it has no npm provenance");
+    const text = await res.text();
+    if (text.length > 1_000_000) return no("its npm provenance was not understood");
+    const list = (JSON.parse(text) as { attestations?: unknown } | null)?.attestations;
+    const slsa = Array.isArray(list) ? list.find((a: any) => a?.predicateType === SLSA_V1) as any : undefined;
+    const payload = slsa?.bundle?.dsseEnvelope?.payload;
+    if (typeof payload !== "string") return no("it has no npm provenance");
+    const st = JSON.parse(Buffer.from(payload, "base64").toString("utf8")) as any;
+    const subjects = Array.isArray(st?.subject) ? st.subject : [];
+    const name = `pkg:npm/${PACKAGE.replace("@", "%40")}@${version}`;
+    if (st?.predicateType !== SLSA_V1 || !subjects.some((x: any) => x?.name === name && x?.digest?.sha512 === hex)) return no("its npm provenance is not for this tarball");
+    const wf = st?.predicate?.buildDefinition?.externalParameters?.workflow;
+    if (wf?.repository !== PROVENANCE.repository || wf?.path !== PROVENANCE.path || wf?.ref !== PROVENANCE.ref) return no(`its npm provenance does not name ${PROVENANCE.repository}'s ${PROVENANCE.path} on main`);
+    return { ok: true };
+  } catch {
+    return no("its npm provenance could not be read");
+  }
+}
+
+export const unprovenMessage = (v: string, why: string) => `not installing prview ${v}: ${why}`;
 
 export const notReadyMessage = (v: string) => `prview ${v} is listed on npm but not downloadable yet; try again in a few minutes`;
 
@@ -200,6 +246,9 @@ export async function backgroundCheck(deps: UpdateDeps, opts: { dryRun?: boolean
     if (!opts.autoUpdate()) { writeStamp(deps.home, next); return availableNotice(v); }
     if (!(await tarballReady(deps, got.tarball))) { writeStamp(deps.home, { ...next, due: now + NOT_READY_RECHECK_MS }); return null; }
     writeStamp(deps.home, next);
+    // Not built by prview's release workflow: said once, and asked again only on the next daily check.
+    const prov = await provenanceOk(deps, v, got.integrity);
+    if (!prov.ok) return unprovenMessage(v, prov.why);
     opts.installing?.(v);
     const r = await install(deps, manager, v);
     if (!r.ok && r.failed) {
@@ -228,6 +277,8 @@ export async function updateCommand(deps: UpdateDeps, opts: { dryRun?: boolean }
   const argv = installArgv(manager, v);
   if (opts.dryRun) return { ok: true, lines: [`${deps.version} → ${v}: would run ${argv.join(" ")} (--dry-run: nothing installed)`] };
   if (!(await tarballReady(deps, got.tarball))) return { ok: false, lines: [`${deps.version} → ${v}: ${notReadyMessage(v)}`] };
+  const prov = await provenanceOk(deps, v, got.integrity);
+  if (!prov.ok) return { ok: false, lines: [`${deps.version} → ${v}: ${unprovenMessage(v, prov.why)}`] };
   const r = await install(deps, manager, v);
   return { ok: r.ok, lines: [`${deps.version} → ${v}: ${argv.join(" ")}`, r.message] };
 }

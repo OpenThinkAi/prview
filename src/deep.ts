@@ -9,8 +9,9 @@
 //
 // The prompts and parsers are pure; the agent runner is a parameter so the tests drive the whole path with a stub.
 
-import { readdirSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative } from "node:path";
 import type { FileDiff } from "./diff.ts";
 import { clip, DATA_RULE, fence, fitLine, hunksOf, jsonIn, numbered, SEVERITIES, titleOf, type Finding, type Severity } from "./guide.ts";
 import { decide } from "./triage.ts";
@@ -243,45 +244,51 @@ export const AGENT_TOOLS = ["Read", "Grep", "Glob"] as const;
  * The argv for the agent: `claude -p` with Read, Grep and Glob only (and only those allowed, anything else denied
  * without asking), no MCP, no slash commands, no hooks, plugins or CLAUDE.md from the worktree (safe mode), nothing
  * kept, and the reply streamed as JSON lines so each step can be shown as it happens. The prompt goes on stdin.
- * `deny` are the read rules that keep the tools inside the worktree (`outsideRules`).
+ *
+ * `--restricted` keeps the tools inside the worktree: claude confines Read, Grep and Glob to its working directory
+ * (the worktree, which claudeAgent spawns it in) and refuses anything outside it, at the path as given and the real
+ * path, through a symlink, and for entries made after it starts (checked against claude 2.1: a Read, a Grep and a Glob
+ * of a sibling, of /etc and through a link to outside all come back "outside ... --restricted confines the file tools
+ * to the working directory"). This replaced one pair of deny rules per entry beside the path to the worktree, which
+ * grew with how crowded those directories were: a shared $TMPDIR of ~70k entries overflowed ARG_MAX (E2BIG), and in
+ * a settings file it passed claude's 2 MiB limit. A claude without --restricted refuses the flag, so the agent fails
+ * rather than running unconfined.
+ *
+ * `settings` is the file holding the remaining deny rules (`agentSettings`: the worktree's symlinks and `[deep] deny`),
+ * kept out of argv as well, since a worktree can hold any number of links.
  */
-export function agentArgs(model: string | undefined, system: string, steps: number, deny: string[] = []): string[] {
+export function agentArgs(model: string | undefined, system: string, steps: number, settings?: string): string[] {
   const tools = AGENT_TOOLS.join(",");
-  const args = ["claude", "-p", "--safe-mode", "--tools", tools, "--allowedTools", tools, "--permission-mode", "dontAsk", "--strict-mcp-config", "--disable-slash-commands",
+  const args = ["claude", "-p", "--safe-mode", "--tools", tools, "--allowedTools", tools, "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config", "--disable-slash-commands",
     "--no-session-persistence", "--max-turns", String(steps + 1), "--output-format", "stream-json", "--verbose", "--system-prompt", system];
-  if (deny.length) args.push("--disallowedTools", ...deny);
+  if (settings) args.push("--settings", settings);
   if (model) args.push("--model", model);
   return args;
 }
 
 /**
- * Read, Grep and Glob take absolute paths, and claude allows them anywhere the user can read. These rules deny every
- * entry beside the path from / down to the worktree (at each level, everything but the next step towards it), so the
- * only tree left readable is the worktree itself: not your home directory, not other reviews, not the clone's .git.
- * Both the path as given and its real path are walked (/tmp is /private/tmp on macOS). A rule is `//abs/path` for the
- * entry and `//abs/path/**` for what is under it; a name with a parenthesis has it matched by `?`, since a rule cannot
- * hold one. Entries created after the agent starts are not covered.
- *
- * The rules are `Read(...)` only, and that covers Grep and Glob too: claude matches file permission rules for every
- * file-reading tool against Read rules (checked against claude 2.1: a Grep or Glob outside the worktree finds nothing,
- * a Read is refused), and it warns that a `Grep(path)` or `Glob(path)` deny rule "is not matched by file permission
- * checks — only Read(path) rules are", so adding those would do nothing.
+ * The settings `claude -p --settings` loads for the agent: the deny rules, nothing else. Deny rules win over the
+ * allowed tools, and --safe-mode still applies --settings (checked against claude 2.1: a file denied this way is
+ * refused to Read and to Grep, and a file of rules for oddly named entries, with spaces, quotes, brackets or newlines,
+ * is still applied, so no name makes claude drop the file as invalid).
  */
-export function outsideRules(dir: string, list: (d: string) => string[] = (d) => { try { return readdirSync(d); } catch { return []; } }, real: (d: string) => string = (d) => { try { return realpathSync(d); } catch { return d; } }): string[] {
+export function agentSettings(deny: string[]): { permissions: { deny: string[] } } {
+  return { permissions: { deny } };
+}
+
+/**
+ * Read rules for the `[deep] deny` patterns: worktree files the agent must not read (`.env*`, `**\/fixtures/**`), at
+ * the worktree as given and its real path. As in .gitignore, a pattern with no slash but a trailing one (`build/`)
+ * matches at any depth, and one with a slash at the start or in the middle is from the worktree's root. The patterns were checked when the config was read (`denyPattern`).
+ */
+export function denyRules(dir: string, patterns: readonly string[], real: (d: string) => string = (d) => { try { return realpathSync(d); } catch { return d; } }): string[] {
   const out = new Set<string>();
-  const resolved = real(dir);
-  for (const start of new Set([dir, resolved])) {
-    for (let cur = start; dirname(cur) !== cur; cur = dirname(cur)) {
-      const parent = dirname(cur), keep = cur.slice(parent.length).replace(/^[/\\]+/, "");
-      for (const name of list(parent)) {
-        if (name === keep) continue;
-        // Walking a symlinked path as given (/tmp/x) denies the real path's ancestors (/private): never deny the way to the
-        // real worktree. Everything else stays denied, so this only fails open on what the real path itself needs.
-        const raw = `${parent === sep ? "" : parent}/${name}`;
-        if (resolved === raw || resolved.startsWith(`${raw}/`)) continue;
-        const abs = `${parent === sep ? "" : parent}/${name.replace(/[()]/g, "?")}`;
-        out.add(`Read(/${abs})`); out.add(`Read(/${abs}/**)`);
-      }
+  for (const start of new Set([dir, real(dir)])) {
+    for (const pat of patterns) {
+      const body = pat.replace(/\/+$/, ""), rel = body.replace(/^\/+/, "");
+      const at = body.includes("/") ? rel : `**/${rel}`;
+      const abs = `${start.replace(/[/\\]+$/, "")}/${at}`;
+      out.add(`Read(/${abs})`); if (!abs.endsWith("/**")) out.add(`Read(/${abs}/**)`);
     }
   }
   return [...out];
@@ -289,7 +296,7 @@ export function outsideRules(dir: string, list: (d: string) => string[] = (d) =>
 
 /**
  * Read rules for the worktree's own symlinks (`linksIn`), the entry and what is under it, at the path as given and its
- * real path. `outsideRules` already denies where a link leads outside the worktree; these deny the link itself, so
+ * real path. --restricted already refuses where a link leads outside the worktree; these deny the link itself, so
  * reading through it is refused whichever path claude checks. A link inside the worktree loses nothing: its target
  * is readable by its own name.
  */
@@ -334,7 +341,17 @@ export function readStreamLine(line: string, cwd: string): { steps: string[]; re
 /** The agent as `claude -p` runs it, in the worktree. The step cap and the timeout each end it, as does `signal`. */
 export const claudeAgent: Runner = async ({ cwd, system, prompt, model, env, limits, onStep, signal }) => {
   if (signal?.aborted) throw new Error("cancelled"); // an abort before the start would never reach the process
-  const p = Bun.spawn(agentArgs(model, system, limits.steps, [...outsideRules(cwd), ...linkRules(cwd, linksIn(cwd))]), { stdin: Buffer.from(prompt), env: env ?? process.env, cwd, stdout: "pipe", stderr: "pipe" });
+  // The rules' file is outside the worktree, so --restricted keeps the agent from reading it. It is removed once claude
+  // has exited (claude may read it again while it runs).
+  const dir = mkdtempSync(join(tmpdir(), "prview-agent-"));
+  const p = (() => {
+    try {
+      const settings = join(dir, "settings.json");
+      writeFileSync(settings, JSON.stringify(agentSettings([...linkRules(cwd, linksIn(cwd)), ...denyRules(cwd, limits.deny ?? [])])), { mode: 0o600 });
+      return Bun.spawn(agentArgs(model, system, limits.steps, settings), { stdin: Buffer.from(prompt), env: env ?? process.env, cwd, stdout: "pipe", stderr: "pipe" });
+    } catch (e) { rmSync(dir, { recursive: true, force: true }); throw e; }
+  })();
+  void p.exited.finally(() => rmSync(dir, { recursive: true, force: true }));
   let steps = 0, stopped: AgentResult["stopped"];
   const stop = (why: AgentResult["stopped"]) => { stopped ??= why; p.kill(); };
   const timer = setTimeout(() => stop("timeout"), limits.timeoutMs);
@@ -365,6 +382,8 @@ export const claudeAgent: Runner = async ({ cwd, system, prompt, model, env, lim
     if (signal?.aborted) throw new Error("cancelled");
     if (result?.maxTurns) stopped ??= "steps";
     if (result?.error) throw new Error(`claude: ${result.error}`);
+    // The confinement is --restricted: an older claude refuses the flag, and the agent does not run without it.
+    if (!result && !stopped && /unknown option '--restricted'/.test(err)) throw new Error("this claude has no --restricted, which keeps the agent inside the worktree: update claude (claude update) to use a ? and the deep refute");
     if (!result && !stopped) throw new Error(`claude -p gave no answer: ${clip(err.trim(), 300) || `exit ${p.exitCode}`}`);
     return { text: result?.text ?? "", cost: result?.cost, model: result?.model, steps, ...(stopped ? { stopped } : {}) };
   } finally {

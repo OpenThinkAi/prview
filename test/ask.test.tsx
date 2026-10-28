@@ -15,7 +15,7 @@ import type { Review } from "../src/build.ts";
 import type { Doc } from "../src/document.ts";
 import { parseConfig, roleModel, type Config } from "../src/config.ts";
 import {
-  acceptAnswer, AGENT_TOOLS, agentArgs, outsideRules, askAbout, askPrompt, ASK_SYSTEM, conversationText, DEEP_SYSTEM, discardAnswer, pendingTurn, readAnswer,
+  acceptAnswer, AGENT_TOOLS, agentArgs, agentSettings, denyRules, askAbout, askPrompt, ASK_SYSTEM, conversationText, DEEP_SYSTEM, discardAnswer, pendingTurn, readAnswer,
   deepModel, readStreamLine, reviveAsks, revisedNote, stepText, subjectData, subjectKey, type AgentRun, type AgentResult, type Runner,
 } from "../src/deep.ts";
 import { actionOf } from "../src/triage.ts";
@@ -141,33 +141,26 @@ test("the agent's argv: Read, Grep and Glob only, nothing else allowed, no MCP, 
   expect(a).not.toContain("SYS\n"); // the prompt is not in argv: it goes on stdin
 });
 
-test("the agent's reads are kept to the worktree: every entry beside the path down to it is denied, on the given and the real path", () => {
-  const tree: Record<string, string[]> = {
-    "/": ["Users", "etc", "tmp", "private"], "/Users": ["me", "other"], "/Users/me": [".ssh", ".cache", "notes(1).txt"],
-    "/Users/me/.cache": ["prview"], "/Users/me/.cache/prview": ["rev", "rev.json", "old-review"],
-    "/private": ["tmp", "var"],
-  };
-  const rules = outsideRules("/Users/me/.cache/prview/rev", (d) => tree[d] ?? []);
-  for (const denied of ["//etc", "//tmp", "//Users/other", "//Users/me/.ssh", "//Users/me/.cache/prview/rev.json", "//Users/me/.cache/prview/old-review"]) {
-    expect(rules, denied).toContain(`Read(${denied})`);
-    expect(rules, denied).toContain(`Read(${denied}/**)`);
-  }
-  expect(rules).toContain("Read(//Users/me/notes?1?.txt)"); // a parenthesis cannot be in a rule: ? matches it
-  // Nothing on the way to the worktree, and nothing in it, is denied.
-  for (const kept of ["//Users", "//Users/me", "//Users/me/.cache", "//Users/me/.cache/prview", "//Users/me/.cache/prview/rev"]) expect(rules, kept).not.toContain(`Read(${kept}/**)`);
-  // A symlinked path (/tmp is /private/tmp) is walked both ways.
-  const both = outsideRules("/tmp/w", (d) => ({ "/": ["tmp", "private", "etc"], "/tmp": ["w", "x"], "/private": ["tmp", "var"], "/private/tmp": ["w", "x"] } as Record<string, string[]>)[d] ?? [], () => "/private/tmp/w");
-  for (const denied of ["//tmp/x", "//private/tmp/x", "//private/var", "//etc"]) expect(both, denied).toContain(`Read(${denied}/**)`);
-  expect(both).not.toContain("Read(//private/tmp/w/**)");
-  // The as-given walk must not deny the real path's ancestors (that left the agent unable to read the worktree at all).
-  for (const kept of ["//private", "//private/tmp", "//private/tmp/w"]) { expect(both, kept).not.toContain(`Read(${kept})`); expect(both, kept).not.toContain(`Read(${kept}/**)`); }
-  // Still fails closed: a real path that cannot be resolved is walked as given, and an unrelated sibling stays denied.
-  expect(outsideRules("/tmp/w", (d) => ({ "/": ["tmp", "private"], "/tmp": ["w", "x"] } as Record<string, string[]>)[d] ?? [], () => "/tmp/w")).toContain("Read(//private/**)");
-  // Read rules only: claude checks Grep and Glob against them, and ignores a Grep(path) or Glob(path) rule with a warning.
-  expect(rules.every((x) => x.startsWith("Read(//"))).toBe(true);
-  // They reach claude as deny rules, which win over the allowed tools.
-  const a = agentArgs(undefined, "SYS", 3, rules);
-  expect(a.slice(a.indexOf("--disallowedTools") + 1, a.indexOf("--disallowedTools") + 1 + rules.length)).toEqual(rules);
+test("the agent's reads are kept to the worktree by --restricted (its working directory), the remaining deny rules in a settings file", () => {
+  const a = agentArgs(undefined, "SYS", 3, "/tmp/s/settings.json");
+  expect(a).toContain("--restricted");
+  expect(a.indexOf("--restricted")).toBeLessThan(a.indexOf("--system-prompt")); // ours, never the PR's text
+  expect(a[a.indexOf("--settings") + 1]).toBe("/tmp/s/settings.json");
+  expect(a).not.toContain("--disallowedTools");
+  expect(a).not.toContain("--add-dir"); // nothing beyond the worktree is a working directory
+  expect(agentArgs(undefined, "SYS", 3)).not.toContain("--settings");
+  const rules = ["Read(//tmp/w/l)", "Read(//tmp/w/l/**)"];
+  expect(agentSettings(rules)).toEqual({ permissions: { deny: rules } });
+});
+
+test("[deep] deny patterns become Read rules under the worktree, at the given and the real path; a bare name matches at any depth", () => {
+  const rules = denyRules("/tmp/w", [".env*", "**/fixtures/**", "/secrets/key.pem", "data/*.csv"], () => "/private/tmp/w");
+  for (const r of ["//tmp/w/**/.env*", "//private/tmp/w/**/.env*", "//tmp/w/**/fixtures/**", "//tmp/w/secrets/key.pem", "//private/tmp/w/data/*.csv"]) expect(rules, r).toContain(`Read(${r})`);
+  expect(rules).toContain("Read(//tmp/w/**/.env*/**)"); // a matching directory's contents too
+  expect(rules).not.toContain("Read(//tmp/w/**/fixtures/**/**)");
+  // A trailing slash alone does not anchor (as in .gitignore): build/ is any build directory, at any depth.
+  expect(denyRules("/tmp/w", ["build/", "/out/"])).toEqual(["Read(//tmp/w/**/build)", "Read(//tmp/w/**/build/**)", "Read(//tmp/w/out)", "Read(//tmp/w/out/**)"]);
+  expect(denyRules("/tmp/w", [])).toEqual([]);
 });
 
 test("the stream: tool calls become progress lines relative to the worktree; the result carries the answer, cost and model", () => {
@@ -187,6 +180,10 @@ test("config: [deep] sets the step cap and timeout; the deep role falls back to 
   expect(CFG.deep).toEqual({ steps: 5, timeoutMs: 30_000 });
   expect(parseConfig("").deep).toEqual({ steps: 24, timeoutMs: 180_000 });
   expect(() => parseConfig(`[deep]\nmax_steps = 0`)).toThrow(/max_steps must be a whole number/);
+  expect(parseConfig(`[deep]\ndeny = [".env*", "**/fixtures/**"]`).deep).toEqual({ steps: 24, timeoutMs: 180_000, deny: [".env*", "**/fixtures/**"] });
+  for (const [bad, why] of [[`"x"`, /deny must be a list/], [`[1]`, /quoted strings only/], [`[""]`, /non-empty string/], [`["../up"]`, /cannot hold \.\./], [`["a(1)"]`, /parenthesis/], [`["//etc"]`, /relative to the worktree/], [`["~/x"]`, /relative to the worktree/], [`["/"]`, /non-empty string/]] as const) {
+    expect(() => parseConfig(`[deep]\ndeny = ${bad}`), bad).toThrow(why);
+  }
   const models = `[models.qwen]\nkind = "openai-compatible"\nendpoint = "http://localhost:1/v1"\n`;
   expect(roleModel(parseConfig(`${models}[roles]\nask = "qwen"`), "deep")).toBe("qwen");
   expect(roleModel(parseConfig(`${models}[roles]\nask = "qwen"\ndeep = "claude"`), "deep")).toBe("claude");

@@ -18,7 +18,7 @@ import { itemKey, itemsOf, lastReached, rowText, type PrevItem } from "../src/pr
 import { impliedVerdict, nextStep, selectionOf, startFlow, stepLines, toggle } from "../src/submit-flow.ts";
 import { planOf, postPreview, submit } from "../src/submit.ts";
 import { App, type Outcome } from "../src/tui.tsx";
-import { isRemoteCall, remoteOut } from "./gh-remote.ts";
+import { isRemoteCall, remoteOut, withRemote } from "./gh-remote.ts";
 
 // Re-review R5: replies and resolves on earlier threads, queued with the review and sent with the next submit, first.
 // Every platform call goes to a fake (gh runner, Http): nothing reaches a network or a real pull request.
@@ -349,7 +349,7 @@ const readGh = async (argv: string[]) => argv[2] === "graphql"
 test("screen: r writes a reply (r again edits it), R queues a resolve (again undoes); the row and the item say so; the submit flow lists them; the summary says why not", async () => {
   const r = review("github", null);
   const outcomes: Outcome[] = [];
-  const app = render(<App review={r} files={files} onDone={(o) => outcomes.push(o)} size={{ cols: 120, rows: 60 }} remote={{ run: readGh }} copier={() => ({ ok: true, chars: 0, via: "test" })} />);
+  const app = render(<App review={r} files={files} onDone={(o) => outcomes.push(o)} size={{ cols: 120, rows: 60 }} remote={{ run: readGh }} run={withRemote(() => { throw new Error("only the remotes are read"); })} copier={() => ({ ok: true, chars: 0, via: "test" })} />);
   await settle(app);
   const press = async (keys: string) => { for (const k of keys.match(KEY) ?? []) { app.stdin.write(k); await settle(app); } };
   const frame = () => (app.lastFrame() ?? "").replace(/\x1b\[[0-9;]*m/g, "");

@@ -18,6 +18,11 @@
 // `uv run --with`, loaded from the same download, so the test compares against the reference
 // implementation rather than against this repo's reading of it. Re-running the script with the same
 // revision rewrites byte-identical files.
+//
+// Integrity: the three downloaded files are checked against pinned sha256 sums (SHA256) before anything is
+// converted, so the shipped files (vocab.txt, embeddings.i8, scales.f32, config.json) come only from the pinned
+// bytes. model2vec is pinned by version, not hash: it only writes reference.json, a test fixture that src/ never
+// reads (it is the yardstick test/embed.test.ts holds the shipped tables to, so a tampered one fails that test).
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,7 +32,18 @@ const REPO = "minishlab/potion-base-8M";
 const REVISION = "bf8b056651a2c21b8d2565580b8569da283cab23"; // pinned so a re-run converts the same weights
 const MODEL2VEC = "model2vec==0.9.0";
 const OUT = join(import.meta.dir, "..", "models", "potion-base-8M");
-const FILES = ["config.json", "tokenizer.json", "model.safetensors"];
+/**
+ * The sha256 of each file at REVISION, checked after a download and on a --from directory before anything is read:
+ * the committed int8 weights and vocab are made from these bytes, so a tampered mirror or a changed file at the same
+ * name stops the build. model.safetensors' is the LFS oid huggingface.co lists for the revision; the other two were
+ * taken from a download of it. A new REVISION needs new sums.
+ */
+const SHA256: Record<string, string> = {
+  "config.json": "2a6ac0e9aaa356a68a5688070db78fc3a464fefe85d2f06a1905ce3718687553",
+  "tokenizer.json": "e67e803f624fb4d67dea1c730d06e1067e1b14d830e2c2202569e3ef0f70bb50",
+  "model.safetensors": "f65d0f325faadc1e121c319e2faa41170d3fa07d8c89abd48ca5358d9a223de2",
+};
+const FILES = Object.keys(SHA256);
 
 // Sentences the reference is taken on: the kind of question the docs search gets, plus the corners of
 // the tokenizer (accents, punctuation, CJK, emoji and other unknowns, long words, control characters, nothing at all).
@@ -129,8 +145,17 @@ json.dump({"median_token_length": int(m.median_token_length), "cases": [
     for s, t, v in zip(sentences, ids, vecs)]}, open(out, "w"), ensure_ascii=False)
 `;
 
+/** Refuse a download (or a --from directory) whose files are not the pinned revision's bytes. */
+function verify(dir: string): void {
+  for (const f of FILES) {
+    const got = new Bun.CryptoHasher("sha256").update(readFileSync(join(dir, f))).digest("hex");
+    if (got !== SHA256[f]) throw new Error(`${f}: sha256 ${got}, expected ${SHA256[f]} (the pinned ${REPO}@${REVISION.slice(0, 12)}); refusing to build from it`);
+  }
+}
+
 async function main(downloadTo: string | undefined) {
   const src = downloadTo ? await download(downloadTo) : from!;
+  verify(src);
   const config = JSON.parse(readFileSync(join(src, "config.json"), "utf8"));
   const tok = JSON.parse(readFileSync(join(src, "tokenizer.json"), "utf8"));
   const { vocab, unk, maxChars, special } = checkTokenizer(tok);

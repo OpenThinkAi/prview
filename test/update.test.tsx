@@ -5,7 +5,7 @@ import { join } from "node:path";
 import React from "react";
 import { cleanup, render } from "ink-testing-library";
 import { inkTestHooks } from "./ink-hooks.ts";
-import { availableNotice, backgroundCheck, CHECK_EVERY_MS, compare, installArgv, managerOf, MAX_INSTALL_FAILURES_PER_DAY, newer, NOT_READY_RECHECK_MS, notReadyMessage, PACKAGE, REGISTRY, runningVersion, tarballUrl, updateCommand, type UpdateDeps } from "../src/update.ts";
+import { attestationsUrl, availableNotice, backgroundCheck, CHECK_EVERY_MS, compare, installArgv, managerOf, MAX_INSTALL_FAILURES_PER_DAY, newer, NOT_READY_RECHECK_MS, notReadyMessage, PACKAGE, REGISTRY, runningVersion, tarballUrl, unprovenMessage, updateCommand, type UpdateDeps } from "../src/update.ts";
 import { parseDiff } from "../src/diff.ts";
 import { hunksOf } from "../src/guide.ts";
 import type { Review } from "../src/build.ts";
@@ -31,7 +31,7 @@ const DAY = CHECK_EVERY_MS;
 let n = 0;
 
 type Stub = { deps: UpdateDeps; fetched: string[]; ran: string[][] };
-function stub(o: { latest?: unknown; body?: string; fetchFails?: boolean; ok?: boolean; code?: number; stderr?: string; dir?: string; version?: string; env?: Record<string, string>; now?: number; home?: string; tarballStatus?: number; tarballThrows?: boolean; dist?: unknown } = {}): Stub {
+function stub(o: { latest?: unknown; body?: string; fetchFails?: boolean; ok?: boolean; code?: number; stderr?: string; dir?: string; version?: string; env?: Record<string, string>; now?: number; home?: string; tarballStatus?: number; tarballThrows?: boolean; dist?: unknown; attest?: { status?: number; body?: string; statement?: (v: string) => unknown } } = {}): Stub {
   const fetched: string[] = [], ran: string[][] = [];
   const home = o.home ?? join(tmp, `home-${++n}`);
   const deps: UpdateDeps = {
@@ -44,7 +44,11 @@ function stub(o: { latest?: unknown; body?: string; fetchFails?: boolean; ok?: b
       }
       if (o.fetchFails) throw new TypeError("fetch failed");
       const v = o.latest ?? "0.1.3";
-      return { ok: o.ok ?? true, status: 200, text: async () => o.body ?? JSON.stringify({ name: PACKAGE, version: v, dist: o.dist ?? { tarball: tarball(v) } }) };
+      if (url.startsWith("https://registry.npmjs.org/-/npm/v1/attestations/")) {
+        const status = o.attest?.status ?? 200;
+        return { ok: status === 200, status, text: async () => o.attest?.body ?? attestations((o.attest?.statement ?? statement)(String(v))) };
+      }
+      return { ok: o.ok ?? true, status: 200, text: async () => o.body ?? JSON.stringify({ name: PACKAGE, version: v, dist: o.dist ?? { tarball: tarball(v), integrity: INTEGRITY } }) };
     },
     run: async (argv) => { ran.push(argv); return { code: o.code ?? 0, stderr: o.stderr ?? "" }; },
     now: () => o.now ?? 10 * DAY,
@@ -53,6 +57,18 @@ function stub(o: { latest?: unknown; body?: string; fetchFails?: boolean; ok?: b
   return { deps, fetched, ran };
 }
 const tarball = (v: unknown) => `https://registry.npmjs.org/${PACKAGE}/-/prview-${v}.tgz`;
+// The packument's integrity and the provenance statement a release from prview's own workflow carries (shape as npm serves it).
+const SHA512 = "ab".repeat(64);
+const INTEGRITY = `sha512-${Buffer.from(SHA512, "hex").toString("base64")}`;
+const statement = (v: string, wf: Record<string, string> = {}, digest = SHA512) => ({
+  _type: "https://in-toto.io/Statement/v1", predicateType: "https://slsa.dev/provenance/v1",
+  subject: [{ name: `pkg:npm/%40openthink/prview@${v}`, digest: { sha512: digest } }],
+  predicate: { buildDefinition: { externalParameters: { workflow: { ref: "refs/heads/main", repository: "https://github.com/OpenThinkAi/prview", path: ".github/workflows/release.yml", ...wf } } } },
+});
+const attestations = (st: unknown) => JSON.stringify({ attestations: [
+  { predicateType: "https://github.com/npm/attestation/tree/main/specs/publish/v0.1", bundle: { dsseEnvelope: { payload: "e30=" } } },
+  { predicateType: "https://slsa.dev/provenance/v1", bundle: { dsseEnvelope: { payloadType: "application/vnd.in-toto+json", payload: Buffer.from(JSON.stringify(st)).toString("base64") } } },
+] });
 const off = { autoUpdate: () => false }, on = { autoUpdate: () => true };
 
 // ---------------------------------------------------------------- versions and where this copy came from
@@ -105,7 +121,7 @@ test("on: a newer release installs in the background with the manager that insta
   const npm = stub({ latest: "0.1.4" });
   let started = "";
   expect(await backgroundCheck(npm.deps, { ...on, installing: (v) => { started = v; } })).toBe("updated to 0.1.4 — restart prview to use it");
-  expect(npm.fetched).toEqual([REGISTRY, `HEAD ${tarball("0.1.4")}`]); // the tarball is probed before installing
+  expect(npm.fetched).toEqual([REGISTRY, `HEAD ${tarball("0.1.4")}`, attestationsUrl("0.1.4")]); // the tarball is probed and its provenance read before installing
   expect(npm.ran).toEqual([["npm", "install", "-g", "@openthink/prview@0.1.4"]]);
   expect(started).toBe("0.1.4");
   expect(existsSync(join(npm.deps.home, "update.lock"))).toBe(false); // released
@@ -195,9 +211,9 @@ test("tarball not ready (404, any non-200, or unreachable): no install, no note,
 test("the tarball probed is the packument's dist.tarball when it is on the npm registry, else the canonical URL", async () => {
   expect(tarballUrl("0.1.4", tarball("0.1.4"))).toBe(tarball("0.1.4"));
   for (const bad of [undefined, 7, "http://registry.npmjs.org/x.tgz", "https://evil.example/x.tgz", "https://registry.npmjs.org/x\n.tgz"]) expect(tarballUrl("0.1.4", bad)).toBe(tarball("0.1.4"));
-  const s = stub({ latest: "0.1.4", dist: { tarball: "https://evil.example/x.tgz" } });
+  const s = stub({ latest: "0.1.4", dist: { tarball: "https://evil.example/x.tgz", integrity: INTEGRITY } });
   await backgroundCheck(s.deps, on);
-  expect(s.fetched).toEqual([REGISTRY, `HEAD ${tarball("0.1.4")}`]);
+  expect(s.fetched).toEqual([REGISTRY, `HEAD ${tarball("0.1.4")}`, attestationsUrl("0.1.4")]);
 });
 
 test("a failed install is retried on the next launch, at most MAX_INSTALL_FAILURES_PER_DAY times a day", async () => {
@@ -230,6 +246,35 @@ test("a failed install under the cap is retried at once (next launch); the lock 
   writeFileSync(join(held.deps.home, "update.lock"), "123");
   await backgroundCheck(held.deps, on);
   expect(JSON.parse(readFileSync(join(held.deps.home, "update.json"), "utf8")).failures).toBeUndefined();
+});
+
+test("provenance: a release not built by prview's release workflow on main, for this tarball, is never installed (background or prview update)", async () => {
+  expect(attestationsUrl("0.1.4")).toBe("https://registry.npmjs.org/-/npm/v1/attestations/@openthink%2fprview@0.1.4");
+  const bad: [Parameters<typeof stub>[0], string][] = [
+    [{ attest: { status: 404 } }, "it has no npm provenance"], // published with a token, no workflow
+    [{ attest: { body: JSON.stringify({ attestations: [] }) } }, "it has no npm provenance"],
+    [{ attest: { body: "<html>" } }, "its npm provenance could not be read"],
+    [{ attest: { statement: (v) => statement(v, { repository: "https://github.com/evil/prview" }) } }, "its npm provenance does not name https://github.com/OpenThinkAi/prview's .github/workflows/release.yml on main"],
+    [{ attest: { statement: (v) => statement(v, { path: ".github/workflows/other.yml" }) } }, "its npm provenance does not name https://github.com/OpenThinkAi/prview's .github/workflows/release.yml on main"],
+    [{ attest: { statement: (v) => statement(v, { ref: "refs/heads/evil" }) } }, "its npm provenance does not name https://github.com/OpenThinkAi/prview's .github/workflows/release.yml on main"],
+    [{ attest: { statement: (v) => statement(v, {}, "cd".repeat(64)) } }, "its npm provenance is not for this tarball"], // another tarball's attestation
+    [{ attest: { statement: () => statement("0.1.9") } }, "its npm provenance is not for this tarball"], // another version's
+    [{ dist: { tarball: tarball("0.1.4") } }, "the registry lists no sha512 integrity for it"],
+  ];
+  for (const [o, why] of bad) {
+    const s = stub({ latest: "0.1.4", ...o });
+    expect(await backgroundCheck(s.deps, on), why).toBe(unprovenMessage("0.1.4", why));
+    expect(s.ran, why).toEqual([]);
+    const u = stub({ latest: "0.1.4", ...o });
+    expect(await updateCommand(u.deps), why).toEqual({ ok: false, lines: [`0.1.3 → 0.1.4: not installing prview 0.1.4: ${why}`] });
+    expect(u.ran, why).toEqual([]);
+  }
+  // Refused once a day, not retried on every launch.
+  const home = join(tmp, "unproven");
+  await backgroundCheck(stub({ latest: "0.1.4", home, attest: { status: 404 } }).deps, on);
+  const again = stub({ latest: "0.1.4", home, now: 10 * DAY + 1000, attest: { status: 404 } });
+  expect(await backgroundCheck(again.deps, on)).toBeNull();
+  expect(again.fetched).toEqual([]);
 });
 
 // ---------------------------------------------------------------- prview update
@@ -297,4 +342,12 @@ test("screen: the check's note arrives in the footer when it finishes, without h
   await settle();
   expect(app.lastFrame()).toContain("prview 0.1.4 is available — run prview update, or turn on auto-update in \\ settings");
   app.unmount();
+});
+
+test("the README's 'What leaves your machine' names the update check, what it reveals and its opt-out", () => {
+  const readme = readFileSync(join(import.meta.dir, "../README.md"), "utf8");
+  const section = readme.slice(readme.indexOf("### What leaves your machine"), readme.indexOf("\n## ", readme.indexOf("### What leaves your machine")));
+  expect(section).toContain("registry.npmjs.org");
+  expect(section).toContain("PRVIEW_NO_UPDATE=1");
+  expect(section).toContain("IP address");
 });

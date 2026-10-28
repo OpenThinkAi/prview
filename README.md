@@ -19,7 +19,11 @@ Only a plain `1.2.3` release newer than the running one is ever installed (never
 check is skipped under `--dry-run`, with `PRVIEW_NO_UPDATE=1`, and in a source checkout, which never updates itself.
 Before installing, prview checks that the new version's tarball is downloadable (npm can list a release a few minutes before
 its tarball is up): if not, nothing is installed and the check is repeated after about 15 minutes instead of a day. A failed
-background install is retried on the next launch, up to three times in 24 hours.
+background install is retried on the next launch, up to three times in 24 hours. Nothing is installed, in the background or
+by `prview update`, unless the release's npm provenance says it was built by `.github/workflows/release.yml` of
+OpenThinkAi/prview on main, for the tarball the registry lists: a version published any other way (a stolen npm token,
+a fork's workflow) is reported ("not installing prview 0.1.4: it has no npm provenance") and left alone. npm checks the
+provenance's signature when it accepts a publish; prview trusts the registry for that.
 
 ```sh
 prview --version               # also -V or `prview version`: prints `prview 0.1.4`
@@ -424,7 +428,13 @@ deep = "claude"              # a ? runs tools only on a claude-cli model
 [deep]                       # bounds on one a ? run, and on each refute agent run (deep, thorough)
 max_steps = 24               # tool calls (default 24)
 timeout = 180                # seconds (default 180)
+deny = [".env*", "**/fixtures/**"]  # worktree paths the agent must not read (default none)
 ```
+
+`[deep] deny` takes .gitignore-style patterns relative to the worktree: a bare name (`.env*`, or `build/` for a
+directory) matches at any depth, one with a slash inside it (`config/prod.yml`, `**/fixtures/**`) from the worktree's root. Whatever the agent reads goes to its
+model, so list files that hold secrets or personal data. The deny applies to the `a ?` agent and the deep refute
+agent; the hunks of a change still reach the models whatever they touch.
 
 A credential is read only from the env var or Keychain service the model itself names, never from
 some ambient key, so a local server never gets a cloud key.
@@ -603,20 +613,25 @@ Model prompts go to `claude -p` on stdin, not on its command line, so they are n
 (The system prompts, prview's own fixed text, are on the command line.)
 The `a ?` agent is `claude -p` in safe mode (no CLAUDE.md, hooks, plugins or skills load from the worktree, no MCP)
 with Read, Grep and Glob as its only tools and every other tool denied. Those tools take absolute paths, so prview
-also passes `Read(...)` deny rules (claude applies them to Grep and Glob as well) for every entry beside the path
-from the filesystem root down to the review's worktree: your home directory,
-other reviews and the clone's own `.git` are refused, and only the worktree can be read (entries created after the
-agent starts are not covered). What it reads is part of the change and its prompt says so, the PR's own text
-reaches it only inside the data fences, and a change it proposes to a finding does nothing until you press `a a`.
+runs it with `--restricted` in the review's worktree: claude refuses any path outside its working directory, through
+a symlink too, so your home directory, other reviews and the clone's own `.git` are refused and only the worktree can
+be read. The worktree's own symlinks, and any `[deep] deny` patterns, are `Read(...)` deny rules in a settings file
+passed with `--settings` (claude applies them to Grep and Glob as well). It needs a claude that has `--restricted`;
+an older one refuses the flag and the agent does not run (prview says to update claude). What it reads is part of the
+change and its prompt says so, the PR's own text reaches it only inside the data fences, and a change it proposes to a
+finding does nothing until you press `a a`.
 
 ### What leaves your machine
 
 Only what the model roles need: the diff hunks, the PR title and body, and nearby source lines from the
 worktree go to the model configured for each role (guide, critic, refute, ask, deep; the `a ?` agent reads files
 in the head worktree and sends what it reads to its model); with a local endpoint
-that is your machine. Nothing else is sent: no telemetry, no analytics. The only other network use is
-`gh` and `git`, for the PR you asked for and the review you submit; for an Azure DevOps PR, REST calls to
-`dev.azure.com` (reading the PR, posting your review), made with an Entra token from `az` or your PAT. State stays under `~/.cache/prview`
+that is your machine (`[deep] deny` keeps files from the agent). Nothing else is sent: no telemetry, no analytics.
+The only other network use is `gh` and `git`, for the PR you asked for and the review you submit; for an Azure
+DevOps PR, REST calls to `dev.azure.com` (reading the PR, posting your review), made with an Entra token from `az` or
+your PAT; and, in an installed prview, the update check: at most once a day a request to `registry.npmjs.org` for the
+latest version (and, before an install, a HEAD request for its tarball and a read of its provenance), which shows
+npm your IP address and when you run prview. `PRVIEW_NO_UPDATE=1` turns it off; a source checkout never makes it. State stays under `~/.cache/prview`
 (`$PRVIEW_HOME`) until `prview done` removes it (what you submitted, until `prview done --purge`).
 
 ## Checking the guide's intents

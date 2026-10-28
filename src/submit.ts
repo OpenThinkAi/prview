@@ -145,11 +145,17 @@ export function postPreview(p: Plan, label: (v: Posting["verdict"]) => string, m
 /** An argv the way a reader would type it back: plain words bare, anything else single-quoted. */
 export const shown = (argv: string[]) => argv.map((a) => /^[\w@%+=:,./{}-]+$/.test(a) ? a : `'${a.replaceAll("'", `'\\''`)}'`).join(" ");
 
-/** The preview's account of what Enter will do; `allowed` is whether the human has let the hook run. */
-export function describe(p: Plan, allowed: boolean, dryRun = false): string {
+/** Why the plan's adapter would refuse its target for the clone in `cwd` (Adapter.unbound), or undefined. */
+export const unboundOf = (p: Plan, run: Runner, cwd: string): string | undefined => p.adapter?.unbound?.(p.target, run, cwd);
+
+/**
+ * The preview's account of what Enter will do; `allowed` is whether the human has let the hook run. `unbound`: why the
+ * post would be refused for this clone (`unboundOf`), shown in place of where it posts.
+ */
+export function describe(p: Plan, allowed: boolean, dryRun = false, unbound?: string): string {
   const post = !p.platform ? "No platform in the document's target: the written file is the review."
     : !p.adapter ? `No ${p.platform} adapter yet: the written file is the review.`
-    : p.posting ? p.adapter.describe(p.target, p.posting) : "Pick a verdict first.";
+    : p.posting ? p.adapter.describe(p.target, p.posting, unbound) : "Pick a verdict first.";
   const out = ["── On submit", ...(dryRun ? ["", "DRY RUN: only the API calls are printed; nothing is written, posted or run."] : []), "", `1. Writes ${p.file}`, `   and ${p.md}`, `2. ${post[0]!.toUpperCase()}${post.slice(1)}`];
   if (p.hook) {
     out.push(
