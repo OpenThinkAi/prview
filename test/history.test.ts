@@ -9,6 +9,7 @@ import { github, postingOf, type Runner } from "../src/platform.ts";
 import { done, freshStamp, historyDir, purgeHistory, stampOf, submissionsFor } from "../src/history.ts";
 import { submit, type HookRunner } from "../src/submit.ts";
 import { save, type Review } from "../src/build.ts";
+import { isRemoteCall, remoteOut } from "./gh-remote.ts";
 
 // Submission history (AGT-1511): every submit kept under submitted/<slug>/, read back newest first with the legacy flat
 // files, and the ids of what each one posted. $PRVIEW_HOME is a scratch directory; gh is a fake runner, no network.
@@ -55,6 +56,7 @@ function fakeGh(over: Over = {}) {
   const calls: string[] = [];
   let made: any[] = [];
   const run: Runner = (argv, o) => {
+    if (isRemoteCall(argv)) return remoteOut();
     const method = argv[3]!, path = argv[4]!, body = o.stdin === undefined ? undefined : JSON.parse(o.stdin);
     calls.push(`${method} ${path}`);
     if (method === "GET" && path.includes("/reviews/99/comments?")) {
@@ -123,7 +125,7 @@ test("submissionsFor: a review's submissions newest first, a legacy flat file in
   await submit(r, files, { allowHook: false, run: fakeGh().run, now: at("2026-09-20T00:00:00.000Z") });
   await submit(r, files, { allowHook: false, run: fakeGh().run, now: at("2026-09-25T00:00:00.000Z") });
   // Another clone's review of the same PR (a different slug), and a different PR.
-  await submit(review({ comments: [summary("elsewhere")] }, { url: "https://github.com/O/R/pull/7/files", platform: "github" }, "other-pr-7"), files, { allowHook: false, run: fakeGh().run, now: at("2026-09-22T00:00:00.000Z") });
+  await submit(review({ comments: [summary("elsewhere")] }, { url: "https://github.com/O/R/pull/7", platform: "github" }, "other-pr-7"), files, { allowHook: false, run: fakeGh().run, now: at("2026-09-22T00:00:00.000Z") });
   await submit(review({}, { url: "https://github.com/o/r/pull/8" }, "repo-pr-8"), files, { allowHook: false, run: noNet, now: at("2026-09-30T00:00:00.000Z") });
   writeFileSync(join(historyDir("repo-pr-7"), "junk.json"), "not json");
 

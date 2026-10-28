@@ -9,6 +9,8 @@
 // (submit-flow.ts applySelection). Never the write-up, never a finding's source, never a word about prview or any model. Commands run through an injected runner so tests never touch a network.
 
 import { PostError, type Comment, type PostedItem, type Target, type Verdict } from "./document.ts";
+import { github as githubSource, strictPrUrl } from "./github.ts";
+import type { PrRef } from "./pr.ts";
 import { azure } from "./platforms/azure.ts";
 
 /** Runs one argv (no shell) and hands back what happened; the real one is `spawn` below. */
@@ -109,11 +111,17 @@ export function postingOf(
 // ---------------------------------------------------------------- GitHub
 
 const EVENT = { approve: "APPROVE", request_changes: "REQUEST_CHANGES", comment: "COMMENT" } as const;
-const prOf = (t: Target) => t.url?.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+/**
+ * The PR a document's target names, only when `target.url` is exactly the canonical `https://github.com/<o>/<r>/pull/<n>`
+ * (github.ts strictPrUrl). The document may come from anyone (`prview import`/`show`), and its owner, repo and number
+ * become `gh api` paths and GraphQL variables under the reader's login, so nothing looser is taken.
+ */
+const prOf = (t: Target) => strictPrUrl(t.url);
 
 /** Why GitHub would refuse this posting before anything is sent, or undefined when it can go. */
 function githubProblem(t: Target, p: Posting): string | undefined {
-  if (!prOf(t)) return "no GitHub pull request URL in the document's target";
+  if (!t.url) return "no GitHub pull request URL in the document's target";
+  if (!prOf(t)) return `the document's target URL ${JSON.stringify(t.url.slice(0, 200))} is not a https://github.com/<owner>/<repo>/pull/<n> pull request URL`;
   const earlier = earlierProblem(p, "github");
   if (earlier) return earlier;
   if (onlyEarlier(p)) return undefined;
@@ -142,7 +150,7 @@ function gh(run: Runner, cwd: string, c: Call): any {
 
 /** The calls, in order. The review is made pending with its line comments, then submitted with the verdict and the summary. */
 function githubCalls(t: Target, p: Posting, reviewId: number | string = "<review id>") {
-  const [, owner, repo, number] = prOf(t)!;
+  const ref = prOf(t)!, [owner, repo] = ref.repoKey.split("/") as [string, string], number = ref.number;
   const pr = `repos/${owner}/${repo}/pulls/${number}`;
   return {
     head: { method: "GET", path: pr } as Call,
@@ -284,6 +292,10 @@ export const github: Adapter = {
   async post(t, p, run, cwd) {
     const why = githubProblem(t, p);
     if (why) throw new Error(why);
+    // Only to a PR of a repository this clone fetches from: a document naming some other repository's PR (one whose head
+    // happens to be the same commit) must not get the reader's verdict posted there under their login.
+    const unbound = githubRemoteProblem(prOf(t)!, run, cwd);
+    if (unbound) throw new Error(unbound);
     const c = githubCalls(t, p);
     // A comment anchored to line 11 of one commit is wrong on another: refuse rather than mis-anchor.
     const now = gh(run, cwd, c.head)?.head?.sha;
@@ -301,6 +313,19 @@ export const github: Adapter = {
     }
   },
 };
+
+/**
+ * Why the clone in `cwd` does not bind this PR, or undefined when one of its remotes points at the PR's repository (by
+ * github.ts remoteKey, case-insensitively: a stamp-server mirror of o/r counts as o/r, as it does for fetching). Read
+ * through the injected runner, so tests answer it without a real clone.
+ */
+function githubRemoteProblem(ref: PrRef, run: Runner, cwd: string): string | undefined {
+  const r = run(["git", "remote", "-v"], { cwd });
+  // `git remote -v` lines are `<name>\t<url> (fetch|push)`: the URL is the second column.
+  const urls = r.exit === 0 ? r.stdout.split("\n").map((l) => l.split(/\s+/)[1]).filter((u): u is string => !!u) : [];
+  if (urls.some((u) => githubSource.remoteKey(u)?.toLowerCase() === ref.repoKey.toLowerCase())) return undefined;
+  return `no remote in this clone points at github.com/${ref.repoKey}, so prview will not post this review there: the document names a pull request of a repository this clone does not fetch from (add a remote for it if that is really the PR you reviewed)`;
+}
 
 /** The review itself, after the head check and the earlier threads: pending review, whole-file comments, submit, ids. */
 async function githubReview(t: Target, p: Posting, run: Runner, cwd: string, c: ReturnType<typeof githubCalls>, earlier: PostedItem[]): Promise<Posted> {

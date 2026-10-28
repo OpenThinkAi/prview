@@ -6,6 +6,7 @@ import { fileEdge, nextFindingWrapping, spotsOf } from "../src/nav.ts";
 import { clampLine, edgesOf, inputLines, lineRange, ownFinding, rowKind, stepLine } from "../src/rows.ts";
 import { github, postingOf, type Runner } from "../src/platform.ts";
 import { decide } from "../src/triage.ts";
+import { isRemoteCall, remoteOut } from "./gh-remote.ts";
 
 // Your own findings (AGT-1473), pure: the whole-file rows, making a finding, file-level anchors in the document, and what posts.
 
@@ -122,6 +123,7 @@ type Call = { method: string; path: string; body?: any };
 function fakeGh(over: { refuseFile?: boolean } = {}) {
   const calls: Call[] = [];
   const run: Runner = (argv, o) => {
+    if (isRemoteCall(argv)) return remoteOut();
     const body = o.stdin === undefined ? undefined : JSON.parse(o.stdin), method = argv[3]!, path = argv[4]!;
     calls.push({ method, path, body });
     if (method === "GET") return { exit: 0, stdout: JSON.stringify({ head: { sha: B } }), stderr: "" };

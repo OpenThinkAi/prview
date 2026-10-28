@@ -6,6 +6,7 @@ import { parseDiff } from "../src/diff.ts";
 import { hunksOf } from "../src/guide.ts";
 import { argvOf, merge, parseDocument, SCHEMA, splitArgs, type Doc } from "../src/document.ts";
 import { adapterFor, github, postingOf, type Runner } from "../src/platform.ts";
+import { isRemoteCall, remoteOut, withRemote } from "./gh-remote.ts";
 import { describe, hookOf, planOf, postPreview, redirectRefusal, runHook, shown, submit, type HookRunner } from "../src/submit.ts";
 import type { Review } from "../src/build.ts";
 import { decide } from "../src/triage.ts";
@@ -107,6 +108,7 @@ function fakeGh(head = B, over: { submit?: { exit: number; stdout: string; stder
   const calls: Call[] = [];
   let made: any[] = [];
   const run: Runner = (argv, o) => {
+    if (isRemoteCall(argv)) return remoteOut();
     const body = o.stdin === undefined ? undefined : JSON.parse(o.stdin);
     calls.push({ argv, body });
     const path = argv[4]!, method = argv[3]!;
@@ -153,6 +155,38 @@ test("github: checks the head, makes a pending review with the line comments, th
   expect(github.describe(t, p)).toContain("posts to https://github.com/o/r/pull/7");
 });
 
+test("github: a target URL that is not exactly https://github.com/<o>/<r>/pull/<n> is refused before any call; describe and dry run say so", async () => {
+  const p = postingOf("approve", [{ hunk: null, side: "new", line: null, text: "words", at: "now" }], () => undefined);
+  for (const url of ["https://github.com/o/r/pull/7?../../repos/evil/pwn/pulls/1", "https://github.com/o/r/pull/7/../../../evil/pwn/pull/1", "https://github.com/o/r/pull/7#x",
+    "https://github.com/../evil/pull/7", "https://evil.test/o/r/pull/7", "https://user@github.com/o/r/pull/7", "https://github.com/o/r/pull/0", "github.com/o/r/pull/7"]) {
+    const t = review({}, { url, platform: "github" }).doc.target;
+    await expect(github.post(t, p, noNet, "/wt"), url).rejects.toThrow("is not a https://github.com/<owner>/<repo>/pull/<n> pull request URL");
+    expect(github.describe(t, p)).toStartWith("not posted: the document's target URL");
+    expect(github.dryRun(t, p)).toEqual([expect.stringContaining("would not post: the document's target URL")]);
+  }
+});
+
+test("github: posts only to a PR of a repository one of the clone's remotes points at (case-insensitive; a mirror counts); else nothing is sent", async () => {
+  const p = postingOf("approve", [{ hunk: null, side: "new", line: null, text: "words", at: "now" }], () => undefined);
+  // The document names a PR of evil/pwn, the clone fetches o/r: refused, and the only thing run is the remote read.
+  const t = review({}, { url: "https://github.com/evil/pwn/pull/7", platform: "github" }).doc.target;
+  const seen: string[][] = [];
+  const only: Runner = (argv, o) => { seen.push(argv); return isRemoteCall(argv) ? remoteOut() : noNet(argv, o); };
+  await expect(github.post(t, p, only, "/wt")).rejects.toThrow("no remote in this clone points at github.com/evil/pwn");
+  expect(seen).toEqual([["git", "remote", "-v"]]);
+  // A remote whose path merely ends in the same letters, or no remotes at all, or a failed read: refused all the same.
+  for (const out of [remoteOut("https://github.com/notevil/pwn.git"), remoteOut("https://github.com/evil/pwnx.git"), { exit: 0, stdout: "", stderr: "" }, { exit: 128, stdout: "", stderr: "not a git repository" }]) {
+    await expect(github.post(t, p, (argv, o) => isRemoteCall(argv) ? out : noNet(argv, o), "/wt")).rejects.toThrow("no remote in this clone");
+  }
+  // GitHub names are case-insensitive, and a stamp-server mirror of o/r (any host, ssh or https) is still o/r.
+  for (const url of ["https://github.com/O/R.git", "git@github.com:o/r.git", "ssh://git@stamp.example:2222/srv/git/o/r.git"]) {
+    const { calls, run } = fakeGh();
+    const posted = await github.post(review({}, { url: PR, platform: "github" }).doc.target, p, (argv, o) => isRemoteCall(argv) ? remoteOut(url) : run(argv, o), "/wt");
+    expect(posted.url, url).toBe(`${PR}#pullrequestreview-99`);
+    expect(calls[0]!.argv.slice(0, 5).join(" ")).toBe("gh api --method GET repos/o/r/pulls/7");
+  }
+});
+
 test("github: every verdict maps to its review event", async () => {
   const t = review({}, { url: PR, platform: "github" }).doc.target;
   for (const [verdict, event] of [["approve", "APPROVE"], ["request_changes", "REQUEST_CHANGES"], ["comment", "COMMENT"]] as const) {
@@ -185,7 +219,7 @@ test("github: refused before sending when GitHub would refuse it", async () => {
   await expect(github.post(t, postingOf("comment", [], () => undefined, { coverage: "I read 1 of 2 hunks." }), noNet, "/wt")).rejects.toThrow("needs a top-level comment");
   await expect(github.post(t, postingOf("approve", [], () => undefined, { coverage: "I read 1 of 2 hunks." }), noNet, "/wt")).rejects.toThrow("coverage line needs a top-level comment");
   await expect(github.post({ ...t, url: undefined }, postingOf("approve", [], () => undefined), noNet, "/wt")).rejects.toThrow("no GitHub pull request URL");
-  const down: Runner = () => ({ exit: 1, stdout: "", stderr: "gh: HTTP 404" });
+  const down: Runner = withRemote(() => ({ exit: 1, stdout: "", stderr: "gh: HTTP 404" }));
   await expect(github.post(t, postingOf("approve", [], () => undefined), down, "/wt")).rejects.toThrow("gh api failed (exit 1): gh: HTTP 404");
 });
 
@@ -254,7 +288,7 @@ test("a hook the human did not allow never runs, and the summary says so", async
 
 test("a failing hook, a missing command, or a failed post is in the summary and the record; the document is still written", async () => {
   const r = review({ on_submit: { run: ["sh", "-c", "echo boom >&2; exit 3"] } }, { url: PR, platform: "github" });
-  const down: Runner = () => ({ exit: 1, stdout: "", stderr: "gh: could not resolve host" });
+  const down: Runner = withRemote(() => ({ exit: 1, stdout: "", stderr: "gh: could not resolve host" }));
   const res = await submit(r, files, { allowHook: true, run: down });
   expect(res.ok).toBe(false);
   expect(res.summary).toContain("NOT posted to github: gh api failed (exit 1): gh: could not resolve host");

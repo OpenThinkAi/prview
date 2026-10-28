@@ -15,6 +15,7 @@ import { ownFinding } from "../src/rows.ts";
 import { applySelection, impliedVerdict, selectionOf, startFlow, stepLines, toggle, move, type Flow } from "../src/submit-flow.ts";
 import { planOf, postPreview, submit } from "../src/submit.ts";
 import { App, type Outcome } from "../src/tui.tsx";
+import { isRemoteCall, remoteOut } from "./gh-remote.ts";
 
 // A review submitted at head A, then reopened after the PR's head moved to B: the round-1 comments come over with the
 // reader's layer, and must neither post again unseen nor be impossible to leave out. Everything runs against scratch
@@ -70,6 +71,7 @@ function poster(head: () => string) {
   const created: any[] = [];
   let made: any[] = [];
   const run: Runner = (argv, o) => {
+    if (isRemoteCall(argv)) return remoteOut();
     const method = argv[3]!, path = argv[4]!, body = o.stdin === undefined ? undefined : JSON.parse(o.stdin);
     if (method === "GET" && path.includes("/reviews/99/comments?")) {
       const page = Number(path.match(/page=(\d+)$/)![1]);

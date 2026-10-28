@@ -18,6 +18,7 @@ import { itemKey, itemsOf, lastReached, rowText, type PrevItem } from "../src/pr
 import { impliedVerdict, nextStep, selectionOf, startFlow, stepLines, toggle } from "../src/submit-flow.ts";
 import { planOf, postPreview, submit } from "../src/submit.ts";
 import { App, type Outcome } from "../src/tui.tsx";
+import { isRemoteCall, remoteOut } from "./gh-remote.ts";
 
 // Re-review R5: replies and resolves on earlier threads, queued with the review and sent with the next submit, first.
 // Every platform call goes to a fake (gh runner, Http): nothing reaches a network or a real pull request.
@@ -119,6 +120,7 @@ type Call = { argv: string[]; body?: any };
 function fakeGh(fail?: "reply" | "threads" | "resolve" | "create") {
   const calls: Call[] = [];
   const run: Runner = (argv, o) => {
+    if (isRemoteCall(argv)) return remoteOut();
     const body = o.stdin === undefined ? undefined : JSON.parse(o.stdin);
     calls.push({ argv, body });
     const method = argv[3]!, path = argv[4]!;

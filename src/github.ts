@@ -9,6 +9,21 @@ import { clean } from "./sanitize.ts";
 const NAME = "(?!\\.{1,2}(?:\\/|$))[A-Za-z0-9_.-]+";
 export const PR_URL = new RegExp(`^(?:https?:\\/\\/)?(?:www\\.)?github\\.com\\/(${NAME})\\/(${NAME})\\/pull\\/(\\d+)(?:[/?#].*)?$`);
 
+/**
+ * The one shape a review is posted to: exactly `https://github.com/<owner>/<repo>/pull/<n>`, as `parse` writes it. No
+ * other host or scheme, no `www.`, userinfo or port, no query, fragment or trailing path, no PR 0 or leading zeros,
+ * no `.`/`..` segment. `PR_URL` is lenient about what a reader types; a document's `target.url` drives `gh api` paths
+ * under the reader's own login, so posting takes only this (platform.ts) and import keeps only the canonical form.
+ */
+const POST_URL = new RegExp(`^https:\\/\\/github\\.com\\/(${NAME})\\/(${NAME})\\/pull\\/([1-9][0-9]{0,9})$`);
+
+/** The PR a canonical GitHub PR URL names, or undefined for anything else (see POST_URL). */
+export function strictPrUrl(url: string | undefined): PrRef | undefined {
+  if (!url || !POST_URL.test(url)) return undefined;
+  const ref = github.parse(url);
+  return ref && ref.url === url ? ref : undefined;
+}
+
 /** Fetch the head (and the base branch, when named) into refs/prview/pr-<n>; the namespace it used. */
 function fetchHead(repo: string, ref: PrRef, base: string | undefined, known: boolean): string {
   const ns = `refs/prview/pr-${ref.number}`;
