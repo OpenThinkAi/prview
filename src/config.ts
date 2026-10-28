@@ -25,7 +25,7 @@ export type DeepLimits = { steps: number; timeoutMs: number; deny?: string[] };
 
 /** Why a `[deep] deny` pattern is refused, or undefined when it is fine: relative to the worktree, no `..`, no parenthesis (a rule cannot hold one). */
 export function denyPattern(p: unknown): string | undefined {
-  if (typeof p !== "string" || !p.trim()) return "must be a non-empty string";
+  if (typeof p !== "string" || !p.replace(/\//g, "").trim()) return "must be a non-empty string";
   if (p.length > 200) return "is longer than 200 characters";
   if (/[()\x00-\x1f\\]/.test(p)) return "cannot hold a parenthesis, a backslash or a control character";
   if (p.split("/").includes("..")) return "cannot hold ..";

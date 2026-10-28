@@ -431,8 +431,8 @@ timeout = 180                # seconds (default 180)
 deny = [".env*", "**/fixtures/**"]  # worktree paths the agent must not read (default none)
 ```
 
-`[deep] deny` takes .gitignore-style patterns relative to the worktree: a bare name (`.env*`) matches at any depth,
-one with a slash (`config/prod.yml`, `**/fixtures/**`) from the worktree's root. Whatever the agent reads goes to its
+`[deep] deny` takes .gitignore-style patterns relative to the worktree: a bare name (`.env*`, or `build/` for a
+directory) matches at any depth, one with a slash inside it (`config/prod.yml`, `**/fixtures/**`) from the worktree's root. Whatever the agent reads goes to its
 model, so list files that hold secrets or personal data. The deny applies to the `a ?` agent and the deep refute
 agent; the hunks of a change still reach the models whatever they touch.
 
@@ -617,8 +617,9 @@ runs it with `--restricted` in the review's worktree: claude refuses any path ou
 a symlink too, so your home directory, other reviews and the clone's own `.git` are refused and only the worktree can
 be read. The worktree's own symlinks, and any `[deep] deny` patterns, are `Read(...)` deny rules in a settings file
 passed with `--settings` (claude applies them to Grep and Glob as well). It needs a claude that has `--restricted`;
-an older one refuses the flag and the agent does not run. What it reads is part of the change and its prompt says so, the PR's own text
-reaches it only inside the data fences, and a change it proposes to a finding does nothing until you press `a a`.
+an older one refuses the flag and the agent does not run (prview says to update claude). What it reads is part of the
+change and its prompt says so, the PR's own text reaches it only inside the data fences, and a change it proposes to a
+finding does nothing until you press `a a`.
 
 ### What leaves your machine
 

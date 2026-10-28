@@ -191,6 +191,18 @@ test("claudeAgent: a crowded directory on the way to the worktree (thousands of 
   expect(JSON.stringify(stub.settings()).length).toBeLessThan(10_000);
 });
 
+test("claudeAgent: a claude without --restricted refuses the flag, and the agent says to update claude rather than running unconfined", async () => {
+  const { wt } = tree();
+  const bin = join(tmp, "old-bin"); mkdirSync(bin);
+  writeFileSync(join(bin, "claude"), `#!/bin/sh\ncat >/dev/null\necho "error: unknown option '--restricted'" >&2\nexit 1\n`);
+  chmodSync(join(bin, "claude"), 0o755);
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  try {
+    await expect(claudeAgent({ cwd: wt, system: "S", prompt: "P", limits: { steps: 3, timeoutMs: 10_000 }, onStep: () => {} })).rejects.toThrow("this claude has no --restricted");
+  } finally { process.env.PATH = path; }
+});
+
 // ---------------------------------------------------------------- the embedder build
 
 test("build-embedder: every downloaded file has a pinned sha256, checked before anything is converted (download or --from)", () => {

@@ -268,6 +268,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   // preview is exactly what goes out; its checkboxes are the ones this submit has.
   const sendPlan = (fl: Flow): Plan => planOf(r, files, { coverage: fl.coverage, selection: flows.selectionOf(fl), defaults });
   // Whether the clone's remotes bind the PR, read once when the send step first shows (post checks it again itself).
+  // Boxed so that a bound clone's undefined is cached too, not read again on every render.
   const unboundRef = useRef<{ v: string | undefined } | null>(null);
   const unbound = (p: Plan) => (unboundRef.current ??= { v: unboundOf(p, run, r.worktree) }).v;
   const boxesOf = (p: Plan): CheckBox[] => [...(p.hook && !p.hook.refused ? ["hook" as const] : []), ...(p.adapter ? ["coverage" as const] : [])];

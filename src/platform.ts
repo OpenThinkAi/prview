@@ -297,16 +297,13 @@ export const github: Adapter = {
       ...(p.comments.length ? [show(c.comments(1), "read back the review's comments (paged) for their ids, kept in the submission record")] : []),
     ];
   },
-  unbound(t, run, cwd) {
-    const ref = prOf(t);
-    return ref ? githubRemoteProblem(ref, run, cwd) : undefined;
-  },
+  unbound: (t, run, cwd) => githubUnbound(t, run, cwd),
   async post(t, p, run, cwd) {
     const why = githubProblem(t, p);
     if (why) throw new Error(why);
     // Only to a PR of a repository this clone fetches from: a document naming some other repository's PR (one whose head
     // happens to be the same commit) must not get the reader's verdict posted there under their login.
-    const unbound = github.unbound!(t, run, cwd);
+    const unbound = githubUnbound(t, run, cwd);
     if (unbound) throw new Error(unbound);
     const c = githubCalls(t, p);
     // A comment anchored to line 11 of one commit is wrong on another: refuse rather than mis-anchor.
@@ -337,6 +334,12 @@ function githubRemoteProblem(ref: PrRef, run: Runner, cwd: string): string | und
   const urls = r.exit === 0 ? r.stdout.split("\n").map((l) => l.split(/\s+/)[1]).filter((u): u is string => !!u) : [];
   if (urls.some((u) => githubSource.remoteKey(u)?.toLowerCase() === ref.repoKey.toLowerCase())) return undefined;
   return `no remote in this clone points at github.com/${ref.repoKey}, so prview will not post this review there: the document names a pull request of a repository this clone does not fetch from (add a remote for it if that is really the PR you reviewed)`;
+}
+
+/** githubRemoteProblem for the target's PR (none to check without a strict PR URL: githubProblem refuses that first). */
+function githubUnbound(t: Target, run: Runner, cwd: string): string | undefined {
+  const ref = prOf(t);
+  return ref ? githubRemoteProblem(ref, run, cwd) : undefined;
 }
 
 /** The review itself, after the head check and the earlier threads: pending review, whole-file comments, submit, ids. */

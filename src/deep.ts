@@ -278,15 +278,15 @@ export function agentSettings(deny: string[]): { permissions: { deny: string[] }
 
 /**
  * Read rules for the `[deep] deny` patterns: worktree files the agent must not read (`.env*`, `**\/fixtures/**`), at
- * the worktree as given and its real path. A pattern without a slash matches at any depth, as in .gitignore; one with
- * a slash is from the worktree's root. The patterns were checked when the config was read (`denyPattern`).
+ * the worktree as given and its real path. As in .gitignore, a pattern with no slash but a trailing one (`build/`)
+ * matches at any depth, and one with a slash at the start or in the middle is from the worktree's root. The patterns were checked when the config was read (`denyPattern`).
  */
 export function denyRules(dir: string, patterns: readonly string[], real: (d: string) => string = (d) => { try { return realpathSync(d); } catch { return d; } }): string[] {
   const out = new Set<string>();
   for (const start of new Set([dir, real(dir)])) {
     for (const pat of patterns) {
-      const rel = pat.replace(/^\/+/, "");
-      const at = pat.includes("/") ? rel : `**/${rel}`;
+      const body = pat.replace(/\/+$/, ""), rel = body.replace(/^\/+/, "");
+      const at = body.includes("/") ? rel : `**/${rel}`;
       const abs = `${start.replace(/[/\\]+$/, "")}/${at}`;
       out.add(`Read(/${abs})`); if (!abs.endsWith("/**")) out.add(`Read(/${abs}/**)`);
     }
@@ -382,6 +382,8 @@ export const claudeAgent: Runner = async ({ cwd, system, prompt, model, env, lim
     if (signal?.aborted) throw new Error("cancelled");
     if (result?.maxTurns) stopped ??= "steps";
     if (result?.error) throw new Error(`claude: ${result.error}`);
+    // The confinement is --restricted: an older claude refuses the flag, and the agent does not run without it.
+    if (!result && !stopped && /unknown option '--restricted'/.test(err)) throw new Error("this claude has no --restricted, which keeps the agent inside the worktree: update claude (claude update) to use a ? and the deep refute");
     if (!result && !stopped) throw new Error(`claude -p gave no answer: ${clip(err.trim(), 300) || `exit ${p.exitCode}`}`);
     return { text: result?.text ?? "", cost: result?.cost, model: result?.model, steps, ...(stopped ? { stopped } : {}) };
   } finally {

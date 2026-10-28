@@ -158,6 +158,8 @@ test("[deep] deny patterns become Read rules under the worktree, at the given an
   for (const r of ["//tmp/w/**/.env*", "//private/tmp/w/**/.env*", "//tmp/w/**/fixtures/**", "//tmp/w/secrets/key.pem", "//private/tmp/w/data/*.csv"]) expect(rules, r).toContain(`Read(${r})`);
   expect(rules).toContain("Read(//tmp/w/**/.env*/**)"); // a matching directory's contents too
   expect(rules).not.toContain("Read(//tmp/w/**/fixtures/**/**)");
+  // A trailing slash alone does not anchor (as in .gitignore): build/ is any build directory, at any depth.
+  expect(denyRules("/tmp/w", ["build/", "/out/"])).toEqual(["Read(//tmp/w/**/build)", "Read(//tmp/w/**/build/**)", "Read(//tmp/w/out)", "Read(//tmp/w/out/**)"]);
   expect(denyRules("/tmp/w", [])).toEqual([]);
 });
 
@@ -179,7 +181,7 @@ test("config: [deep] sets the step cap and timeout; the deep role falls back to 
   expect(parseConfig("").deep).toEqual({ steps: 24, timeoutMs: 180_000 });
   expect(() => parseConfig(`[deep]\nmax_steps = 0`)).toThrow(/max_steps must be a whole number/);
   expect(parseConfig(`[deep]\ndeny = [".env*", "**/fixtures/**"]`).deep).toEqual({ steps: 24, timeoutMs: 180_000, deny: [".env*", "**/fixtures/**"] });
-  for (const [bad, why] of [[`"x"`, /deny must be a list/], [`[1]`, /quoted strings only/], [`[""]`, /non-empty string/], [`["../up"]`, /cannot hold \.\./], [`["a(1)"]`, /parenthesis/], [`["//etc"]`, /relative to the worktree/], [`["~/x"]`, /relative to the worktree/]] as const) {
+  for (const [bad, why] of [[`"x"`, /deny must be a list/], [`[1]`, /quoted strings only/], [`[""]`, /non-empty string/], [`["../up"]`, /cannot hold \.\./], [`["a(1)"]`, /parenthesis/], [`["//etc"]`, /relative to the worktree/], [`["~/x"]`, /relative to the worktree/], [`["/"]`, /non-empty string/]] as const) {
     expect(() => parseConfig(`[deep]\ndeny = ${bad}`), bad).toThrow(why);
   }
   const models = `[models.qwen]\nkind = "openai-compatible"\nendpoint = "http://localhost:1/v1"\n`;
