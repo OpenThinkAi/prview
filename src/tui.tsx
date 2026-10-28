@@ -33,7 +33,7 @@ import { highlightLines, langOf, lengthOf, sliceSpans, styleOf, type Span } from
 import { boxLines, clampScroll, layoutOf, STATUS_H, pageStep, rowsFor, windowOf, wrapText } from "./layout.ts";
 import type { Beside } from "./editor.ts";
 import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
-import { coverageLine, describe, planOf, postPreview, shown as shownArgv, unboundOf, type Plan } from "./submit.ts";
+import { coverageLine, describe, planOf, postPreview, shown as shownArgv, unboundMemo, type Plan } from "./submit.ts";
 import { clampLine, edgesOf, inputLines, ownFinding, rowKind, SEVERITIES, stepLine, type Spot } from "./rows.ts";
 import { actionOf, bySeverity, decide, decisionOf, DEFAULTS, IN_HOUSE, LABEL, linkedComment, suggestionHint, type Defaults } from "./triage.ts";
 import * as flows from "./submit-flow.ts";
@@ -267,10 +267,10 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   // ---- the submit flow (submit-flow.ts has the rules). The send step's plan is the one submit posts from, so its
   // preview is exactly what goes out; its checkboxes are the ones this submit has.
   const sendPlan = (fl: Flow): Plan => planOf(r, files, { coverage: fl.coverage, selection: flows.selectionOf(fl), defaults });
-  // Whether the clone's remotes bind the PR, read once when the send step first shows (post checks it again itself).
-  // Boxed so that a bound clone's undefined is cached too, not read again on every render.
-  const unboundRef = useRef<{ v: string | undefined } | null>(null);
-  const unbound = (p: Plan) => (unboundRef.current ??= { v: unboundOf(p, run, r.worktree) }).v;
+  // Whether the clone's remotes bind the PR: read when the send step first shows and again only if the PR's URL (or
+  // the clone) changes (unboundMemo); post checks it again itself.
+  const unboundRef = useRef<{ wt: string; of: (p: Plan) => string | undefined } | null>(null);
+  const unbound = (p: Plan) => { if (unboundRef.current?.wt !== r.worktree) unboundRef.current = { wt: r.worktree, of: unboundMemo(run, r.worktree) }; return unboundRef.current.of(p); };
   const boxesOf = (p: Plan): CheckBox[] => [...(p.hook && !p.hook.refused ? ["hook" as const] : []), ...(p.adapter ? ["coverage" as const] : [])];
   function submitState(fl: Flow): KeyState {
     if (fl.step === "comment") return { state: "submit", step: "comment", typing: fl.typing };

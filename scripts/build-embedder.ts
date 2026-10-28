@@ -38,7 +38,7 @@ const OUT = join(import.meta.dir, "..", "models", "potion-base-8M");
  * name stops the build. model.safetensors' is the LFS oid huggingface.co lists for the revision; the other two were
  * taken from a download of it. A new REVISION needs new sums.
  */
-const SHA256: Record<string, string> = {
+export const SHA256: Record<string, string> = {
   "config.json": "2a6ac0e9aaa356a68a5688070db78fc3a464fefe85d2f06a1905ce3718687553",
   "tokenizer.json": "e67e803f624fb4d67dea1c730d06e1067e1b14d830e2c2202569e3ef0f70bb50",
   "model.safetensors": "f65d0f325faadc1e121c319e2faa41170d3fa07d8c89abd48ca5358d9a223de2",
@@ -146,10 +146,11 @@ json.dump({"median_token_length": int(m.median_token_length), "cases": [
 `;
 
 /** Refuse a download (or a --from directory) whose files are not the pinned revision's bytes. */
-function verify(dir: string): void {
-  for (const f of FILES) {
+/** Check each file in `pins` under `dir` against its sha256; throw on the first mismatch. `pins` is SHA256 in a build; tests pass a subset. */
+export function verify(dir: string, pins: Record<string, string> = SHA256): void {
+  for (const [f, want] of Object.entries(pins)) {
     const got = new Bun.CryptoHasher("sha256").update(readFileSync(join(dir, f))).digest("hex");
-    if (got !== SHA256[f]) throw new Error(`${f}: sha256 ${got}, expected ${SHA256[f]} (the pinned ${REPO}@${REVISION.slice(0, 12)}); refusing to build from it`);
+    if (got !== want) throw new Error(`${f}: sha256 ${got}, expected ${want} (the pinned ${REPO}@${REVISION.slice(0, 12)}); refusing to build from it`);
   }
 }
 
@@ -202,5 +203,8 @@ async function main(downloadTo: string | undefined) {
   console.log(`wrote ${out}: ${ref.cases.length} sentences from ${MODEL2VEC}`);
 }
 
-const downloaded = from ? undefined : mkdtempSync(join(tmpdir(), "prview-potion-"));
-try { await main(downloaded); } finally { if (downloaded) rmSync(downloaded, { recursive: true, force: true }); }
+// Run as a script only: test/pre-release.test.ts imports SHA256 and verify.
+if (import.meta.main) {
+  const downloaded = from ? undefined : mkdtempSync(join(tmpdir(), "prview-potion-"));
+  try { await main(downloaded); } finally { if (downloaded) rmSync(downloaded, { recursive: true, force: true }); }
+}

@@ -8,6 +8,7 @@ import { claudeAgent, linkRules, readAround } from "../src/deep.ts";
 import { parseDiff } from "../src/diff.ts";
 import { CRITIC_SYSTEM, GUIDE_SYSTEM, REFUTE_SYSTEM } from "../src/guide.ts";
 import type { Resolved } from "../src/config.ts";
+import { SHA256, verify } from "../scripts/build-embedder.ts";
 
 // The pre-release audit's three findings, each proven against the hostile input it named: a PR file name an editor
 // would run, a PR symlink that leads to a secret outside the worktree, and a release dispatched from a branch.
@@ -205,15 +206,41 @@ test("claudeAgent: a claude without --restricted refuses the flag, and the agent
 
 // ---------------------------------------------------------------- the embedder build
 
-test("build-embedder: every downloaded file has a pinned sha256, checked before anything is converted (download or --from)", () => {
-  const src = readFileSync(join(import.meta.dir, "../scripts/build-embedder.ts"), "utf8");
-  const pins = src.slice(src.indexOf("const SHA256"), src.indexOf("const FILES"));
-  for (const f of ["config.json", "tokenizer.json", "model.safetensors"]) expect(pins, f).toMatch(new RegExp(`"${f.replace(".", "\\.")}": "[0-9a-f]{64}"`));
-  expect(src).toContain("const FILES = Object.keys(SHA256);");
-  const main = src.slice(src.indexOf("async function main("));
-  // verify() is the first thing after choosing the source, before any file is read.
-  expect(main.indexOf("verify(src);")).toBeGreaterThan(0);
-  expect(main.indexOf("verify(src);")).toBeLessThan(main.indexOf("readFileSync"));
+// test/fixtures/potion-base-8M/config.json is the real config.json of minishlab/potion-base-8M at the pinned revision
+// (MIT, 202 bytes), so the check runs against a pinned sum on the bytes it pins. The other two files are too large to
+// commit; the same verify() covers them.
+const FIXTURE = join(import.meta.dir, "fixtures", "potion-base-8M");
+
+test("build-embedder: verify() accepts the pinned bytes and refuses a tampered or missing file", () => {
+  expect(Object.keys(SHA256).sort()).toEqual(["config.json", "model.safetensors", "tokenizer.json"]);
+  for (const h of Object.values(SHA256)) expect(h).toMatch(/^[0-9a-f]{64}$/);
+  const pin = { "config.json": SHA256["config.json"]! };
+  // The genuine file hashes to its pin (the default pins, a subset, so the large files need not be present).
+  expect(new Bun.CryptoHasher("sha256").update(readFileSync(join(FIXTURE, "config.json"))).digest("hex")).toBe(pin["config.json"]);
+  expect(() => verify(FIXTURE, pin)).not.toThrow();
+  // One byte changed: refused, naming the file and both sums.
+  const bad = join(tmp, "embedder-tampered"); mkdirSync(bad);
+  const bytes = readFileSync(join(FIXTURE, "config.json"));
+  bytes[bytes.length - 2]! ^= 1;
+  writeFileSync(join(bad, "config.json"), bytes);
+  expect(() => verify(bad, pin)).toThrow(/^config\.json: sha256 [0-9a-f]{64}, expected 2a6ac0e9.*refusing to build from it/);
+  // A file the pins name but the directory lacks is refused too (by the default pins: the other two are absent).
+  expect(() => verify(FIXTURE)).toThrow();
+});
+
+test("build-embedder --from: a file that fails its pin stops the build before anything is read or written", () => {
+  const dir = join(tmp, "embedder-from"); mkdirSync(dir);
+  writeFileSync(join(dir, "config.json"), readFileSync(join(FIXTURE, "config.json"))); // genuine: passes
+  writeFileSync(join(dir, "tokenizer.json"), "not json"); // read before verify, this would be a JSON error instead
+  writeFileSync(join(dir, "model.safetensors"), "x");
+  const out = join(import.meta.dir, "..", "models", "potion-base-8M");
+  const sums = () => Object.fromEntries(["vocab.txt", "embeddings.i8", "scales.f32", "config.json", "reference.json"].map((f) => [f, new Bun.CryptoHasher("sha256").update(readFileSync(join(out, f))).digest("hex")]));
+  const before = sums();
+  const p = Bun.spawnSync([process.execPath, join(import.meta.dir, "..", "scripts", "build-embedder.ts"), "--from", dir, "--no-reference"], { stdout: "pipe", stderr: "pipe" });
+  expect(p.exitCode).not.toBe(0);
+  expect(p.stderr.toString()).toMatch(/tokenizer\.json: sha256 [0-9a-f]{64}, expected e67e803f.*refusing to build from it/);
+  expect(p.stderr.toString()).not.toContain("SyntaxError");
+  expect(sums()).toEqual(before); // the shipped model files are untouched
 });
 
 // ---------------------------------------------------------------- release
