@@ -231,7 +231,7 @@ test("prview done keeps the submission history; --purge removes it (and the lega
   writeFileSync(join(tmp, "home", "submitted", "keep-me.json"), JSON.stringify({ ...r.doc, submissions: [{ at: "2026-09-01T00:00:00Z", file: "x" }] }));
   writeFileSync(join(tmp, "home", "submitted", "keep-me.md"), "old");
   expect(existsSync(join(tmp, "home", "keep-me.json"))).toBe(true); // submit saved the review's state
-  expect(done("keep-me", false)).toBe("removed keep-me · kept 2 submissions (prview done --purge keep-me removes them)");
+  expect(done("keep-me", false)).toBe(`removed keep-me · kept 2 submissions in ${historyDir("keep-me")} (prview done --purge keep-me removes them)`);
   expect(existsSync(join(tmp, "home", "keep-me.json"))).toBe(false);
   expect(submissionsFor("keep-me")).toHaveLength(2);
   // The review is gone, its history is not: --purge still removes that.

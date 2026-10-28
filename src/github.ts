@@ -18,8 +18,9 @@ export const PR_URL = new RegExp(`^(?:https?:\\/\\/)?(?:www\\.)?github\\.com\\/(
 const POST_URL = new RegExp(`^https:\\/\\/github\\.com\\/(${NAME})\\/(${NAME})\\/pull\\/([1-9][0-9]{0,9})$`);
 
 /** The PR a canonical GitHub PR URL names, or undefined for anything else (see POST_URL). */
-export function strictPrUrl(url: string | undefined): PrRef | undefined {
-  if (!url || !POST_URL.test(url)) return undefined;
+export function strictPrUrl(url: unknown): PrRef | undefined {
+  // A document's target.url is parsed from JSON a PR author can shape: anything but a string is refused here too.
+  if (typeof url !== "string" || !POST_URL.test(url)) return undefined;
   const ref = github.parse(url);
   return ref && ref.url === url ? ref : undefined;
 }

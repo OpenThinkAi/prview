@@ -139,23 +139,69 @@ test("the agent (a ? on claude): every symlink git checked out is denied, at the
   expect(rules.some((r) => r.includes("ok.ts"))).toBe(false);
 });
 
-test("claudeAgent hands claude the link rules with the outside rules (stub claude)", async () => {
-  const { wt } = tree();
-  const bin = join(tmp, "agent-bin"); mkdirSync(bin);
-  const log = join(tmp, "agent.argv");
-  writeFileSync(join(bin, "claude"), `#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' "$@" > ${log}\nprintf '%s\\n' '{"type":"result","subtype":"success","result":"ok"}'\n`);
+/** A stub claude on PATH that records its argv and a copy of the --settings file (prview removes the file after exit). */
+function stubClaude(name: string): { argv: () => string[]; settings: () => { permissions: { deny: string[] } }; restore: () => void } {
+  const bin = join(tmp, `${name}-bin`); mkdirSync(bin);
+  const log = join(tmp, `${name}.argv`), copy = join(tmp, `${name}.settings.json`);
+  writeFileSync(join(bin, "claude"), `#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' "$@" > ${log}\nwhile [ $# -gt 0 ]; do [ "$1" = --settings ] && cp "$2" ${copy}; shift; done\nprintf '%s\\n' '{"type":"result","subtype":"success","result":"ok"}'\n`);
   chmodSync(join(bin, "claude"), 0o755);
   const path = process.env.PATH;
   process.env.PATH = `${bin}:${path}`;
+  return { argv: () => readFileSync(log, "utf8").split("\n"), settings: () => JSON.parse(readFileSync(copy, "utf8")), restore: () => { process.env.PATH = path; } };
+}
+
+test("claudeAgent runs claude --restricted in the worktree with the link and [deep] deny rules in a settings file it removes afterwards (stub claude)", async () => {
+  const { wt } = tree();
+  const stub = stubClaude("agent");
   try {
-    const out = await claudeAgent({ cwd: wt, system: "S", prompt: "P", limits: { steps: 3, timeoutMs: 10_000 }, onStep: () => {} });
+    const out = await claudeAgent({ cwd: wt, system: "S", prompt: "P", limits: { steps: 3, timeoutMs: 10_000, deny: [".env*"] }, onStep: () => {} });
     expect(out.text).toBe("ok");
-  } finally { process.env.PATH = path; }
-  const argv = readFileSync(log, "utf8").split("\n");
-  const denied = argv.slice(argv.indexOf("--disallowedTools") + 1);
+  } finally { stub.restore(); }
+  const argv = stub.argv();
+  expect(argv).toContain("--restricted");
+  expect(argv).not.toContain("--disallowedTools");
+  const file = argv[argv.indexOf("--settings") + 1]!;
+  expect(file.startsWith(`${wt}/`)).toBe(false); // outside the worktree, where --restricted keeps the agent from it
+  const denied = stub.settings().permissions.deny;
   expect(denied).toContain(`Read(/${wt}/src/x.ts)`);
   expect(denied).toContain(`Read(/${wt}/src/dir/**)`);
   expect(denied).not.toContain(`Read(/${wt}/src/ok.ts)`);
+  expect(denied).toContain(`Read(/${wt}/**/.env*)`); // [deep] deny
+  // It is gone once claude has exited.
+  for (let i = 0; i < 50 && existsSync(file); i++) await Bun.sleep(10);
+  expect(existsSync(file)).toBe(false);
+});
+
+test("claudeAgent: a crowded directory on the way to the worktree (thousands of siblings) still spawns claude; neither argv nor rules grow with it", async () => {
+  const crowd = join(tmp, "crowd"), wt = join(crowd, "wt");
+  mkdirSync(wt, { recursive: true });
+  // Long names so the old argv form (two rules per sibling) is far past ARG_MAX (1 MiB on macOS): 6000 × ~2 × 220 bytes.
+  const long = "s".repeat(200);
+  for (let i = 0; i < 6000; i++) writeFileSync(join(crowd, `${long}-${i}`), "");
+  const stub = stubClaude("crowd");
+  try {
+    const out = await claudeAgent({ cwd: wt, system: "S", prompt: "P", limits: { steps: 3, timeoutMs: 30_000 }, onStep: () => {} });
+    expect(out.text).toBe("ok");
+  } finally { stub.restore(); }
+  const argv = stub.argv();
+  expect(argv).toContain("--restricted"); // what confines it: claude refuses every path outside its working directory
+  expect(argv.join("\n").length).toBeLessThan(20_000); // argv no longer grows with the siblings (it held 12k rules before)
+  // Nor does the settings file: no rule names a sibling.
+  expect(stub.settings().permissions.deny.filter((r) => r.includes(long))).toEqual([]);
+  expect(JSON.stringify(stub.settings()).length).toBeLessThan(10_000);
+});
+
+// ---------------------------------------------------------------- the embedder build
+
+test("build-embedder: every downloaded file has a pinned sha256, checked before anything is converted (download or --from)", () => {
+  const src = readFileSync(join(import.meta.dir, "../scripts/build-embedder.ts"), "utf8");
+  const pins = src.slice(src.indexOf("const SHA256"), src.indexOf("const FILES"));
+  for (const f of ["config.json", "tokenizer.json", "model.safetensors"]) expect(pins, f).toMatch(new RegExp(`"${f.replace(".", "\\.")}": "[0-9a-f]{64}"`));
+  expect(src).toContain("const FILES = Object.keys(SHA256);");
+  const main = src.slice(src.indexOf("async function main("));
+  // verify() is the first thing after choosing the source, before any file is read.
+  expect(main.indexOf("verify(src);")).toBeGreaterThan(0);
+  expect(main.indexOf("verify(src);")).toBeLessThan(main.indexOf("readFileSync"));
 });
 
 // ---------------------------------------------------------------- release

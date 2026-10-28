@@ -29,4 +29,6 @@ test("strictPrUrl, what a review is posted to: only the canonical https://github
     "https://github.com/o/r/pull/0", "https://github.com/o/r/pull/07", "https://github.com/o/r/pull/12345678901", "https://github.com/o/r/pull/-1", "https://github.com/o/r/pull/"]) {
     expect(strictPrUrl(bad), String(bad)).toBeUndefined();
   }
+  // A target.url that is not a string at all (the document is JSON a PR author can shape) is refused, never coerced.
+  for (const odd of [null, 7, ["https://github.com/o/r/pull/7"], { toString: () => "https://github.com/o/r/pull/7" }, true]) expect(strictPrUrl(odd), JSON.stringify(odd)).toBeUndefined();
 });

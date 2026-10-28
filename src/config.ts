@@ -17,8 +17,21 @@ export type Role = (typeof ROLES)[number];
 export const KINDS = ["claude-cli", "anthropic", "openai-compatible"] as const;
 export type Kind = (typeof KINDS)[number];
 
-/** The step cap and timeout of one `a ?` agent run: `[deep] max_steps` and `timeout` (seconds) in the config. */
-export type DeepLimits = { steps: number; timeoutMs: number };
+/**
+ * The step cap and timeout of one `a ?` agent run: `[deep] max_steps` and `timeout` (seconds) in the config. `deny`:
+ * `[deep] deny`, worktree paths the agent (and the deep refute) must not read, as .gitignore-style patterns.
+ */
+export type DeepLimits = { steps: number; timeoutMs: number; deny?: string[] };
+
+/** Why a `[deep] deny` pattern is refused, or undefined when it is fine: relative to the worktree, no `..`, no parenthesis (a rule cannot hold one). */
+export function denyPattern(p: unknown): string | undefined {
+  if (typeof p !== "string" || !p.trim()) return "must be a non-empty string";
+  if (p.length > 200) return "is longer than 200 characters";
+  if (/[()\x00-\x1f\\]/.test(p)) return "cannot hold a parenthesis, a backslash or a control character";
+  if (p.split("/").includes("..")) return "cannot hold ..";
+  if (/^\/\/|^~/.test(p)) return "is relative to the worktree: no // or ~";
+  return undefined;
+}
 export const DEEP_LIMITS: DeepLimits = { steps: 24, timeoutMs: 180_000 };
 
 /**
@@ -229,6 +242,12 @@ export function parseConfig(text: string, path: string | null = null): Config {
   const deep: DeepLimits = { ...DEEP_LIMITS };
   const dt = table("deep");
   for (const [k, v] of Object.entries(dt)) {
+    if (k === "deny") {
+      if (!Array.isArray(v) || v.length > 100) throw new ConfigError("[deep]: deny must be a list of at most 100 patterns, e.g. deny = [\".env*\", \"**/fixtures/**\"]");
+      for (const pat of v) { const why = denyPattern(pat); if (why) throw new ConfigError(`[deep]: deny pattern ${JSON.stringify(pat)} ${why}`); }
+      if (v.length) deep.deny = [...v];
+      continue;
+    }
     if (k !== "max_steps" && k !== "timeout") continue;
     if (typeof v !== "number" || v < 1 || v > (k === "max_steps" ? 200 : 3600)) throw new ConfigError(`[deep]: ${k} must be a whole number from 1 to ${k === "max_steps" ? 200 : 3600}`);
     if (k === "max_steps") deep.steps = v; else deep.timeoutMs = v * 1000;

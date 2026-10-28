@@ -102,5 +102,6 @@ export function done(slug: string, purge: boolean): string {
   // With --purge, history left behind by a review already removed can still go.
   const removed = purge && kept && !existsSync(join(home(), `${slug}.json`)) ? undefined : remove(slug);
   if (purge) { const n = purgeHistory(slug); return [removed, n ? `purged ${n} submission${n === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · "); }
-  return kept ? `${removed} · kept ${kept} submission${kept === 1 ? "" : "s"} (prview done --purge ${slug} removes ${kept === 1 ? "it" : "them"})` : removed!;
+  // Where it is, so what stays on disk (the documents hold the reader's private ignore notes too) is never a surprise.
+  return kept ? `${removed} · kept ${kept} submission${kept === 1 ? "" : "s"} in ${historyDir(slug)} (prview done --purge ${slug} removes ${kept === 1 ? "it" : "them"})` : removed!;
 }

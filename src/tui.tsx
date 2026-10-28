@@ -33,14 +33,14 @@ import { highlightLines, langOf, lengthOf, sliceSpans, styleOf, type Span } from
 import { boxLines, clampScroll, layoutOf, STATUS_H, pageStep, rowsFor, windowOf, wrapText } from "./layout.ts";
 import type { Beside } from "./editor.ts";
 import { askText, confirmation, findingText, systemCopier, whyText, type Copier } from "./clipboard.ts";
-import { coverageLine, describe, planOf, postPreview, shown as shownArgv, type Plan } from "./submit.ts";
+import { coverageLine, describe, planOf, postPreview, shown as shownArgv, unboundOf, type Plan } from "./submit.ts";
 import { clampLine, edgesOf, inputLines, ownFinding, rowKind, SEVERITIES, stepLine, type Spot } from "./rows.ts";
 import { actionOf, bySeverity, decide, decisionOf, DEFAULTS, IN_HOUSE, LABEL, linkedComment, suggestionHint, type Defaults } from "./triage.ts";
 import * as flows from "./submit-flow.ts";
 import { ownComments, ownKey, ownLabel, pathOfHunk, placedKey, postedBefore, postedSummaries, type Own } from "./carryover.ts";
 import { draftSubmission } from "./draft.ts";
 import { FLOW_STEPS, STEP_NAMES, type Box as CheckBox, type Draft, type Flow, type Selection } from "./submit-flow.ts";
-import { verdictsFor } from "./platform.ts";
+import { spawn, verdictsFor, type Runner } from "./platform.ts";
 import { installKeymap, type KeyState, keyOf, rowById } from "./keys.ts";
 import { pendingText, step, tokenOf, type InkKey, type Pending } from "./chord.ts";
 import { answersBody, answersFor, answerText, type Answer } from "./ask-docs.ts";
@@ -116,6 +116,8 @@ export type AppProps = {
   update?: Promise<string | null>;
   /** How the previous-comments chapter reads the platform's replies (gh, an Azure Http); tests pass fakes. Unset, the real ones. */
   remote?: RemoteDeps;
+  /** How the send step's preview checks the clone's remotes against the PR (Adapter.unbound); tests pass a fake. Unset, the real git. */
+  run?: Runner;
 };
 
 /** What the content area opens on: a re-review's note (`changed`: its blocks changed since), the summary, the suggested verdicts and who prepared it. `a i` shows exactly this again; null when a review has neither. */
@@ -140,7 +142,7 @@ function rereviewText(review: Review, n: number): string {
   return `${head} ${what}${s.rebased ? ` ${sentence(REBASED_NOTE)}` : ""}`;
 }
 
-export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig, resume, draft: draftAtStart, askDeps, update, remote: remoteDeps }: AppProps) {
+export function App({ review, files, onDone, beside, size, blind: blindAtStart = false, dryRun = false, copier = systemCopier, defaults: defaultsAtStart = DEFAULTS, config, onConfig, resume, draft: draftAtStart, askDeps, update, remote: remoteDeps, run = spawn }: AppProps) {
   const { exit } = useApp();
   const term = useTerminalSize(size);
   const cols = term.cols, rows = term.rows - 1;
@@ -265,6 +267,9 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
   // ---- the submit flow (submit-flow.ts has the rules). The send step's plan is the one submit posts from, so its
   // preview is exactly what goes out; its checkboxes are the ones this submit has.
   const sendPlan = (fl: Flow): Plan => planOf(r, files, { coverage: fl.coverage, selection: flows.selectionOf(fl), defaults });
+  // Whether the clone's remotes bind the PR, read once when the send step first shows (post checks it again itself).
+  const unboundRef = useRef<{ v: string | undefined } | null>(null);
+  const unbound = (p: Plan) => (unboundRef.current ??= { v: unboundOf(p, run, r.worktree) }).v;
   const boxesOf = (p: Plan): CheckBox[] => [...(p.hook && !p.hook.refused ? ["hook" as const] : []), ...(p.adapter ? ["coverage" as const] : [])];
   function submitState(fl: Flow): KeyState {
     if (fl.step === "comment") return { state: "submit", step: "comment", typing: fl.typing };
@@ -287,7 +292,7 @@ export function App({ review, files, onDone, beside, size, blind: blindAtStart =
       findings: d.findings, h, defaults, place: (f) => `${place(f.hunk, f.file ? null : f.line)}${f.file ? " (whole file)" : ""}`, label: (v) => VERDICT[v],
       keys: { tick: keyOf("submit.tick"), all: keyOf("submit.tick_all"), editor: keyOf("view.comment_editor"), next: keyOf("submit.next"), back: keyOf("submit.back") },
       hidden: d.findings.some((f) => !unhidden(f)), note: checklistNote(level), suggested: suggestionHint(r.suggested ?? [], (v) => VERDICT[v]),
-      ...(p ? { boxes: boxes.map((box) => ({ box, text: boxText(box) })), preview: `${postPreview(p, (v) => VERDICT[v], marksOf(fl))}\n\n${describe(p, fl.hook, dryRun)}` } : {}),
+      ...(p ? { boxes: boxes.map((box) => ({ box, text: boxText(box) })), preview: `${postPreview(p, (v) => VERDICT[v], marksOf(fl))}\n\n${describe(p, fl.hook, dryRun, unbound(p))}` } : {}),
     });
     // A wrapped line keeps its indent on every row, so the preview's comments stay under their file and line.
     return ls.flatMap((l) => {
