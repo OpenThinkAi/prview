@@ -5,8 +5,8 @@ import { blank, fit, merge, parseDocument, SCHEMA, type Doc } from "../src/docum
 import { fileEdge, nextFindingWrapping, spotsOf } from "../src/nav.ts";
 import { clampLine, edgesOf, inputLines, lineRange, ownFinding, rowKind, stepLine } from "../src/rows.ts";
 import { github, postingOf, type Runner } from "../src/platform.ts";
-import { isRemoteCall, remoteOut, withRemote } from "./gh-remote.ts";
 import { decide } from "../src/triage.ts";
+import { isRemoteCall, remoteOut } from "./gh-remote.ts";
 
 // Your own findings (AGT-1473), pure: the whole-file rows, making a finding, file-level anchors in the document, and what posts.
 

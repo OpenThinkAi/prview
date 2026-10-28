@@ -12,13 +12,13 @@ import {
   afterSubmit, earlierKeys, earlierOf, earlierPosts, keepQueue, queuedText, replyKey, resolveKey, setReply, threadOf, toggleResolve, type EarlierQueue,
 } from "../src/earlier.ts";
 import { github, type EarlierPost, type Posting, type Runner } from "../src/platform.ts";
-import { isRemoteCall, remoteOut, withRemote } from "./gh-remote.ts";
 import { azureAdapter } from "../src/platforms/azure.ts";
 import type { Http, HttpReq, HttpRes } from "../src/azure-auth.ts";
 import { itemKey, itemsOf, lastReached, rowText, type PrevItem } from "../src/previous.ts";
 import { impliedVerdict, nextStep, selectionOf, startFlow, stepLines, toggle } from "../src/submit-flow.ts";
 import { planOf, postPreview, submit } from "../src/submit.ts";
 import { App, type Outcome } from "../src/tui.tsx";
+import { isRemoteCall, remoteOut } from "./gh-remote.ts";
 
 // Re-review R5: replies and resolves on earlier threads, queued with the review and sent with the next submit, first.
 // Every platform call goes to a fake (gh runner, Http): nothing reaches a network or a real pull request.

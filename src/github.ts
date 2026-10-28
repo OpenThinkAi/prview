@@ -19,7 +19,7 @@ const POST_URL = new RegExp(`^https:\\/\\/github\\.com\\/(${NAME})\\/(${NAME})\\
 
 /** The PR a canonical GitHub PR URL names, or undefined for anything else (see POST_URL). */
 export function strictPrUrl(url: string | undefined): PrRef | undefined {
-  if (typeof url !== "string" || !POST_URL.test(url)) return undefined;
+  if (!url || !POST_URL.test(url)) return undefined;
   const ref = github.parse(url);
   return ref && ref.url === url ? ref : undefined;
 }

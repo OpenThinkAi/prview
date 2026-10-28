@@ -6,10 +6,10 @@ import { parseDiff } from "../src/diff.ts";
 import { hunksOf } from "../src/guide.ts";
 import { parseDocument, PostError, SCHEMA, type Doc } from "../src/document.ts";
 import { github, postingOf, type Runner } from "../src/platform.ts";
-import { isRemoteCall, remoteOut, withRemote } from "./gh-remote.ts";
 import { done, freshStamp, historyDir, purgeHistory, stampOf, submissionsFor } from "../src/history.ts";
 import { submit, type HookRunner } from "../src/submit.ts";
 import { save, type Review } from "../src/build.ts";
+import { isRemoteCall, remoteOut } from "./gh-remote.ts";
 
 // Submission history (AGT-1511): every submit kept under submitted/<slug>/, read back newest first with the legacy flat
 // files, and the ids of what each one posted. $PRVIEW_HOME is a scratch directory; gh is a fake runner, no network.

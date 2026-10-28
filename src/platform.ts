@@ -10,6 +10,7 @@
 
 import { PostError, type Comment, type PostedItem, type Target, type Verdict } from "./document.ts";
 import { github as githubSource, strictPrUrl } from "./github.ts";
+import type { PrRef } from "./pr.ts";
 import { azure } from "./platforms/azure.ts";
 
 /** Runs one argv (no shell) and hands back what happened; the real one is `spawn` below. */
@@ -318,11 +319,11 @@ export const github: Adapter = {
  * github.ts remoteKey, case-insensitively: a stamp-server mirror of o/r counts as o/r, as it does for fetching). Read
  * through the injected runner, so tests answer it without a real clone.
  */
-function githubRemoteProblem(ref: { repoKey: string }, run: Runner, cwd: string): string | undefined {
+function githubRemoteProblem(ref: PrRef, run: Runner, cwd: string): string | undefined {
   const r = run(["git", "remote", "-v"], { cwd });
-  const want = ref.repoKey.toLowerCase();
-  const keys = r.exit === 0 ? r.stdout.split("\n").map((l) => l.split(/\s+/)[1]).filter((u): u is string => !!u).map((u) => githubSource.remoteKey(u)?.toLowerCase()) : [];
-  if (keys.includes(want)) return undefined;
+  // `git remote -v` lines are `<name>\t<url> (fetch|push)`: the URL is the second column.
+  const urls = r.exit === 0 ? r.stdout.split("\n").map((l) => l.split(/\s+/)[1]).filter((u): u is string => !!u) : [];
+  if (urls.some((u) => githubSource.remoteKey(u)?.toLowerCase() === ref.repoKey.toLowerCase())) return undefined;
   return `no remote in this clone points at github.com/${ref.repoKey}, so prview will not post this review there: the document names a pull request of a repository this clone does not fetch from (add a remote for it if that is really the PR you reviewed)`;
 }
 

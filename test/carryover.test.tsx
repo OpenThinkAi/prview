@@ -11,11 +11,11 @@ import { parseDiff } from "../src/diff.ts";
 import { fit, SCHEMA, type Doc } from "../src/document.ts";
 import { hunksOf } from "../src/guide.ts";
 import { adapterFor, type Runner } from "../src/platform.ts";
-import { isRemoteCall, remoteOut, withRemote } from "./gh-remote.ts";
 import { ownFinding } from "../src/rows.ts";
 import { applySelection, impliedVerdict, selectionOf, startFlow, stepLines, toggle, move, type Flow } from "../src/submit-flow.ts";
 import { planOf, postPreview, submit } from "../src/submit.ts";
 import { App, type Outcome } from "../src/tui.tsx";
+import { isRemoteCall, remoteOut } from "./gh-remote.ts";
 
 // A review submitted at head A, then reopened after the PR's head moved to B: the round-1 comments come over with the
 // reader's layer, and must neither post again unseen nor be impossible to leave out. Everything runs against scratch
