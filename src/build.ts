@@ -358,8 +358,9 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   // A re-review's layer and previous comments are worked out first: a re-review's AI passes read only what changed since.
   const since = rereviewOf(repo, slug, t, files, say);
   let previous: Previous | undefined;
+  // The chapter follows the layer's diff only when both are of the same earlier head (againOf asks the same of the notes).
   if (pre) { try { previous = previousOf(repo, t, pre, since?.files && since.head === pre.head ? since : undefined); } catch {} }
-  const r: Review ={ slug, repo, ref: isPR(target) ? t.url ?? target!.replace(/^#/, "") : target, worktree, context, created: new Date().toISOString(), pos: { item: 0, line: 0 }, doc: fit(blank(t), files) };
+  const r: Review = { slug, repo, ref: isPR(target) ? t.url ?? target!.replace(/^#/, "") : target, worktree, context, created: new Date().toISOString(), pos: { item: 0, line: 0 }, doc: fit(blank(t), files) };
   if (same) {
     // The conversations are about blocks and findings of this head, so they carry over only while it is the same.
     Object.assign(r, { pos: prior.pos, ...(prior.filter ? { filter: prior.filter } : {}), ai: prior.ai, doc: fit(prior.doc, files), ...(prior.suggested ? { suggested: prior.suggested } : {}), ...(prior.asks ? { asks: prior.asks } : {}), ...(prior.carried ? { carried: prior.carried } : {}) });
@@ -379,6 +380,7 @@ export async function build(repo: string, target: string | undefined, opts: Buil
     if (models) {
       const samples = Math.max(1, Math.floor(opts.samples ?? 2));
       const again = since ? await againOf(since, previous, opts, repo, say) : undefined;
+      if (opts.full && !since) say("--full: not a re-review, so the whole PR is read anyway");
       const { doc, errors, runs } = await guideAndCritic(t, files, worktree, models, samples, say, complete, { depth, limits: cfg!.deep }, again);
       r.doc = merge(r.doc, fit(doc, files));
       r.ai = { models: Object.fromEntries(Object.entries(models).map(([k, v]) => [k, v.def.name])) as Record<Role, string>, at: new Date().toISOString(), errors, samples, runs, ...(depth !== DEFAULT_REFUTE ? { refute: depth } : {}), ...(again ? { since: again.since.head } : {}) };

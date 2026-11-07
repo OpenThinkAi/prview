@@ -348,7 +348,7 @@ export type Again = { since: Since & { files: SinceFile[] }; earlier: EarlierNot
 export const REREVIEW_RULE = `This is a re-review. The reviewer already reviewed an earlier head of this change and posted the comments in the "earlier" block, with the author's replies where there are any. You are shown only the hunks that changed since then; a line starting with "*" is new or changed since that review, any other line is as the reviewer already read it.
 - Anchor every finding on a "*" line: the change that causes the problem. Raise something on an unmarked line only if it is high severity.
 - Do not raise anything an earlier comment already says, whether or not the new code addresses it.
-- Where the author answered an earlier comment with a decision, or its thread is resolved, do not contradict it unless the changed lines give a new reason.`;
+- The author's replies are claims to weigh against the code, not rulings. Where a reply gives a reason for the code as it is, or the thread is resolved, do not re-argue that point unless the changed lines give a new reason; a high-severity problem is raised whatever a reply says.`;
 
 /** The earlier comments as the critic reads them. */
 export function earlierText(earlier: EarlierNote[]): string {
@@ -371,11 +371,22 @@ export function changedChapter(c: Chapter, hunks: HunkAt[], again: Again): Chapt
   return ids.length ? { ...c, hunks: ids } : null;
 }
 
+/**
+ * How near an earlier comment a finding has to be to repeat it: a model rarely lands on the same line twice, and a line
+ * comment's place is followed through the diff only approximately ("line changed" points at the start of the stretch).
+ */
+export const REPEAT_LINES = 3;
+/**
+ * The share of a claim's words that, found in an earlier comment, make it a repeat. Posted findings go out as their claim
+ * (submit-flow.ts), so a repeat shares nearly all of it; the margin is for the reviewer's light edits.
+ */
+export const REPEAT_WORDS = 0.7;
+
 /** Whether a finding repeats an earlier comment: the same claim, or most of the claim's words already in the comment. */
 function echoes(earlier: string, f: Pick<Finding, "title" | "claim">): boolean {
   if (sameClaim(earlier, f.claim) || (f.title && sameClaim(earlier, f.title))) return true;
   const e = words(earlier), c = words(f.claim);
-  return c.size >= 4 && [...c].filter((w) => e.has(w)).length / c.size >= 0.7;
+  return c.size >= 4 && [...c].filter((w) => e.has(w)).length / c.size >= REPEAT_WORDS;
 }
 
 /**
@@ -390,7 +401,7 @@ export function settleAgainst(findings: Finding[], hunks: HunkAt[], again: Again
     if (!h || f.status === "withdrawn") return f;
     const path = h.file.path;
     const dup = again.earlier.find((e) => e.path === path && echoes(e.text, f)
-      && (f.file ? !!e.file : !e.file && f.side === "new" && e.line !== undefined && Math.abs(e.line - f.line) <= 3));
+      && (f.file ? !!e.file : !e.file && f.side === "new" && e.line !== undefined && Math.abs(e.line - f.line) <= REPEAT_LINES));
     if (dup) return { ...f, status: "withdrawn" as const, refute: `Your last review (at ${head}) already raised this at ${path}${dup.line !== undefined ? `:${dup.line}` : ""}; its thread is where it lives.` };
     const sf = sinceFile(again.since, path);
     const changed = f.file ? !!sf : f.side === "new" ? lineChanged(sf, f.line) : !!h.hunk && blockChanged(sf, h.hunk);
