@@ -20,7 +20,7 @@ import { readInTree } from "./intree.ts";
 import { blank, Fail, fit, merge, parseDocument, SCHEMA, suggestions, type Comment, type Doc, type Suggested, type Target } from "./document.ts";
 import {
   applyReask, applyRefute, classify, CRITIC_SYSTEM, criticPrompt, filePlan, GUIDE_SYSTEM, guidePrompt, hunksOf, refutable,
-  mergeFindings, readCritic, readGuide, applyTitleReask, TITLE_REASK_SYSTEM, titleReaskPrompt, titleOf, REASK_SYSTEM, reaskPrompt, REFUTE_SYSTEM, refutePrompt, type Chapter, type Finding, type HunkAt, type Mechanical, type Plan,
+  mergeFindings, readCritic, readGuide, applyTitleReask, changedChapter, changedSince, REREVIEW_RULE, settleAgainst, type Again, type EarlierNote, TITLE_REASK_SYSTEM, titleReaskPrompt, titleOf, REASK_SYSTEM, reaskPrompt, REFUTE_SYSTEM, refutePrompt, type Chapter, type Finding, type HunkAt, type Mechanical, type Plan,
 } from "./guide.ts";
 import { DEEP_LIMITS, DEFAULT_REFUTE, loadConfig, realLookups, resolveRoles, type DeepLimits, type RefuteDepth, type Resolved, type Role } from "./config.ts";
 import { refuteByAgent, type Runner } from "./deep.ts";
@@ -32,8 +32,8 @@ import { isPR, parseRef, prIn, sourceOf } from "./registry.ts";
 import { carry, postKey, type Carried } from "./carryover.ts";
 import { rereviewOf } from "./rereview.ts";
 import { sinceOf, type Since } from "./since.ts";
-import { previousItems, previousOf } from "./previous-read.ts";
-import type { Previous } from "./previous.ts";
+import { previousItems, previousOf, readRemote, type RemoteDeps } from "./previous-read.ts";
+import { earlierNotes, type Previous, type Remote } from "./previous.ts";
 import { earlierOf, keepQueue, type EarlierQueue } from "./earlier.ts";
 import { keyOf } from "./keys.ts";
 
@@ -59,7 +59,7 @@ export function preparedBy(runs: Run[] | undefined, refute?: RefuteDepth): strin
   return by.size ? `Prepared by ${[...by].map(([id, roles]) => `${id} (${roles.join(", ")})`).join(", ")}${depth}` : undefined;
 }
 /** `models` names what each role used, so `ask` in a reopened review talks to the same model. */
-export type Ai = { models: Partial<Record<Role, string>>; at: string; errors: string[]; samples?: number; runs?: Run[]; /** The refute depth it was prepared with; absent means quick (every review before the setting). */ refute?: RefuteDepth };
+export type Ai = { models: Partial<Record<Role, string>>; at: string; errors: string[]; samples?: number; runs?: Run[]; /** The refute depth it was prepared with; absent means quick (every review before the setting). */ refute?: RefuteDepth; /** A re-review prepared incrementally: the earlier head the critic read changes since. Absent: the whole PR was read. */ since?: string };
 export type Pos = { item: number; line: number };
 /** `ref` is what was asked for (a PR's canonical URL, a PR number in a review stored before URLs were, or a range), so the review can be rebuilt at a newer head. */
 /** `suggested`: the verdicts of documents imported at this head, shown in the opening summary as information only. */
@@ -126,8 +126,8 @@ export async function runGuide(model: Resolved, src: { title: string; body: stri
 }
 
 /** One critic run: parsed, with one re-ask for any title that had to be cut (a failed re-ask keeps the cut titles). */
-export async function runCritic(model: Resolved, prompt: string, chapter: Chapter, hunks: HunkAt[], usage?: (u: Usage) => void, call: Call = complete): Promise<Finding[]> {
-  const { findings, cuts } = readCritic(await call(model, CRITIC_SYSTEM, prompt, usage), chapter, hunks, 0);
+export async function runCritic(model: Resolved, prompt: string, chapter: Chapter, hunks: HunkAt[], usage?: (u: Usage) => void, call: Call = complete, system = CRITIC_SYSTEM): Promise<Finding[]> {
+  const { findings, cuts } = readCritic(await call(model, system, prompt, usage), chapter, hunks, 0);
   if (!cuts.length) return findings;
   try { return applyTitleReask(findings, cuts, await call(model, TITLE_REASK_SYSTEM, titleReaskPrompt(findings, cuts), usage)); }
   catch { return findings; }
@@ -136,8 +136,12 @@ export async function runCritic(model: Resolved, prompt: string, chapter: Chapte
 /** How deep the second look goes (config `refute`, `--refute`), the agent's limits ([deep]) and, in tests, its runner. */
 export type RefuteOpts = { depth: RefuteDepth; limits?: DeepLimits; runner?: Runner };
 
-/** The default producer: the guide orders the hunks, the critic raises findings, refute re-checks them. Exported for the pipeline tests. */
-export async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, models: Pick<Record<Role, Resolved>, "guide" | "critic" | "refute">, samples: number, say: Progress, call: Call = complete, refute: RefuteOpts = { depth: DEFAULT_REFUTE }): Promise<{ doc: Doc; errors: string[]; runs: Run[] }> {
+/**
+ * The default producer: the guide orders the hunks, the critic raises findings, refute re-checks them. Exported for the
+ * pipeline tests. `again` (a re-review whose earlier head is in the clone): the critic reads only the blocks changed
+ * since that head, knowing the earlier comments, and what it raises on unchanged lines or repeats is withdrawn (guide.ts).
+ */
+export async function guideAndCritic(src: Target, files: FileDiff[], worktree: string, models: Pick<Record<Role, Resolved>, "guide" | "critic" | "refute">, samples: number, say: Progress, call: Call = complete, refute: RefuteOpts = { depth: DEFAULT_REFUTE }, again?: Again): Promise<{ doc: Doc; errors: string[]; runs: Run[] }> {
   const errors: string[] = [], runs: Run[] = [];
   // The id each role shows: the config's own until a reply says better, `default` if neither is known yet.
   // Keyed by model name, so a role sharing a model another role has already heard from starts with the real id.
@@ -157,11 +161,19 @@ export async function guideAndCritic(src: Target, files: FileDiff[], worktree: s
 
   // One critic run is a coin flip on what it notices, so each chapter is read `samples` times and the
   // runs are merged; a run that fails costs a vote, not the chapter.
-  say(`${tag("critic")}: ${plan.chapters.length} chapters x ${samples} run${samples === 1 ? "" : "s"}…`);
-  const reviews = await pool(plan.chapters.map((c, i) => async () => {
-    const prompt = criticPrompt(src, c, hunks);
+  // A re-review reads each chapter's changed blocks only; a chapter with none is not read at all. The index stays the
+  // chapter's own, so ids do not depend on which chapters were skipped.
+  const read = plan.chapters.flatMap((c, i) => { const cut = again ? changedChapter(c, hunks, again) : c; return cut ? [{ c: cut, i }] : []; });
+  const system = again ? `${CRITIC_SYSTEM}\n${REREVIEW_RULE}` : CRITIC_SYSTEM;
+  if (again) {
+    const n = hunks.filter((h) => changedSince(again, h)).length;
+    say(`${tag("critic")}: re-review: ${n} block${n === 1 ? "" : "s"} changed since ${again.since.head.slice(0, 7)}, in ${read.length} of ${plan.chapters.length} chapters`);
+  }
+  if (read.length) say(`${tag("critic")}: ${read.length} chapters x ${samples} run${samples === 1 ? "" : "s"}…`);
+  const reviews = await pool(read.map(({ c, i }) => async () => {
+    const prompt = criticPrompt(src, c, hunks, again);
     const each = await Promise.all(Array.from({ length: samples }, () =>
-      runCritic(models.critic, prompt, c, hunks, timed("critic"), call).catch((e) => e instanceof Error ? e : new Error(String(e)))));
+      runCritic(models.critic, prompt, c, hunks, timed("critic"), call, system).catch((e) => e instanceof Error ? e : new Error(String(e)))));
     const ok = each.filter((r): r is Finding[] => !(r instanceof Error));
     for (const r of each) if (r instanceof Error) errors.push(`critic (${c.title}): ${r.message}`);
     if (!ok.length) throw new Error("every run failed");
@@ -170,9 +182,14 @@ export async function guideAndCritic(src: Target, files: FileDiff[], worktree: s
     return fs;
   }));
   let findings: Finding[] = [];
-  reviews.forEach((r, i) => { if (r instanceof Error) errors.push(`critic (${plan.chapters[i]!.title}): ${r.message}`); else findings.push(...r); });
+  reviews.forEach((r, k) => { if (r instanceof Error) errors.push(`critic (${read[k]!.c.title}): ${r.message}`); else findings.push(...r); });
+  if (again) {
+    findings = settleAgainst(findings, hunks, again);
+    const n = findings.filter((f) => f.status === "withdrawn").length;
+    if (n) say(`re-review: ${n} finding${n === 1 ? "" : "s"} on unchanged lines or repeating an earlier comment set aside (shown as ignored)`);
+  }
 
-  const contested = refute.depth === "off" ? [] : findings.filter((f) => f.severity !== "low");
+  const contested = refute.depth === "off" ? [] : findings.filter((f) => f.severity !== "low" && f.status !== "withdrawn");
   if (refute.depth === "off") say(`refute: off (no second look)`);
   if (contested.length) say(`${tag("refute")}: checking ${contested.length} finding${contested.length === 1 ? "" : "s"}…`);
   const at = new Map(hunks.map((h) => [h.id, h]));
@@ -317,7 +334,7 @@ function worktreeAt(repo: string, slug: string, head: string): string {
 
 // ---------------------------------------------------------------- building
 
-export type BuildOpts = { /** The refute depth for this run (`--refute`); the config's when absent. */ refute?: RefuteDepth; context?: number; /** a model name (--ai) for every role, undefined for the configured roles, null for no models. */ ai?: string | null; fresh?: boolean; samples?: number; say?: Progress; /** REST for a platform that needs it (Azure DevOps); the credentialed real one when absent, a fake in tests. */ http?: Http };
+export type BuildOpts = { /** The refute depth for this run (`--refute`); the config's when absent. */ refute?: RefuteDepth; context?: number; /** a model name (--ai) for every role, undefined for the configured roles, null for no models. */ ai?: string | null; fresh?: boolean; /** `--full`: a re-review's AI passes read the whole PR, not only what changed since the last review. */ full?: boolean; samples?: number; say?: Progress; /** REST for a platform that needs it (Azure DevOps); the credentialed real one when absent, a fake in tests. */ http?: Http; /** How a re-review reads the earlier threads' replies (previous-read.ts); the real platform when absent, a fake in tests. */ remote?: RemoteDeps };
 
 export async function build(repo: string, target: string | undefined, opts: BuildOpts = {}): Promise<Review> {
   const context = opts.context ?? 3, say = opts.say ?? (() => {});
@@ -334,9 +351,15 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   // The document is anchored on its head: while the head is the same it is reused whole (whoever
   // produced it); once the head moves only the reader's own comments carry over (re-anchored where their line still is,
   // marked with the head they came from: carryover.ts), with the record of what was submitted before.
-  const same = !!prior && prior.doc.target.head === t.head && !opts.fresh;
+  // `--full` on a review prepared incrementally (a re-review) redoes it, like --fresh.
+  const same = !!prior && prior.doc.target.head === t.head && !opts.fresh && !(opts.full && prior.ai?.since);
   // A re-review: the latest submission that reached the PR reviewed another head (previous-read.ts).
   const pre = previousItems(t, slug);
+  // A re-review's layer and previous comments are worked out first: a re-review's AI passes read only what changed since.
+  const since = rereviewOf(repo, slug, t, files, say);
+  let previous: Previous | undefined;
+  // The chapter follows the layer's diff only when both are of the same earlier head (againOf asks the same of the notes).
+  if (pre) { try { previous = previousOf(repo, t, pre, since?.files && since.head === pre.head ? since : undefined); } catch {} }
   const r: Review = { slug, repo, ref: isPR(target) ? t.url ?? target!.replace(/^#/, "") : target, worktree, context, created: new Date().toISOString(), pos: { item: 0, line: 0 }, doc: fit(blank(t), files) };
   if (same) {
     // The conversations are about blocks and findings of this head, so they carry over only while it is the same.
@@ -356,9 +379,11 @@ export async function build(repo: string, target: string | undefined, opts: Buil
     }
     if (models) {
       const samples = Math.max(1, Math.floor(opts.samples ?? 2));
-      const { doc, errors, runs } = await guideAndCritic(t, files, worktree, models, samples, say, complete, { depth, limits: cfg!.deep });
+      const again = since ? await againOf(since, previous, opts, repo, say) : undefined;
+      if (opts.full && !since) say("--full: not a re-review, so the whole PR is read anyway");
+      const { doc, errors, runs } = await guideAndCritic(t, files, worktree, models, samples, say, complete, { depth, limits: cfg!.deep }, again);
       r.doc = merge(r.doc, fit(doc, files));
-      r.ai = { models: Object.fromEntries(Object.entries(models).map(([k, v]) => [k, v.def.name])) as Record<Role, string>, at: new Date().toISOString(), errors, samples, runs, ...(depth !== DEFAULT_REFUTE ? { refute: depth } : {}) };
+      r.ai = { models: Object.fromEntries(Object.entries(models).map(([k, v]) => [k, v.def.name])) as Record<Role, string>, at: new Date().toISOString(), errors, samples, runs, ...(depth !== DEFAULT_REFUTE ? { refute: depth } : {}), ...(again ? { since: again.since.head } : {}) };
       for (const e of errors) say(`warning: ${e}`);
       // By rule, from the findings that survived refute; information only, never the verdict submit starts from.
       r.suggested = [suggestVerdict(r.doc.findings), ...(prior && prior.doc.target.head === t.head ? prior.suggested ?? [] : []).filter((v) => v.by !== IN_HOUSE)];
@@ -366,11 +391,10 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   }
   // A re-review: the layer is worked out on every open (the head reviewed is the latest submission's), and `v s` stays
   // on while the head does, like the filter.
-  const since = rereviewOf(repo, slug, t, files, say);
   if (since) { r.since = since; if (same && prior.sinceOnly && since.files) r.sinceOnly = true; }
   // Its previous comments: where each is now follows the same old→new diff when the layer is of the same head.
   if (pre) {
-    try { r.previous = previousOf(repo, t, pre, since?.files && since.head === pre.head ? since : undefined); } catch {}
+    if (previous) r.previous = previous;
     // Replies and resolves queued on these items stay queued while the chapter is of the same submission.
     const q = keepQueue(prior?.earlier, pre.head, pre.keys);
     if (q) r.earlier = q;
@@ -379,6 +403,24 @@ export async function build(repo: string, target: string | undefined, opts: Buil
   }
   save(r);
   return r;
+}
+
+/**
+ * What a re-review's AI passes are told (guide.ts Again), or undefined for a review of the whole PR: with `--full`, or
+ * when the earlier head is gone (said, so nobody takes the findings for an incremental read). The earlier comments are
+ * the previous-comments chapter's when it is of the same head, with their replies when the platform can be read.
+ */
+export async function againOf(since: Since, previous: Previous | undefined, opts: Pick<BuildOpts, "full" | "http" | "remote">, repo: string, say: Progress): Promise<Again | undefined> {
+  if (opts.full) { say("AI review: the whole PR (--full)"); return undefined; }
+  if (since.gone || !since.files) { say("AI review: the whole PR, not incremental: the head you reviewed is gone"); return undefined; }
+  let earlier: EarlierNote[] = [];
+  if (previous && previous.head === since.head) {
+    let remote: Remote | undefined;
+    if (previous.platform) { try { remote = await readRemote(previous, { cwd: repo, ...(opts.http ? { http: opts.http } : {}), ...opts.remote }); } catch {} }
+    earlier = earlierNotes(previous, remote);
+  }
+  say(`AI review: incremental, only what changed since ${since.head.slice(0, 7)}${earlier.length ? `, knowing your ${earlier.length} earlier comment${earlier.length === 1 ? "" : "s"}` : ""} (--full reviews the whole PR)`);
+  return { since: { ...since, files: since.files }, earlier };
 }
 
 /** A review by name, rebuilt at the PR's current head. A review stored with a bare PR number (before refs were URLs) still reopens: the number means a PR of its clone. */

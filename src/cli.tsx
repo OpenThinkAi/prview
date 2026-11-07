@@ -16,7 +16,7 @@ import { clean } from "./sanitize.ts";
 import type { Flow } from "./submit-flow.ts";
 import { backgroundCheck, managerOf, realDeps, runningVersion, updateCommand } from "./update.ts";
 
-const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head | branch> [--repo DIR] [--context N] [--ai MODEL | --no-ai] [--samples N] [--refute LEVEL] [--blind | --no-blind] [--fresh] [--dry-run]
+const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head | branch> [--repo DIR] [--context N] [--ai MODEL | --no-ai] [--samples N] [--refute LEVEL] [--blind | --no-blind] [--fresh] [--full] [--dry-run]
   Opens the change in a full-screen review: a guide (a model) has ordered the hunks into chapters,
   core change first, tests last, and says what to verify in each; mechanical hunks (whitespace, lock
   files, pure moves, classified by rule) come last; a critic (a model) has raised findings, each
@@ -25,6 +25,8 @@ const USAGE = `usage: prview <PR# | PR url (GitHub or Azure DevOps) | base..head
 
   With no target: the current branch against the default branch. Every open fetches the PR's current
   head; the guide and findings are redone only when the head moved (or with --fresh).
+  On a re-review (you already submitted on an earlier head) the critic reads only what changed since that head,
+  knowing your earlier comments and their replies; --full reviews the whole PR instead.
   --blind hides findings in a chapter until you have visited every hunk in it; blind = true in the config
   makes that the default, --no-blind turns it off for a run.
   --dry-run prints the API calls a submit would make and posts nothing (nothing is written or run either).
@@ -234,6 +236,7 @@ async function main(args: string[]): Promise<void> {
     else if (a === "--mine") opts.mine = true;
     else if (a === "--purge") opts.purge = true;
     else if (a === "--fresh") opts.fresh = true;
+    else if (a === "--full") opts.full = true;
     else if (a === "--samples") {
       const n = Number(args[++i]);
       if (!Number.isInteger(n) || n < 1 || n > 9) throw new Fail("--samples takes a whole number from 1 to 9");
