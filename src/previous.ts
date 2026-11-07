@@ -12,7 +12,7 @@ import type { PostedItem } from "./document.ts";
 import type { Submitted } from "./history.ts";
 import { pathOfHunk, placedKey } from "./carryover.ts";
 import { clean, visible } from "./sanitize.ts";
-import { clip } from "./guide.ts";
+import { clip, type EarlierNote } from "./guide.ts";
 import { lineMaps, type Mapped, type Since } from "./since.ts";
 
 /** How the reviewed head's lines and files moved to the new head. `line` is since.ts's mapping (renames followed). */
@@ -245,6 +245,24 @@ function queuedPart(q: { reply?: string; resolve?: boolean; keys: { reply: strin
   const what = [q.reply !== undefined ? `Your reply, queued:\n${q.reply}` : "", q.resolve ? "Resolve its thread: queued." : ""].filter(Boolean);
   if (!what.length) return `${q.keys.reply} writes a reply, ${q.keys.resolve} marks the thread resolved; both go out with your next submit, before the new review.`;
   return [...what, `Sent with your next submit, before the new review. ${q.keys.reply} edits the reply (empty removes it), ${q.keys.resolve} ${q.resolve ? "un-queues the resolve" : "marks the thread resolved"}.`].join("\n\n");
+}
+
+/**
+ * The items as the critic is told them on an incremental re-review (guide.ts EarlierNote): where each is now, its text,
+ * its status, and (when the platform was read) its thread's replies and resolution.
+ */
+export function earlierNotes(p: Previous, remote?: Remote): EarlierNote[] {
+  return p.items.map((i, n): EarlierNote => {
+    const t = remote?.ok ? remote.threads[n] : undefined;
+    const path = i.kind === "summary" ? undefined : i.to?.path ?? i.path;
+    const line = i.kind === "line" && i.side !== "old" ? i.to?.line ?? i.line : undefined;
+    return {
+      ...(path ? { path } : {}), ...(line !== undefined ? { line } : {}), ...(i.kind === "file" ? { file: true as const } : {}),
+      text: i.text, ...(statusText(i) ? { status: statusText(i) } : {}),
+      replies: t?.found ? t.replies.map((r) => ({ author: r.author, text: r.text })) : [],
+      ...(t?.found && t.resolved !== undefined ? { resolved: t.resolved } : {}),
+    };
+  });
 }
 
 // ---------------------------------------------------------------- moving in the chapter

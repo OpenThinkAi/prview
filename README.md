@@ -327,6 +327,17 @@ worked out with `git diff`, for the files the PR touches. Blocks that overlap th
 contents and in the code gutter. `v s` shows only those blocks, or the whole PR again (`view since review` /
 `whole PR` in the status area); the choice is kept with the review, like the filter, for as long as the head stays.
 
+**Findings on a re-review are incremental.** When the head you reviewed is in your clone, the AI review reads only
+what changed since it. The guide still orders the whole PR into chapters, but the critic reads only the blocks
+changed since your review, with the changed lines marked. It is also given every comment your last submit posted,
+with where each one is now and the author's replies and thread state (read from the platform when it can be). It is
+told not to raise again what you already said, and not to contradict a thread the author answered or resolved unless
+the new code gives a reason. Then two rules apply before the refute pass: a finding that repeats one of your earlier
+comments near the same line is set aside, and so is one that is not high severity on a line unchanged since your
+review. Set-aside findings are still shown, ignored by default, with the reason. The startup line says which kind of
+review ran. `--full` reviews the whole PR as on a first review. If the head you reviewed cannot be had, the AI
+review reads the whole PR and the startup line says it is not incremental.
+
 **Rebases and force-pushes.** If the head you reviewed is not an ancestor of the new head, the diff is still old
 head to new head, with a note that upstream changes in those files may show as new. If the head you reviewed is not in
 your clone it is fetched through the PR's platform by commit id; if that fails the whole PR is shown, with a note
