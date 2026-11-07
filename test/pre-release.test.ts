@@ -266,6 +266,6 @@ test("release: only a dispatch on main publishes; there is no tag trigger; the h
   expect(RELEASE.slice(0, RELEASE.indexOf("\non:"))).toContain("deliberately no `push: tags` trigger");
 });
 
-test("version: this release is 0.1.10", () => {
-  expect(JSON.parse(readFileSync(join(import.meta.dir, "../package.json"), "utf8")).version).toBe("0.1.10");
+test("version: this release is 0.1.11", () => {
+  expect(JSON.parse(readFileSync(join(import.meta.dir, "../package.json"), "utf8")).version).toBe("0.1.11");
 });
